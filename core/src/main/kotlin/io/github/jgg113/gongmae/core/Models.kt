@@ -154,7 +154,14 @@ data class Property(
     /** 재매각 명령일 — 전 낙찰자가 대금을 안 낸 물건 */
     val reauctionDate: String = "",
     val photoUrls: List<String> = emptyList(),
+    /** 원본이 좌표를 줄 때만 (법원경매 KATEC 변환) */
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    /** 시군구 행정코드 5자리 (국토부 실거래가 LAWD_CD) */
+    val lawdCode: String = "",
 ) {
+    val position: LatLng? get() = if (latitude != null && longitude != null) LatLng(latitude, longitude) else null
+
     val isCourt: Boolean get() = source == Source.COURT
 
     /** 지오코딩에 넣을 주소 후보. 지번까지 있는 주소가 먼저, 읍면동 중심이 마지막. */

@@ -10,13 +10,15 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Base64
+import kotlin.random.Random
 
 data class CourtSearchRequest(
     val sido: String,
     val sigungu: String = "",
     /** 오늘부터 몇 주 안의 매각기일까지 볼지 */
     val weeks: Int = 4,
-    val maxPages: Int = 30,
+    /** 검색 한 번에 사이트를 부르는 최대 횟수 (IP 차단 방지) */
+    val maxCalls: Int = 8,
 )
 
 /** 법원경매 물건상세: 사진(JPEG 바이트)과 기일 내역. */
@@ -30,46 +32,97 @@ data class CourtDetail(
 /**
  * 대법원 법원경매정보(courtauction.go.kr) 화면이 쓰는 JSON 을 그대로 호출한다. 공식 오픈API 가 아니다.
  *
- * - 진입 페이지 GET 으로 JSESSIONID 를 받고, 이후 POST 에 Referer·submissionid·sc-userid 헤더를 붙인다.
- * - 한 페이지 최대 50건. 검색 조건이 모두 비면 400 이 나므로 시도와 매각기일 구간을 항상 채운다.
- * - 사이트가 접속 IP 를 지켜보므로(ipcheck) 요청 사이에 간격을 둔다.
+ * - 진입 페이지 GET 으로 세션 쿠키를 받는다. 이때 HTTP 500 이 와도 쿠키는 내려오므로 상태코드는 따지지 않는다.
+ * - 이후 POST 에 Referer·X-Requested-With·submissionid·sc-userid 헤더를 붙인다.
+ * - 30초에 16번쯤 부르면 IP 가 1시간 막힌다. 요청 사이에 2~3초를 두고, 검색 한 번에 부르는 횟수를 제한한다.
+ * - 검색 조건이 모두 비면 400 이 나므로 시도(+시군구)와 매각기일 구간을 항상 채운다.
  */
 class CourtClient(
-    private val transport: WebTransport = UrlConnectionTransport,
-    private val delayMs: Long = 700,
+    private val transport: WebTransport = UrlConnectionTransport(followRedirects = false),
+    private val minDelayMs: Long = 2_000,
+    private val jitterMs: Long = 1_000,
+    private val random: (Long) -> Long = { bound -> if (bound <= 0) 0 else Random.nextLong(bound) },
     private val sleeper: (Long) -> Unit = { Thread.sleep(it) },
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
     private val cookies = CookieJar()
+    private var warmedUp = false
     private var lastPost = 0L
+    private var blockedUntil = 0L
+    private var pageSize = 100
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     fun search(request: CourtSearchRequest, now: LocalDateTime = LocalDateTime.now(), progress: ProgressListener? = null): SearchOutcome {
-        val codes = sidoCodes[request.sido] ?: throw OnbidApiException("COURT", "법원경매 검색을 지원하지 않는 지역입니다: ${request.sido}")
+        val sidoCodes = sidoCodes[request.sido] ?: throw OnbidApiException("COURT", "법원경매 검색을 지원하지 않는 지역입니다: ${request.sido}")
         val from = now.toLocalDate()
         val to = from.plusWeeks(request.weeks.toLong())
+        val budget = Budget(request.maxCalls)
+        val sigunguCodes = if (request.sigungu.isBlank()) emptyList() else RegionCodes.sigungu(request.sido, request.sigungu)
+
         var rows = emptyList<JsonObject>()
-        // 강원·전북은 특별자치도 전환 전 코드로만 잡히는 물건이 있을 수 있어 옛 코드도 시도한다.
-        for (code in codes) {
-            rows = fetchAll(code, from, to, request.maxPages, progress)
-            if (rows.isNotEmpty()) break
+        var localFilter = request.sigungu.isNotBlank()
+        if (sigunguCodes.isNotEmpty()) {
+            // 시군구 코드로 서버에서 바로 좁힌다. 구가 여럿인 시는 구마다 부른다.
+            rows = sigunguCodes.flatMap { code -> fetchAll(sidoCodes.first(), code, from, to, budget, progress) }
+            localFilter = false
         }
-        val filtered = rows.filter { Regions.matchesSigungu(it.str("hjguSigu"), jibunAddress(it), request.sigungu) }
+        if (rows.isEmpty()) {
+            // 시군구 코드를 모르거나 결과가 없으면 시도 전체를 받아 주소로 거른다.
+            for (code in sidoCodes) {
+                rows = fetchAll(code, "", from, to, budget, progress)
+                if (rows.isNotEmpty()) break
+            }
+        }
+        val filtered = if (localFilter || request.sigungu.isBlank()) {
+            rows.filter { Regions.matchesSigungu(it.str("hjguSigu"), jibunAddress(it), request.sigungu) }
+        } else {
+            rows
+        }
+        val notes = buildList {
+            if (budget.exhausted) add("경매: 결과가 많아 일부(${filtered.size}건)만 불러왔습니다. 시군구를 고르거나 기간을 줄이면 전부 볼 수 있습니다.")
+        }
         val properties = filtered.mapNotNull { toProperty(it) }.distinctBy { it.id }
-        return SearchOutcome(properties, filtered.size, emptyList(), regionFilteredLocally = request.sigungu.isNotBlank())
+        return SearchOutcome(properties, filtered.size, notes, regionFilteredLocally = false)
     }
 
-    private fun fetchAll(sidoCode: String, from: LocalDate, to: LocalDate, maxPages: Int, progress: ProgressListener?): List<JsonObject> {
+    /** 검색 한 번에 사이트를 부르는 횟수 상한 (IP 차단 방지). */
+    private class Budget(var remaining: Int) {
+        var exhausted = false
+    }
+
+    private fun fetchAll(
+        sidoCode: String,
+        sigunguCode: String,
+        from: LocalDate,
+        to: LocalDate,
+        budget: Budget,
+        progress: ProgressListener?,
+    ): List<JsonObject> {
         val all = mutableListOf<JsonObject>()
         var page = 1
         var total: Int? = null
-        while (page <= maxPages) {
-            progress?.onProgress(page - 1, total?.let { (it + PAGE_SIZE - 1) / PAGE_SIZE }?.coerceAtMost(maxPages) ?: (page + 1), "법원경매 ${page}쪽")
-            val data = post(SEARCH_URL, searchPayload(sidoCode, from, to, page), SEARCH_SUBMISSION, "SYSTEM")
+        while (true) {
+            if (budget.remaining <= 0) {
+                budget.exhausted = true
+                break
+            }
+            budget.remaining--
+            val pages = total?.let { (it + pageSize - 1) / pageSize } ?: (page + 1)
+            progress?.onProgress(page - 1, pages, "법원경매 ${page}쪽")
+            val data = try {
+                post(SEARCH_URL, searchPayload(sidoCode, sigunguCode, from, to, page), SEARCH_SUBMISSION, "SYSTEM")
+            } catch (e: OnbidApiException) {
+                // 한 페이지 100건을 거절하면 50건으로 다시 시도한다.
+                if (e.code == "COURT400" && pageSize > 50 && page == 1) {
+                    pageSize = 50
+                    continue
+                }
+                throw e
+            }
             val rows = data["dlt_srchResult"].objects()
             total = total ?: (data["dma_pageInfo"] as? JsonObject)?.str("totalCnt")?.toIntOrNull()
             all += rows
-            if (rows.size < PAGE_SIZE || (total != null && page * PAGE_SIZE >= total)) break
+            if (rows.size < pageSize || (total != null && page * pageSize >= total)) break
             page++
         }
         return all
@@ -92,25 +145,43 @@ class CourtClient(
 
     private fun warmUp() {
         val response = try {
-            transport.get(ENTRY_URL, baseHeaders())
+            transport.get(
+                ENTRY_URL,
+                mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language" to "ko-KR,ko;q=0.9,en;q=0.8",
+                ),
+            )
         } catch (e: IOException) {
             throw OnbidApiException(OnbidApiException.NETWORK, "법원경매정보 사이트에 연결하지 못했습니다. (${e.message ?: e.javaClass.simpleName})")
         }
         cookies.store(response.setCookies)
-        if (response.status >= 400) throw OnbidApiException("COURT${response.status}", "법원경매정보 사이트가 응답하지 않습니다 (HTTP ${response.status}).")
+        warmedUp = true
     }
 
     private fun post(url: String, payload: JsonObject, submissionId: String, userId: String): JsonObject {
-        if (!cookies.has("JSESSIONID")) warmUp()
-        val wait = delayMs - (clock() - lastPost)
-        if (lastPost > 0 && wait > 0) sleeper(wait)
-        val headers = baseHeaders() + mapOf(
-            "Content-Type" to "application/json;charset=UTF-8",
-            "Accept" to "application/json",
+        val now = clock()
+        if (now < blockedUntil) {
+            val minutes = ((blockedUntil - now) / 60_000).coerceAtLeast(1)
+            throw OnbidApiException("COURT_LIMIT", "법원경매정보 사이트가 접속을 막아 둔 상태입니다. 약 ${minutes}분 뒤에 다시 시도하세요.")
+        }
+        if (!warmedUp) warmUp()
+        if (lastPost > 0) {
+            val wait = minDelayMs + random(jitterMs) - (clock() - lastPost)
+            if (wait > 0) sleeper(wait)
+        }
+        val headers = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Accept" to "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language" to "ko-KR,ko;q=0.9,en;q=0.8",
+            "Origin" to BASE,
+            "Referer" to ENTRY_URL,
+            "X-Requested-With" to "XMLHttpRequest",
+            "Content-Type" to "application/json; charset=UTF-8",
             "submissionid" to submissionId,
             "sc-userid" to userId,
-            "Cookie" to cookies.header(),
-        )
+        ) + (if (cookies.isEmpty()) emptyMap() else mapOf("Cookie" to cookies.header()))
         val response = try {
             transport.post(url, headers, payload.toString())
         } catch (e: IOException) {
@@ -119,36 +190,38 @@ class CourtClient(
             lastPost = clock()
         }
         cookies.store(response.setCookies)
-        if (response.status >= 400) {
-            throw OnbidApiException("COURT${response.status}", "법원경매정보 조회에 실패했습니다 (HTTP ${response.status}). 잠시 후 다시 시도하세요.")
-        }
         val root = runCatching { json.parseToJsonElement(response.body) }.getOrNull() as? JsonObject
-            ?: throw OnbidApiException("COURT_PARSE", "법원경매정보 응답을 해석하지 못했습니다.")
-        val data = root["data"] as? JsonObject
-            ?: throw OnbidApiException("COURT_EMPTY", root.str("message").ifEmpty { "법원경매정보 응답이 비어 있습니다." })
-        if (data.str("ipcheck") == "false") {
-            throw OnbidApiException("COURT_LIMIT", "법원경매정보 사이트가 잠시 접속을 제한했습니다. 몇 분 뒤 다시 시도하세요.")
+        val data = root?.get("data") as? JsonObject
+        if (data?.str("ipcheck") == "false") {
+            blockedUntil = clock() + 60 * 60_000
+            throw OnbidApiException("COURT_LIMIT", "법원경매정보 사이트가 너무 잦은 조회로 이 휴대폰의 접속을 약 1시간 막았습니다. 1시간 뒤에 다시 시도하세요.")
         }
-        return data
+        if (response.status >= 400 || root == null) {
+            val reason = (root?.get("errors") as? JsonObject)?.str("errorMessage").orEmpty().ifEmpty { root?.str("message").orEmpty() }
+            val step = if (url == SEARCH_URL) "검색" else "상세"
+            throw OnbidApiException(
+                "COURT${response.status}",
+                "법원경매정보 $step 조회에 실패했습니다 (HTTP ${response.status}${if (reason.isNotEmpty()) ", $reason" else ""}). 잠시 후 다시 시도하세요.",
+            )
+        }
+        val errorMessage = (root["errors"] as? JsonObject)?.str("errorMessage").orEmpty()
+        if (errorMessage.isNotEmpty()) throw OnbidApiException("COURT_ERROR", "법원경매정보: $errorMessage")
+        return data ?: throw OnbidApiException("COURT_EMPTY", root.str("message").ifEmpty { "법원경매정보 응답이 비어 있습니다." })
     }
 
-    private fun baseHeaders() = mapOf(
-        "User-Agent" to USER_AGENT,
-        "Accept-Language" to "ko-KR,ko;q=0.9",
-        "Origin" to BASE,
-        "Referer" to ENTRY_URL,
-    )
-
-    private fun searchPayload(sidoCode: String, from: LocalDate, to: LocalDate, page: Int): JsonObject {
+    private fun searchPayload(sidoCode: String, sigunguCode: String, from: LocalDate, to: LocalDate, page: Int): JsonObject {
+        // 지역을 주면 지번주소 검색(cortStDvs=2)으로 조회한다.
         val condition = defaultCondition() + mapOf(
-            "rdDspslPlcAdongSdCd" to JsonPrimitive(sidoCode),
+            "rprsAdongSdCd" to JsonPrimitive(sidoCode),
+            "rprsAdongSggCd" to JsonPrimitive(sigunguCode),
+            "cortStDvs" to JsonPrimitive("2"),
             "bidBgngYmd" to JsonPrimitive(from.format(YMD)),
             "bidEndYmd" to JsonPrimitive(to.format(YMD)),
         )
         return buildJsonObject {
             put("dma_pageInfo", buildJsonObject {
                 put("pageNo", page)
-                put("pageSize", PAGE_SIZE)
+                put("pageSize", pageSize)
                 put("bfPageNo", "")
                 put("startRowNo", "")
                 put("totalCnt", "")
@@ -161,14 +234,13 @@ class CourtClient(
 
     companion object {
         const val BASE = "https://www.courtauction.go.kr"
-        const val ENTRY_URL = "$BASE/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ151F00.xml"
+        const val ENTRY_URL = "$BASE/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ151F00.xml&pgjId=151F00"
         const val SEARCH_URL = "$BASE/pgj/pgjsearch/searchControllerMain.on"
         const val DETAIL_URL = "$BASE/pgj/pgj15B/selectAuctnCsSrchRslt.on"
         private const val SEARCH_SUBMISSION = "mf_wfm_mainFrame_sbm_selectGdsDtlSrch"
         private const val DETAIL_SUBMISSION = "mf_wfm_mainFrame_sbm_selectGdsDtlSrchDtlInfo"
-        const val PAGE_SIZE = 50
         const val USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         private val YMD: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
 
         /** 법원경매정보의 시도 코드. 특별자치도는 새 코드 뒤에 옛 코드를 둔다. */
@@ -235,6 +307,7 @@ class CourtClient(
                 else -> "" to ""
             }
             val stopped = row.str("stopsaGbncd").let { it.isNotEmpty() && it != "00" }
+            val position = Katec.toWgs84OrNull(parseDecimal(row.str("xCordi")), parseDecimal(row.str("yCordi")))
 
             return Property(
                 id = id,
@@ -271,6 +344,10 @@ class CourtClient(
                 viewCount = parseAmount(row.str("inqCnt"))?.toInt() ?: 0,
                 interestCount = parseAmount(row.str("gwansMulRegCnt"))?.toInt() ?: 0,
                 reauctionDate = row.str("remaeordDay").filter { it.isDigit() }.take(8),
+                latitude = position?.lat,
+                longitude = position?.lng,
+                lawdCode = row.str("srchHjguSiguCd").takeIf { it.length == 5 }
+                    ?: (row.str("daepyoSidoCd") + row.str("daepyoSiguCd")).takeIf { it.length == 5 }.orEmpty(),
             )
         }
 

@@ -165,7 +165,7 @@ fun PropertyCard(
     onToggleCompare: () -> Unit,
     modifier: Modifier = Modifier,
     photo: ByteArray? = null,
-    onVisible: () -> Unit = {},
+    onVisible: suspend () -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
     LaunchedEffect(property.id) { onVisible() }

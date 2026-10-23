@@ -15,6 +15,8 @@ enum class RiskLevel(val label: String) {
  */
 data class Factor(val title: String, val detail: String, val points: Int, val isRisk: Boolean)
 
+data class CheckItem(val title: String, val detail: String, val important: Boolean = false)
+
 data class Analysis(
     /** 0~100, 높을수록 위험 */
     val riskScore: Int,
@@ -28,6 +30,8 @@ data class Analysis(
     val summary: String,
     /** 권리·임대차 상세까지 반영했는지 */
     val rightsChecked: Boolean,
+    /** 최저가가 실거래 시세 추정의 몇 % 인지 (실거래가를 불러온 경우) */
+    val marketRatio: Double? = null,
 ) {
     val risks: List<Factor> get() = factors.filter { it.isRisk && it.points > 0 }.sortedByDescending { it.points }
     val merits: List<Factor> get() = factors.filter { !it.isRisk && it.points > 0 }.sortedByDescending { it.points }
@@ -67,15 +71,24 @@ object Analyzer {
     private val hardLand = Regex("도로|구거|하천|유지|제방|묘지")
 
     /** 목록 전체를 분석한다. 같은 시군구·같은 용도의 평당가와 비교하기 위해 목록 단위로 계산한다. */
-    fun analyzeAll(list: List<Property>, rights: Map<String, PropertyDetail> = emptyMap()): Map<String, Analysis> {
+    fun analyzeAll(
+        list: List<Property>,
+        rights: Map<String, PropertyDetail> = emptyMap(),
+        markets: Map<String, MarketSummary> = emptyMap(),
+    ): Map<String, Analysis> {
         val medians = list.filter { it.pricePerPyeong != null }
             .groupBy { it.sigungu to it.category }
             .filterValues { it.size >= 3 }
             .mapValues { (_, items) -> median(items.mapNotNull { it.pricePerPyeong }) }
-        return list.associate { p -> p.id to analyze(p, medians[p.sigungu to p.category], rights[p.id]) }
+        return list.associate { p -> p.id to analyze(p, medians[p.sigungu to p.category], rights[p.id], markets[p.id]) }
     }
 
-    fun analyze(p: Property, peerMedianPerPyeong: Long? = null, rights: PropertyDetail? = null): Analysis {
+    fun analyze(
+        p: Property,
+        peerMedianPerPyeong: Long? = null,
+        rights: PropertyDetail? = null,
+        market: MarketSummary? = null,
+    ): Analysis {
         val factors = mutableListOf<Factor>()
         fun risk(points: Int, title: String, detail: String) = factors.add(Factor(title, detail, points, isRisk = true))
         fun merit(points: Int, title: String, detail: String) = factors.add(Factor(title, detail, points, isRisk = false))
@@ -143,6 +156,16 @@ object Analyzer {
                 merit(-(abs(diff) * 0.2).coerceAtMost(10.0).roundToInt(), "주변보다 평당 ${abs(diff).roundToInt()}% 비쌈", "같은 시군구·같은 용도 물건 평당가 중간값(${Format.wonShort(peerMedianPerPyeong)})보다 비쌉니다.")
             }
         }
+        val marketRatio = market?.ratioOf(p.minBidPrice)
+        if (market != null && marketRatio != null && market.trades.size >= 2) {
+            val gap = 100 - marketRatio
+            val basis = "최근 ${market.months}개월 ${if (market.sameDong) "같은 동" else "같은 시군구"} 비슷한 면적 실거래 ${market.trades.size}건으로 추정한 시세 ${Format.wonShort(market.estimatedValue)}"
+            if (gap >= 5) {
+                merit((gap * 0.5).coerceAtMost(25.0).roundToInt(), "실거래 시세의 ${Format.percent(marketRatio)}", "$basis 보다 쌉니다.")
+            } else if (gap <= -5) {
+                merit(-(abs(gap) * 0.4).coerceAtMost(15.0).roundToInt(), "실거래 시세보다 비싼 최저가", "$basis 보다 ${Format.percent(abs(gap))} 비쌉니다.")
+            }
+        }
         val liquidity = when (p.category) {
             Category.APARTMENT -> 15
             Category.OFFICETEL -> 8
@@ -166,8 +189,68 @@ object Analyzer {
             total >= 40 -> "C"
             else -> "D"
         }
-        val analysis = Analysis(riskScore, level, attractiveness, total, grade, factors.toList(), "", rights != null || p.isCourt)
+        val analysis = Analysis(riskScore, level, attractiveness, total, grade, factors.toList(), "", rights != null || p.isCourt, marketRatio)
         return analysis.copy(summary = summarize(analysis))
+    }
+
+    /** 입찰 전에 확인할 일. 이 물건에서 특히 중요한 항목이 앞에 온다. */
+    fun checklist(p: Property, analysis: Analysis?, rights: PropertyDetail?, market: MarketSummary?): List<CheckItem> {
+        val items = mutableListOf<CheckItem>()
+        val text = listOf(p.notes, p.name, p.shareInfo).joinToString(" ")
+        val housing = p.category in setOf(Category.APARTMENT, Category.VILLA, Category.HOUSE, Category.OFFICETEL)
+
+        items += CheckItem(
+            "등기사항증명서로 말소기준권리 확인",
+            "가장 먼저 설정된 (근)저당·(가)압류·담보가등기·경매개시결정이 말소기준권리입니다. 그보다 늦은 권리는 대부분 지워지고, 앞선 권리는 낙찰자가 떠안습니다.",
+            important = rights == null || (analysis?.riskLevel ?: RiskLevel.SAFE) != RiskLevel.SAFE,
+        )
+        if (p.isCourt) {
+            items += CheckItem("매각물건명세서 확인", "법원이 정리한 임차인·인수되는 권리·특별매각조건이 적혀 있습니다. 법원경매정보 사건 화면에서 무료로 볼 수 있습니다.", important = true)
+            items += CheckItem("현황조사서·감정평가서 확인", "점유자가 누구인지, 건물 상태와 감정가 산정 근거를 확인합니다.")
+        } else {
+            items += CheckItem(
+                "온비드 공고문·감정평가서 확인",
+                "공매는 법원경매와 달리 인도명령 제도가 없어 점유자가 버티면 명도소송을 해야 합니다. 명도 책임과 특약을 꼭 읽으세요.",
+                important = p.assetTypeCode == "0007" || p.evictionBy.contains("매수인"),
+            )
+        }
+        if (housing) {
+            items += CheckItem(
+                "전입세대·임차인 대항력 확인",
+                "말소기준권리보다 전입이 빠른 임차인은 대항력이 있어 보증금을 낙찰자가 떠안을 수 있습니다. 주민센터 전입세대열람으로 확인합니다.",
+                important = (rights?.seniorLeaseDeposit ?: 0) > 0 || Regex("임차|대항력|전입").containsMatchIn(text),
+            )
+        }
+        if (p.category in setOf(Category.APARTMENT, Category.OFFICETEL, Category.COMMERCIAL)) {
+            items += CheckItem("체납 관리비 확인", "공용부분 체납 관리비는 낙찰자가 낼 수 있습니다. 관리사무소에 금액을 물어보세요.")
+        }
+        if (p.category == Category.LAND || p.category == Category.FOREST) {
+            items += CheckItem("토지이용계획 확인 (토지이음)", "용도지역, 건축 가능 여부, 개발제한·보전 지역인지 확인합니다.", important = true)
+            items += CheckItem("도로 접함·진입로 확인", "맹지는 건축이 어렵고 되팔기도 어렵습니다. 지적도와 현장을 함께 보세요.")
+        }
+        if (Regex("^(전|답|과수원)$|농지").containsMatchIn(p.usageSmall) || Regex("농지\\s*취득|농취증").containsMatchIn(text)) {
+            items += CheckItem("농지취득자격증명 준비", "낙찰 후 7일 안에 내지 못하면 보증금을 잃을 수 있습니다. 미리 발급 가능 여부를 확인하세요.", important = true)
+        }
+        if (p.category in setOf(Category.HOUSE, Category.COMMERCIAL, Category.FACTORY, Category.VILLA)) {
+            items += CheckItem("건축물대장 확인 (정부24)", "위반건축물 여부, 실제 용도·면적이 공고와 같은지 확인합니다.")
+        }
+        if (text.contains("유치권")) {
+            items += CheckItem("유치권 성립 여부 확인", "공사대금 등 유치권 신고가 있습니다. 현장 점유와 신고 내용을 확인하고, 해결 비용을 입찰가에 반영하세요.", important = true)
+        }
+        if (Regex("지분").containsMatchIn(text)) {
+            items += CheckItem("지분 활용 계획", "다른 공유자가 우선매수할 수 있고, 대출·사용이 어렵습니다. 공유물분할 등 출구를 생각해 두세요.", important = true)
+        }
+        if (MarketKind.of(p.category) != null && market == null) {
+            items += CheckItem("주변 실거래가·시세 확인", "감정가는 몇 달 전 가격입니다. 최근 실거래가와 중개사무소 시세로 매도가를 따로 잡으세요.")
+        }
+        items += CheckItem("현장 방문", "점유자, 누수·균열 등 건물 상태, 주변 환경, 실제 시세를 직접 확인합니다.")
+        items += CheckItem("경락잔금대출 가능 여부", "낙찰가의 몇 %까지 대출되는지 미리 알아보세요. 잔금을 못 내면 입찰보증금을 잃습니다.")
+        items += if (p.isCourt) {
+            CheckItem("입찰 당일 준비물", "신분증, 도장, 입찰보증금(최저가의 10%, 재매각은 20%) 수표. 입찰표 금액은 고칠 수 없으니 틀리면 새로 쓰세요.")
+        } else {
+            CheckItem("온비드 입찰 준비", "공동인증서 등록, 입찰보증금 납부 계좌 확인. 마감 직전에는 접속이 몰리니 미리 입찰하세요.")
+        }
+        return items.sortedByDescending { it.important }
     }
 
     private fun summarize(a: Analysis): String {

@@ -32,7 +32,7 @@ data class NearbyPlace(val name: String, val distanceM: Int, val category: Strin
  * OpenStreetMap 의 Overpass API 로 주변 시설을 찾는다. 키가 필요 없다.
  * 공개 서버라 느리거나 바쁠 수 있어 예비 서버를 하나 더 둔다.
  */
-class OverpassClient(private val transport: WebTransport = UrlConnectionTransport) {
+class OverpassClient(private val transport: WebTransport = UrlConnectionTransport()) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     fun query(category: NearbyCategory, center: LatLng, radiusM: Int = 1500): String {

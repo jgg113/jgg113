@@ -15,7 +15,8 @@ interface WebTransport {
     fun post(url: String, headers: Map<String, String>, body: String): WebResponse
 }
 
-object UrlConnectionTransport : WebTransport {
+/** [followRedirects] 가 거짓이면 3xx 응답을 그대로 돌려준다 (중간 응답의 Set-Cookie 를 놓치지 않기 위해). */
+class UrlConnectionTransport(private val followRedirects: Boolean = true) : WebTransport {
     override fun get(url: String, headers: Map<String, String>): WebResponse = request("GET", url, headers, null)
 
     override fun post(url: String, headers: Map<String, String>, body: String): WebResponse = request("POST", url, headers, body)
@@ -25,7 +26,7 @@ object UrlConnectionTransport : WebTransport {
         conn.requestMethod = method
         conn.connectTimeout = 15_000
         conn.readTimeout = 45_000
-        conn.instanceFollowRedirects = true
+        conn.instanceFollowRedirects = followRedirects
         headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
         try {
             if (body != null) {
@@ -58,6 +59,8 @@ class CookieJar {
     }
 
     fun has(name: String): Boolean = name in cookies
+
+    fun isEmpty(): Boolean = cookies.isEmpty()
 
     fun header(): String = cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
 }

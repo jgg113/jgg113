@@ -92,6 +92,7 @@ object PropertyAssembler {
             onbidPbancNo = current.str("onbidPbancNo").ifEmpty { pick("onbidPbancNo") },
             pbctNo = current.str("pbctNo").ifEmpty { pick("pbctNo") },
             lotPnu = pnu,
+            lawdCode = pnu.takeIf { it.length == 19 && it.all(Char::isDigit) }?.take(5).orEmpty(),
             requestOrg = pick("rqstOrgNm"),
             bidType = pick("bidDivNm"),
             distributionDeadline = pick("dtbtRqrEdtmCont").filter { it.isDigit() }.take(8),

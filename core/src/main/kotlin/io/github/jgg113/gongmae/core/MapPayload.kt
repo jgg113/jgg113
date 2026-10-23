@@ -24,8 +24,8 @@ object MapPayload {
         }
     }
 
-    /** 좌표를 아는 물건만 지도로 보낸다. */
-    fun items(list: List<Property>, cache: (String) -> LatLng?): String = buildJsonArray {
-        list.forEach { p -> cache(geoKey(p))?.let { add(item(p, it)) } }
+    /** 좌표를 아는 물건만 지도로 보낸다. 원본 좌표(법원경매)가 있으면 그것을 쓴다. */
+    fun items(list: List<Property>, cache: (Property) -> LatLng?): String = buildJsonArray {
+        list.forEach { p -> (p.position ?: cache(p))?.let { add(item(p, it)) } }
     }.toString()
 }

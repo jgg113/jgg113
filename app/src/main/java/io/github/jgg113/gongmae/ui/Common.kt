@@ -32,14 +32,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.jgg113.gongmae.core.BidWindow
+import io.github.jgg113.gongmae.core.ClaudePrompt
 import io.github.jgg113.gongmae.core.CourtClient
 import io.github.jgg113.gongmae.core.Format
 import io.github.jgg113.gongmae.core.LatLng
+import io.github.jgg113.gongmae.core.OfficialDoc
 import io.github.jgg113.gongmae.core.Property
 import java.time.LocalDateTime
 
 object Links {
     private const val ONBID_HOME = "https://www.onbid.co.kr"
+    private const val CLAUDE_PACKAGE = "com.anthropic.claude"
 
     fun openUrl(context: Context, url: String) {
         try {
@@ -124,6 +127,43 @@ object Links {
             "nmap://place?lat=${position.lat}&lng=${position.lng}&name=" + Uri.encode(name.take(30)) + "&appname=io.github.jgg113.gongmae",
             web,
         )
+    }
+
+    /**
+     * 분석 질문을 Claude 앱 채팅으로 넘긴다. 사용자의 Claude 구독으로 실시간 분석하므로 이 앱은 AI 비용을 쓰지 않는다.
+     * 앱이 공유 글을 입력창에 못 넣는 경우를 대비해 질문은 늘 클립보드에도 복사해 둔다.
+     */
+    fun askClaude(context: Context, prompt: String) {
+        copy(context, "Claude 분석 요청", prompt)
+        val send = Intent(Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_TEXT, prompt)
+            .setPackage(CLAUDE_PACKAGE)
+        try {
+            context.startActivity(send)
+            Toast.makeText(context, "Claude 앱으로 보냈습니다. 입력창이 비어 있으면 길게 눌러 붙여넣으세요.", Toast.LENGTH_LONG).show()
+            return
+        } catch (e: ActivityNotFoundException) {
+            // 공유 받기를 지원하지 않거나 설치되지 않았다.
+        }
+        val launch = context.packageManager.getLaunchIntentForPackage(CLAUDE_PACKAGE)
+        if (launch != null) {
+            context.startActivity(launch)
+            Toast.makeText(context, "질문을 복사했습니다. Claude 새 채팅 입력창에 붙여넣으세요.", Toast.LENGTH_LONG).show()
+        } else {
+            openUrl(context, ClaudePrompt.webUrl(prompt))
+            Toast.makeText(context, "Claude 웹을 엽니다. 전체 질문은 복사해 두었습니다.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** 서류 사이트는 물건 주소로 바로 가는 주소가 없어 주소를 복사해 두고 사이트를 연다. 로그인·결제는 그 사이트에서 직접 한다. */
+    fun openOfficialDoc(context: Context, doc: OfficialDoc, property: Property) {
+        val address = OfficialDoc.searchAddress(property)
+        if (address.isNotBlank()) {
+            copy(context, "주소", address)
+            Toast.makeText(context, "주소를 복사했습니다. ${doc.site} 검색창에 붙여넣으세요.\n$address", Toast.LENGTH_LONG).show()
+        }
+        openUrl(context, doc.url)
     }
 
     fun copy(context: Context, label: String, text: String) {

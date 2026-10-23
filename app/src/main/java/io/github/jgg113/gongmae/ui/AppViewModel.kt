@@ -18,8 +18,12 @@ import io.github.jgg113.gongmae.core.CourtDetail
 import io.github.jgg113.gongmae.core.CourtSearchRequest
 import io.github.jgg113.gongmae.core.LatLng
 import io.github.jgg113.gongmae.core.MapPayload
+import io.github.jgg113.gongmae.core.MarketKind
+import io.github.jgg113.gongmae.core.MarketSummary
+import io.github.jgg113.gongmae.core.MolitClient
 import io.github.jgg113.gongmae.core.NearbyCategory
 import io.github.jgg113.gongmae.core.NearbyPlace
+import io.github.jgg113.gongmae.core.NominatimClient
 import io.github.jgg113.gongmae.core.OnbidApiException
 import io.github.jgg113.gongmae.core.OnbidClient
 import io.github.jgg113.gongmae.core.OverpassClient
@@ -32,6 +36,7 @@ import io.github.jgg113.gongmae.core.SearchRequest
 import io.github.jgg113.gongmae.core.ServiceKey
 import io.github.jgg113.gongmae.core.SortOrder
 import io.github.jgg113.gongmae.core.Source
+import io.github.jgg113.gongmae.core.Trade
 import io.github.jgg113.gongmae.data.AppStore
 import io.github.jgg113.gongmae.data.DeviceGeocoder
 import io.github.jgg113.gongmae.data.SearchSettings
@@ -42,7 +47,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.concurrent.ConcurrentHashMap
 
 sealed interface SearchState {
     data object Idle : SearchState
@@ -69,6 +77,13 @@ sealed interface NearbyState {
     data class Loaded(val places: List<NearbyPlace>) : NearbyState
 }
 
+sealed interface MarketState {
+    data object Loading : MarketState
+    /** [needsApiApproval] 이면 실거래가 API 활용신청이 안 된 것이다. */
+    data class Error(val message: String, val needsApiApproval: Boolean = false) : MarketState
+    data class Loaded(val summary: MarketSummary) : MarketState
+}
+
 sealed interface KeyTestState {
     data object Idle : KeyTestState
     data object Running : KeyTestState
@@ -76,9 +91,13 @@ sealed interface KeyTestState {
     data class Failed(val message: String) : KeyTestState
 }
 
+private const val MARKET_MONTHS = 6
+private val YEAR_MONTH: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMM")
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AppStore(app)
     private val geocoder = DeviceGeocoder(app)
+    private val nominatim = NominatimClient()
     private val courtClient = CourtClient()
     // 법원경매정보는 세션 쿠키·요청 간격을 지켜야 해서 한 번에 한 요청만 보낸다.
     private val courtLock = Mutex()
@@ -109,10 +128,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var nearby by mutableStateOf<Map<String, NearbyState>>(emptyMap())
         private set
+    var markets by mutableStateOf<Map<String, MarketState>>(emptyMap())
+        private set
     var keyTest by mutableStateOf<KeyTestState>(KeyTestState.Idle)
         private set
 
     private val geoCache = HashMap(store.loadGeoCache())
+    // 실거래가는 시군구·월 단위라 같은 동네 물건끼리 다시 쓴다.
+    private val tradeCache = ConcurrentHashMap<String, List<Trade>>()
 
     /** 좌표가 새로 생길 때마다 올라간다 (지도 다시 그리기 신호). */
     var geoVersion by mutableIntStateOf(0)
@@ -127,8 +150,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val analyses: Map<String, Analysis> by derivedStateOf {
         val all = (results + favorites + compareItems).distinctBy { it.id }
         val rights = details.mapNotNull { (id, state) -> (state as? DetailState.Loaded)?.let { id to it.detail } }.toMap()
-        Analyzer.analyzeAll(all, rights)
+        val market = markets.mapNotNull { (id, state) -> (state as? MarketState.Loaded)?.let { id to it.summary } }.toMap()
+        Analyzer.analyzeAll(all, rights, market)
     }
+
+    fun rightsOf(id: String): PropertyDetail? = (details[id] as? DetailState.Loaded)?.detail
+
+    fun marketOf(id: String): MarketSummary? = (markets[id] as? MarketState.Loaded)?.summary
+
+    fun courtDetailOf(id: String): CourtDetail? = (courtDetails[id] as? CourtDetailState.Loaded)?.detail
 
     val visibleResults: List<Property> by derivedStateOf {
         val scored = analyses
@@ -285,49 +315,75 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return (e.message ?: "상세 조회 중 오류가 났습니다.") + if (e.code in setOf("12", "20", "30", "HTTP401", "HTTP403")) hint else ""
     }
 
-    /** 법원경매 물건상세(사진·기일). 목록 카드가 화면에 보일 때도 불러 사진을 채운다. */
-    fun loadCourtDetail(p: Property, retry: Boolean = false) {
+    /**
+     * 법원경매 물건상세(사진·기일). 목록 카드가 화면에 보일 때 그 화면의 코루틴에서 부르므로,
+     * 카드가 화면 밖으로 나가면 기다리던 요청은 취소된다 (사이트 차단을 피하려고 한 번에 하나씩, 2~3초 간격).
+     */
+    suspend fun loadCourtDetail(p: Property, retry: Boolean = false) {
         if (!p.isCourt) return
         val current = courtDetails[p.id]
         if (current is CourtDetailState.Loading || current is CourtDetailState.Loaded) return
         if (current is CourtDetailState.Error && !retry) return
         courtDetails = courtDetails + (p.id to CourtDetailState.Loading)
-        viewModelScope.launch {
-            val state = try {
-                CourtDetailState.Loaded(courtLock.withLock { withContext(Dispatchers.IO) { courtClient.fetchDetail(p) } })
-            } catch (e: CancellationException) {
-                courtDetails = courtDetails - p.id
-                throw e
-            } catch (e: Exception) {
-                CourtDetailState.Error(e.message ?: e.javaClass.simpleName)
-            }
-            courtDetails = courtDetails + (p.id to state)
+        val state = try {
+            CourtDetailState.Loaded(courtLock.withLock { withContext(Dispatchers.IO) { courtClient.fetchDetail(p) } })
+        } catch (e: CancellationException) {
+            courtDetails = courtDetails - p.id
+            throw e
+        } catch (e: Exception) {
+            CourtDetailState.Error(e.message ?: e.javaClass.simpleName)
         }
+        courtDetails = courtDetails + (p.id to state)
     }
 
     fun courtPhotos(id: String): List<ByteArray> = (courtDetails[id] as? CourtDetailState.Loaded)?.detail?.photos.orEmpty()
 
     fun cachedPosition(key: String): LatLng? = geoCache[key]
 
-    fun positionOf(p: Property): LatLng? = geoCache[MapPayload.geoKey(p)]
+    /** 원본 좌표(법원경매) → 지번 주소 지오코딩 결과 → 동 중심 근사(물건마다 조금 비킴) 순. */
+    fun positionOf(p: Property): LatLng? =
+        p.position
+            ?: geoCache[MapPayload.geoKey(p)]
+            ?: geoCache[districtKey(p)]?.let { NominatimClient.spread(it, p.id) }
 
-    /** 좌표가 없는 물건을 휴대폰 지오코더로 차례로 찾는다. 찾은 좌표는 기기에 남긴다. */
+    private fun districtKey(p: Property) = "동:" + listOf(p.sido, p.sigungu, p.dong).filter { it.isNotBlank() }.joinToString(" ")
+
+    /**
+     * 좌표가 없는 물건의 위치를 찾는다. 휴대폰 지오코더 → OpenStreetMap(Nominatim) 지번 → 동 중심 순으로 시도하고 기기에 남긴다.
+     * 동 중심은 여러 물건이 같이 쓰므로 한 번만 찾는다.
+     */
     fun ensurePositions(list: List<Property>) {
         val pending = list.filter { MapPayload.geoKey(it).isNotBlank() && positionOf(it) == null }
             .distinctBy { MapPayload.geoKey(it) }
-        if (pending.isEmpty() || !geocoder.available) return
+        if (pending.isEmpty()) return
         geocodeJob?.cancel()
         geocodeJob = viewModelScope.launch {
             geocodeProgress = 0 to pending.size
+            var deviceFailures = 0
             pending.forEachIndexed { index, p ->
-                val found = withContext(Dispatchers.IO) { p.geocodeQueries.firstNotNullOfOrNull { geocoder.locate(it) } }
-                if (found != null) {
+                withContext(Dispatchers.IO) {
                     val key = MapPayload.geoKey(p)
-                    geoCache[key] = found
-                    store.saveGeo(key, found)
+                    // 휴대폰 지오코더가 연달아 실패하면 더 부르지 않는다.
+                    val exact = if (deviceFailures < 3) geocoder.locate(p.geocodeQueries.first()) else null
+                    if (exact == null) deviceFailures++ else deviceFailures = 0
+                    val found = exact ?: if (p.address.isNotBlank()) nominatim.search(p.address) else null
+                    if (found != null) {
+                        geoCache[key] = found
+                        store.saveGeo(key, found)
+                    } else {
+                        val district = districtKey(p)
+                        if (geoCache[district] == null) {
+                            val query = district.removePrefix("동:")
+                            val center = geocoder.locate(query) ?: nominatim.search(query)
+                            if (center != null) {
+                                geoCache[district] = center
+                                store.saveGeo(district, center)
+                            }
+                        }
+                    }
                 }
                 geocodeProgress = (index + 1) to pending.size
-                if (index % 10 == 9 || index == pending.lastIndex) geoVersion++
+                if (index % 5 == 4 || index == pending.lastIndex) geoVersion++
             }
             geocodeProgress = null
         }
@@ -336,8 +392,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 내 위치의 시도·시군구를 찾아 그 지역을 검색한다. 찾은 지역 이름(실패하면 null)을 돌려준다. */
     fun searchAt(position: LatLng, onResult: (String?) -> Unit) {
         viewModelScope.launch {
-            val address = withContext(Dispatchers.IO) { geocoder.addressOf(position) }
-            val region = address?.let { Regions.fromAddress(it) }
+            val region = withContext(Dispatchers.IO) {
+                geocoder.addressOf(position)?.let { Regions.fromAddress(it) }
+                    ?: nominatim.reverse(position)?.let { Regions.fromAddress(it) }
+            }
             if (region == null) {
                 onResult(null)
                 return@launch
@@ -345,6 +403,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             updateSettings(settings.copy(sido = region.first, sigungu = region.second))
             search()
             onResult("${Regions.shortName(region.first)} ${region.second.ifBlank { "전체" }}")
+        }
+    }
+
+    /**
+     * 주변 실거래가 (국토교통부 API, 최근 6개월). 같은 공공데이터포털 인증키를 쓰지만 API 마다 활용신청이 따로 필요하다.
+     * 같은 시군구·같은 종류는 한 번 받은 거래를 다시 쓴다.
+     */
+    fun loadMarket(p: Property, retry: Boolean = false) {
+        val current = markets[p.id]
+        if (current is MarketState.Loading || current is MarketState.Loaded) return
+        if (current is MarketState.Error && !retry) return
+        val kind = MarketKind.of(p.category)
+        val key = serviceKey
+        val problem = when {
+            kind == null -> "이 용도(${p.category.label})는 실거래가 자료가 없습니다."
+            p.lawdCode.length != 5 -> "지역 코드를 알 수 없어 실거래가를 찾지 못했습니다."
+            key.isBlank() -> "설정 탭에 공공데이터포털 인증키를 넣으면 주변 실거래가를 볼 수 있습니다."
+            else -> null
+        }
+        if (problem != null || kind == null) {
+            markets = markets + (p.id to MarketState.Error(problem.orEmpty()))
+            return
+        }
+        markets = markets + (p.id to MarketState.Loading)
+        viewModelScope.launch {
+            val state = try {
+                val now = LocalDate.now()
+                val trades = withContext(Dispatchers.IO) {
+                    (0 until MARKET_MONTHS).flatMap { back ->
+                        val ym = now.minusMonths(back.toLong()).format(YEAR_MONTH)
+                        val cacheKey = "${kind.name}|${p.lawdCode}|$ym"
+                        tradeCache[cacheKey] ?: MolitClient(key).trades(kind, p.lawdCode, ym).also { tradeCache[cacheKey] = it }
+                    }
+                }
+                MarketState.Loaded(MolitClient.summarize(p, kind, trades, MARKET_MONTHS))
+            } catch (e: CancellationException) {
+                markets = markets - p.id
+                throw e
+            } catch (e: OnbidApiException) {
+                val approval = e.code in setOf("12", "20", "30", "HTTP401", "HTTP403")
+                MarketState.Error(
+                    if (approval) "공공데이터포털에서 '${kind.apiName}' 활용신청이 필요합니다. (승인 후 1~2시간 뒤 반영)" else e.message.orEmpty(),
+                    needsApiApproval = approval,
+                )
+            } catch (e: Exception) {
+                MarketState.Error("실거래가 조회 중 오류: ${e.message ?: e.javaClass.simpleName}")
+            }
+            markets = markets + (p.id to state)
         }
     }
 

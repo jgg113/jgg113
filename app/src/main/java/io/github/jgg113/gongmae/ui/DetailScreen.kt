@@ -40,7 +40,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -64,10 +63,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
-import io.github.jgg113.gongmae.core.Analysis
+import io.github.jgg113.gongmae.core.Analyzer
+import io.github.jgg113.gongmae.core.BidCalculator
+import io.github.jgg113.gongmae.core.ClaudePrompt
 import io.github.jgg113.gongmae.core.Comparison
 import io.github.jgg113.gongmae.core.CourtDetail
-import io.github.jgg113.gongmae.core.Factor
 import io.github.jgg113.gongmae.core.Format
 import io.github.jgg113.gongmae.core.MapPayload
 import io.github.jgg113.gongmae.core.NearbyCategory
@@ -112,8 +112,8 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
             EmptyState("물건 정보를 찾을 수 없습니다", "검색 결과가 바뀌었을 수 있습니다. 다시 검색해 주세요.", Modifier.padding(padding))
         } else {
             LaunchedEffect(property.id) {
-                vm.loadCourtDetail(property)
                 vm.ensurePositions(listOf(property))
+                vm.loadCourtDetail(property)
             }
             val detailState = vm.details[id]
             val courtState = vm.courtDetails[id]
@@ -123,6 +123,14 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                 ?: loadedDetail?.property?.rounds?.takeIf { it.isNotEmpty() }
                 ?: property.rounds
             val analysis = vm.analyses[property.id]
+            val market = vm.marketOf(property.id)
+            val range = remember(analysis, market) { BidCalculator.suggestedRange(property, analysis, market) }
+            val checklist = remember(analysis, loadedDetail, market) { Analyzer.checklist(property, analysis, loadedDetail, market) }
+            var registryOpen by rememberSaveable { mutableStateOf(false) }
+            val askClaude = { mode: ClaudePrompt.Mode ->
+                Links.askClaude(context, ClaudePrompt.build(property, analysis, loadedDetail, market, courtDetail, mode, now))
+            }
+            if (registryOpen) RegistryDialog(property, onDismiss = { registryOpen = false })
             LazyColumn(
                 modifier = Modifier.padding(padding),
                 contentPadding = PaddingValues(16.dp),
@@ -130,7 +138,15 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
             ) {
                 item { Gallery(property, vm.courtPhotos(property.id), courtState) }
                 item { Header(property, now) }
-                if (analysis != null) item { AnalysisCard(property, analysis, detailState, onLoadRights = { vm.loadDetail(id) }) }
+                if (analysis != null) {
+                    item {
+                        AiSummaryCard(
+                            property, analysis, range, detailState,
+                            onLoadRights = { vm.loadDetail(id) },
+                            onAskClaude = { askClaude(ClaudePrompt.Mode.SUMMARY) },
+                        )
+                    }
+                }
                 item { PriceCard(property) }
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -149,6 +165,18 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                         ) { Text(if (comparing) "비교 빼기" else "비교 담기") }
                     }
                 }
+                if (analysis != null) {
+                    item {
+                        AiDetailCard(
+                            property, analysis, market, range, checklist,
+                            onAskClaude = { askClaude(ClaudePrompt.Mode.DETAIL) },
+                            onOpenRegistry = { registryOpen = true },
+                        )
+                    }
+                }
+                item { MarketCard(vm, property) }
+                item { BidCalculatorCard(property, market, range) }
+                item { DocumentsCard(property, onOpenRegistry = { registryOpen = true }) }
                 if (property.isCourt) item { CourtNoticeCard(property, courtDetail) }
                 item { LocationCard(vm, property) }
                 item { InfoCard(property, now) }
@@ -286,83 +314,6 @@ private fun Header(property: Property, now: LocalDateTime) {
         Text(property.displayAddress, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (property.roadAddress.isNotBlank()) {
             Text(property.roadAddress, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-/** AI 분석 리포트: 위험도·투자매력·종합점수와 근거. */
-@Composable
-private fun AnalysisCard(property: Property, analysis: Analysis, rights: DetailState?, onLoadRights: () -> Unit) {
-    val risk = riskColors(analysis.riskLevel)
-    SectionCard("AI 분석 리포트") {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(64.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.primary),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(analysis.grade, color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("${analysis.total}점", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelSmall)
-                }
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                ScoreBar("위험도", analysis.riskScore, "${analysis.riskLevel.label} ${analysis.riskScore}", risk.content)
-                ScoreBar("투자매력", analysis.attractiveness, "${analysis.attractiveness}점", MaterialTheme.colorScheme.secondary)
-            }
-        }
-        Text(analysis.summary, style = MaterialTheme.typography.bodyMedium)
-        FactorList("위험 요인", analysis.risks, risk.content)
-        FactorList("안전 신호", analysis.factors.filter { it.isRisk && it.points < 0 }, MaterialTheme.colorScheme.secondary)
-        FactorList("투자 장점", analysis.merits, MaterialTheme.colorScheme.primary)
-        FactorList("투자 단점", analysis.factors.filter { !it.isRisk && it.points < 0 }, MaterialTheme.colorScheme.error)
-        if (!property.isCourt && !analysis.rightsChecked) {
-            when (rights) {
-                DetailState.Loading -> Text("권리정보 불러오는 중…", style = MaterialTheme.typography.bodySmall)
-                is DetailState.Error -> Text(rights.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                else -> OutlinedButton(onClick = onLoadRights) { Text("권리·임대차 정보로 정밀 분석") }
-            }
-        }
-        Text(
-            "공개된 가격·용도·비고·권리 요약을 경매 실무 기준으로 점수화한 자동 분석입니다. 실제 권리관계와 다를 수 있으니 참고만 하세요.",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun ScoreBar(label: String, value: Int, text: String, color: Color) {
-    Column {
-        Row {
-            Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-            Text(text, style = MaterialTheme.typography.labelMedium, color = color, fontWeight = FontWeight.Bold)
-        }
-        LinearProgressIndicator(
-            progress = { value / 100f },
-            color = color,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .clip(RoundedCornerShape(3.dp)),
-        )
-    }
-}
-
-@Composable
-private fun FactorList(title: String, factors: List<Factor>, color: Color) {
-    if (factors.isEmpty()) return
-    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = color)
-    factors.forEach { f ->
-        Column(Modifier.padding(start = 4.dp)) {
-            Row {
-                Text("• " + f.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Text(if (f.points > 0) "+${f.points}" else "${f.points}", style = MaterialTheme.typography.labelMedium, color = color)
-            }
-            Text(f.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

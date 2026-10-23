@@ -24,6 +24,8 @@ object Comparison {
         CompareRow("감정가", items.map { Format.won(it.appraisalPrice) }),
         CompareRow("최저입찰가", items.map { Format.won(it.minBidPrice) }, lowest(items) { it.minBidPrice?.toDouble() }),
         CompareRow("감정가 대비", items.map { Format.percent(it.appraisalRatio) }, lowest(items) { it.appraisalRatio }),
+        CompareRow("실거래 대비", items.map { Format.percent(analyses[it.id]?.marketRatio) }, lowest(items) { analyses[it.id]?.marketRatio })
+            .takeIf { items.any { analyses[it.id]?.marketRatio != null } },
         CompareRow("평당 최저가", items.map { Format.won(it.pricePerPyeong) }, lowest(items) { it.pricePerPyeong?.toDouble() }),
         CompareRow("유찰 횟수", items.map { "${it.failCount}회" }, highest(items) { it.failCount.toDouble() }),
         CompareRow("입찰기간", items.map { Format.period(it.bidStart, it.bidEnd) }),

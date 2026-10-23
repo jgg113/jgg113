@@ -10,7 +10,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
+import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -90,9 +94,20 @@ fun MapView(
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.userAgentString = settings.userAgentString + " GongmaeCompare/1.0"
+                val report: (String) -> Unit = { code -> Handler(Looper.getMainLooper()).post { currentOnEvent(MapEvent.Message(code)) } }
                 webViewClient = object : WebViewClient() {
                     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                         assets.shouldInterceptRequest(request.url)
+
+                    override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                        if (request.isForMainFrame) report("PAGE_ERROR:${error.errorCode} ${error.description}")
+                    }
+                }
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                        Log.d("GongmaeMap", "${message.messageLevel()} ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+                        return true
+                    }
                 }
                 addJavascriptInterface(
                     MapBridge { event ->

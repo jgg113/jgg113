@@ -4,6 +4,7 @@ import java.time.LocalDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -341,7 +342,7 @@ class RealShapeTest {
     @Test
     fun geocodeQueriesGoFromLotToDistrict() {
         assertEquals(listOf("서울특별시 마포구 연남동 245-42", "서울특별시 마포구 연남동"), p.geocodeQueries)
-        val json = MapPayload.items(listOf(p, p.copy(id = "other", address = "", dong = "x"))) { key -> if (key == "서울특별시 마포구 연남동 245-42") LatLng(37.56, 126.92) else null }
+        val json = MapPayload.items(listOf(p, p.copy(id = "other", address = "", dong = "x"))) { item -> if (MapPayload.geoKey(item) == "서울특별시 마포구 연남동 245-42") LatLng(37.56, 126.92) else null }
         assertTrue(json.contains("\"gk\":\"서울특별시 마포구 연남동 245-42\""))
         assertTrue(json.contains("\"lat\":37.56"))
         assertTrue(json.contains("\"label\":\"4,890만\""))
@@ -424,7 +425,7 @@ private fun courtRow(
     "buldNm":"씨에스타운","buldList":"비동 2층205호","areaList":"","lclsUtilCd":"$large","sclsUtilCd":"20106",
     "pjbBuldList":"철근콘크리트구조 28.33㎡","minArea":"28","jiwonNm":"서울중앙지방법원","jpDeptNm":"경매3계",
     "tel":"530-1815","maejibun":"$share","rd1Nm":"서울특별시","rd2Nm":"관악구","rdEubMyun":"","rdNm":"남현3길","buldNo":"39",
-    "dspslUsgNm":"$usage"$extra}"""
+    "dspslUsgNm":"$usage","xCordi":"309863","yCordi":"541925","srchHjguSiguCd":"11620"$extra}"""
 
 private fun courtPage(vararg rows: String, total: Int = rows.size) =
     """{"status":200,"message":"검색 결과가 조회되었습니다.","errors":null,"data":{"dma_pageInfo":{"pageNo":1,"pageSize":50,"totalCnt":"$total"},"ipcheck":true,"dlt_srchResult":[${rows.joinToString(",")}]}}"""
@@ -462,39 +463,101 @@ class CourtTest {
         assertEquals(Category.VILLA, p.category)
         assertEquals("서울중앙지방법원 경매3계", p.organization)
         assertEquals(21, p.interestCount)
+        assertEquals("11620", p.lawdCode)
+        // KATEC(309863, 541925) → 관악구 남현동
+        assertEquals(37.4750, p.latitude!!, 0.002)
+        assertEquals(126.9787, p.longitude!!, 0.002)
         assertNull(CourtClient.toProperty(OnbidResponseParser.parse("""{"body":{"items":[{"docid":"x","lclsUtilCd":"30000"}]}}""").items.single()))
     }
 
+    private fun client(web: FakeWeb, sleeps: MutableList<Long> = mutableListOf(), clock: () -> Long = { 1_000L }) =
+        CourtClient(web, minDelayMs = 2_000, jitterMs = 1_000, random = { 500L }, sleeper = { sleeps += it }, clock = clock)
+
     @Test
-    fun searchWarmsUpSendsHeadersAndPages() {
+    fun warmsUpSendsBrowserHeadersAndPacesPages() {
         val sleeps = mutableListOf<Long>()
         val web = FakeWeb { _, _, body ->
-            when {
-                body.contains("\"pageNo\":1") -> WebResponse(200, courtPage(*Array(50) { courtRow("D$it") }, total = 52))
-                else -> WebResponse(200, courtPage(courtRow("E1"), courtRow("E2", sigungu = "동작구"), total = 52))
-            }
+            if (body.contains("\"pageNo\":1,")) WebResponse(200, courtPage(*Array(100) { courtRow("D$it") }, total = 101))
+            else WebResponse(200, courtPage(courtRow("E1"), total = 101))
         }
-        val out = CourtClient(web, delayMs = 700, sleeper = { sleeps += it }, clock = { 1_000L })
-            .search(CourtSearchRequest("서울특별시", sigungu = "관악구", weeks = 4), NOW)
+        val out = client(web, sleeps).search(CourtSearchRequest("서울특별시", weeks = 4), NOW)
         assertEquals(1, web.gets)
         assertEquals(2, web.posts.size)
         val (headers, body) = web.posts.first()
         assertEquals("JSESSIONID=abc123; WMONID=w1", headers["Cookie"])
+        assertEquals("XMLHttpRequest", headers["X-Requested-With"])
         assertEquals("mf_wfm_mainFrame_sbm_selectGdsDtlSrch", headers["submissionid"])
         assertEquals("SYSTEM", headers["sc-userid"])
-        assertTrue(body.contains("\"rdDspslPlcAdongSdCd\":\"11\""))
+        assertTrue(headers.getValue("User-Agent").contains("Windows NT"))
+        assertTrue(body.contains("\"rprsAdongSdCd\":\"11\""))
+        assertTrue(body.contains("\"rprsAdongSggCd\":\"\""))
+        assertTrue(body.contains("\"cortStDvs\":\"2\""))
         assertTrue(body.contains("\"bidBgngYmd\":\"20260902\""))
         assertTrue(body.contains("\"bidEndYmd\":\"20260930\""))
-        assertTrue(body.contains("\"pageSize\":50"))
-        assertEquals(listOf(700L), sleeps)
-        assertEquals(51, out.properties.size) // 동작구 1건은 걸러진다
+        assertTrue(body.contains("\"pageSize\":100"))
+        assertEquals(listOf(2_500L), sleeps) // 2초 + 지터
+        assertEquals(101, out.properties.size)
     }
 
     @Test
-    fun blockedAccessIsReported() {
+    fun knownSigunguIsFilteredOnServer() {
+        val web = FakeWeb { _, _, _ -> WebResponse(200, courtPage(courtRow("A1"), courtRow("A2", sigungu = "동작구"))) }
+        val out = client(web).search(CourtSearchRequest("서울특별시", sigungu = "관악구"), NOW)
+        assertTrue(web.posts.single().second.contains("\"rprsAdongSggCd\":\"11620\""))
+        assertEquals(2, out.properties.size) // 서버가 거른 결과는 그대로 쓴다
+    }
+
+    @Test
+    fun cityWithDistrictsSearchesEachDistrictAndUnknownFallsBackToSido() {
+        val web = FakeWeb { _, _, _ -> WebResponse(200, courtPage()) }
+        client(web).search(CourtSearchRequest("경기도", sigungu = "수원시"), NOW)
+        val codes = web.posts.map { Regex("\"rprsAdongSggCd\":\"(\\d*)\"").find(it.second)!!.groupValues[1] }
+        assertEquals(listOf("41111", "41113", "41115", "41117", ""), codes) // 4개 구 → 결과 없으면 경기도 전체
+
+        val web2 = FakeWeb { _, _, _ -> WebResponse(200, courtPage(courtRow("B1", sigungu = "제물포구"), courtRow("B2", sigungu = "부평구"))) }
+        val out = client(web2).search(CourtSearchRequest("인천광역시", sigungu = "제물포구"), NOW)
+        assertTrue(web2.posts.single().second.contains("\"rprsAdongSdCd\":\"28\""))
+        assertEquals(listOf("B1"), out.properties.map { it.id })
+    }
+
+    @Test
+    fun warmUpErrorStatusIsIgnoredAndPageSizeFallsBack() {
+        var gets = 0
+        val web = object : WebTransport {
+            val bodies = mutableListOf<String>()
+            override fun get(url: String, headers: Map<String, String>): WebResponse {
+                gets++
+                return WebResponse(500, "error", listOf("JSESSIONID=s1; Path=/"))
+            }
+            override fun post(url: String, headers: Map<String, String>, body: String): WebResponse {
+                bodies += body
+                return if (body.contains("\"pageSize\":100")) WebResponse(400, "") else WebResponse(200, courtPage(courtRow("C1")))
+            }
+        }
+        val out = CourtClient(web, random = { 0 }, sleeper = {}).search(CourtSearchRequest("서울특별시"), NOW)
+        assertEquals(1, gets)
+        assertEquals(listOf("C1"), out.properties.map { it.id })
+        assertTrue(web.bodies.last().contains("\"pageSize\":50"))
+    }
+
+    @Test
+    fun blockedAccessCoolsDown() {
         val web = FakeWeb { _, _, _ -> WebResponse(200, """{"status":200,"data":{"ipcheck":false,"dlt_srchResult":[]}}""") }
-        val e = assertFailsWith<OnbidApiException> { CourtClient(web, sleeper = {}).search(CourtSearchRequest("서울특별시"), NOW) }
+        val court = client(web)
+        val e = assertFailsWith<OnbidApiException> { court.search(CourtSearchRequest("서울특별시"), NOW) }
         assertEquals("COURT_LIMIT", e.code)
+        assertTrue(e.message!!.contains("1시간"))
+        val again = assertFailsWith<OnbidApiException> { court.search(CourtSearchRequest("서울특별시"), NOW) }
+        assertEquals("COURT_LIMIT", again.code)
+        assertEquals(1, web.posts.size) // 막힌 동안은 사이트를 다시 부르지 않는다
+    }
+
+    @Test
+    fun manyResultsStopAtCallBudget() {
+        val web = FakeWeb { _, _, _ -> WebResponse(200, courtPage(*Array(100) { courtRow("P${it}") }, total = 5000)) }
+        val out = client(web).search(CourtSearchRequest("서울특별시", maxCalls = 3), NOW)
+        assertEquals(3, web.posts.size)
+        assertTrue(out.warnings.single().contains("일부"))
     }
 
     @Test
@@ -514,6 +577,14 @@ class CourtTest {
         assertEquals(14_899_000L, detail.currentMinPrice)
         assertEquals("예정", detail.rounds[1].statusName)
         assertEquals(listOf("28.33㎡ 철근콘크리트구조"), detail.objects)
+    }
+
+    @Test
+    fun katecMatchesKnownPlaces() {
+        val namchang = Katec.toWgs84(309928.0, 551384.0) // 중구 남창동 (남대문시장 일대)
+        assertEquals(37.560, namchang.lat, 0.003)
+        assertEquals(126.978, namchang.lng, 0.003)
+        assertNull(Katec.toWgs84OrNull(0.0, 0.0))
     }
 }
 
@@ -592,5 +663,183 @@ class RegionFromAddressTest {
         assertEquals(setOf(0), rows.getValue("종합점수").best)
         assertEquals(setOf(0), rows.getValue("위험도").best)
         assertTrue("종합점수" !in Comparison.rows(listOf(a, b), NOW).map { it.label })
+    }
+}
+
+class NominatimTest {
+    @Test
+    fun parsesSearchAndReverse() {
+        val n = NominatimClient(sleeper = {})
+        assertEquals(LatLng(37.5609, 126.9233), n.parseSearch("""[{"lat":"37.5609","lon":"126.9233","display_name":"연남동"}]"""))
+        assertNull(n.parseSearch("[]"))
+        assertNull(n.parseSearch("""[{"lat":"48.85","lon":"2.35"}]"""))
+        val reverse = n.parseReverse("""{"display_name":"연남동, 마포구, 서울특별시, 03731, 대한민국","address":{"quarter":"연남동","borough":"마포구","city":"서울특별시"}}""")!!
+        assertEquals("서울특별시" to "마포구", Regions.fromAddress(reverse))
+    }
+
+    @Test
+    fun pacesCallsAndSendsUserAgent() {
+        val sleeps = mutableListOf<Long>()
+        var t = 1_000L
+        val transport = object : WebTransport {
+            val agents = mutableListOf<String>()
+            override fun get(url: String, headers: Map<String, String>): WebResponse {
+                agents += headers.getValue("User-Agent")
+                return WebResponse(200, """[{"lat":"37.5","lon":"127.0"}]""")
+            }
+            override fun post(url: String, headers: Map<String, String>, body: String) = error("unused")
+        }
+        val n = NominatimClient(transport, sleeper = { sleeps += it }, clock = { t })
+        n.search("서울특별시 마포구 연남동")
+        t = 1_300
+        n.search("서울특별시 마포구 서교동")
+        assertEquals(listOf(800L), sleeps)
+        assertTrue(transport.agents.all { it.startsWith("GongmaeCompare/") })
+    }
+
+    @Test
+    fun spreadKeepsPointsNearbyButDistinct() {
+        val c = LatLng(37.56, 126.92)
+        val a = NominatimClient.spread(c, "a")
+        val b = NominatimClient.spread(c, "b")
+        assertTrue(a != b)
+        assertTrue(OverpassClient.distanceMeters(c, a) in 30..160)
+        assertEquals(a, NominatimClient.spread(c, "a"))
+    }
+}
+
+class MarketTest {
+    private val xml = """<?xml version="1.0" encoding="UTF-8"?>
+<response><header><resultCode>000</resultCode><resultMsg>OK</resultMsg></header><body><items>
+<item><aptNm>연남래미안</aptNm><umdNm>연남동</umdNm><jibun>123</jibun><excluUseAr>84.9</excluUseAr><dealAmount>  95,000</dealAmount><dealYear>2026</dealYear><dealMonth>9</dealMonth><dealDay>3</dealDay><floor>7</floor><cdealType> </cdealType></item>
+<item><aptNm>연남래미안</aptNm><umdNm>연남동</umdNm><jibun>123</jibun><excluUseAr>84.9</excluUseAr><dealAmount>100,000</dealAmount><dealYear>2026</dealYear><dealMonth>8</dealMonth><dealDay>21</dealDay><floor>12</floor></item>
+<item><aptNm>연남래미안</aptNm><umdNm>연남동</umdNm><jibun>123</jibun><excluUseAr>84.9</excluUseAr><dealAmount>90,000</dealAmount><dealYear>2026</dealYear><dealMonth>7</dealMonth><dealDay>2</dealDay><floor>3</floor></item>
+<item><aptNm>연남래미안</aptNm><umdNm>연남동</umdNm><jibun>123</jibun><excluUseAr>84.9</excluUseAr><dealAmount>50,000</dealAmount><dealYear>2026</dealYear><dealMonth>7</dealMonth><dealDay>9</dealDay><floor>3</floor><cdealType>O</cdealType></item>
+<item><aptNm>큰평수</aptNm><umdNm>연남동</umdNm><jibun>9</jibun><excluUseAr>134.0</excluUseAr><dealAmount>180,000</dealAmount><dealYear>2026</dealYear><dealMonth>7</dealMonth><dealDay>9</dealDay><floor>3</floor></item>
+<item><aptNm>옆동</aptNm><umdNm>서교동</umdNm><jibun>9</jibun><excluUseAr>84.0</excluUseAr><dealAmount>120,000</dealAmount><dealYear>2026</dealYear><dealMonth>7</dealMonth><dealDay>9</dealDay><floor>3</floor></item>
+</items></body></response>"""
+
+    private val apt = Property(id = "m", sigungu = "마포구", dong = "연남동", usageSmall = "아파트", areaSqm = 84.9, appraisalPrice = 1_000_000_000, minBidPrice = 640_000_000, lawdCode = "11440")
+
+    @Test
+    fun parsesTradesAndDropsCancelled() {
+        val trades = MolitClient.parse(xml, MarketKind.APT)
+        assertEquals(5, trades.size)
+        assertEquals(950_000_000L, trades.first().price)
+        assertEquals("2026.09.03", trades.first().date)
+        assertEquals("연남래미안", trades.first().name)
+    }
+
+    @Test
+    fun summarizesSameDongSimilarArea() {
+        val s = MolitClient.summarize(apt, MarketKind.APT, MolitClient.parse(xml, MarketKind.APT), 6)
+        assertTrue(s.sameDong)
+        assertEquals(3, s.trades.size)                  // 큰평수·옆동은 빠진다
+        assertEquals("2026.09.03", s.trades.first().date)
+        assertEquals(950L, s.estimatedValue!! / 1_000_000)  // 중간값 거래(9.5억) 기준
+        assertEquals(67.4, Math.round(s.ratioOf(apt.minBidPrice)!! * 10) / 10.0)
+    }
+
+    @Test
+    fun errorsAreReported() {
+        val notRegistered = """<OpenAPI_ServiceResponse><cmmMsgHeader><errMsg>SERVICE ERROR</errMsg><returnAuthMsg>SERVICE_KEY_IS_NOT_REGISTERED_ERROR</returnAuthMsg><returnReasonCode>30</returnReasonCode></cmmMsgHeader></OpenAPI_ServiceResponse>"""
+        val e = assertFailsWith<OnbidApiException> { MolitClient.parse(notRegistered, MarketKind.APT) }
+        assertEquals("30", e.code)
+        val forbidden = assertFailsWith<OnbidApiException> { MolitClient.parse("Forbidden", MarketKind.APT, 403) }
+        assertEquals("HTTP403", forbidden.code)
+        assertEquals(emptyList(), MolitClient.parse("<response><header><resultCode>03</resultCode></header></response>", MarketKind.APT))
+    }
+
+    @Test
+    fun marketDiscountRaisesAttractiveness() {
+        val market = MolitClient.summarize(apt, MarketKind.APT, MolitClient.parse(xml, MarketKind.APT), 6)
+        val without = Analyzer.analyze(apt)
+        val with = Analyzer.analyze(apt, market = market)
+        assertTrue(with.attractiveness > without.attractiveness)
+        assertTrue(with.merits.any { it.title.startsWith("실거래 시세의 67.4%") })
+        assertEquals(67.4, Math.round(with.marketRatio!! * 10) / 10.0)
+    }
+}
+
+class BidCalculatorTest {
+    @Test
+    fun acquisitionTaxBrackets() {
+        assertEquals(0.011, BidCalculator.acquisitionTaxRate(500_000_000, isHousing = true, over85Sqm = false), 1e-9)
+        assertEquals(0.022, BidCalculator.acquisitionTaxRate(750_000_000, isHousing = true, over85Sqm = false), 1e-9)
+        assertEquals(0.035, BidCalculator.acquisitionTaxRate(1_200_000_000, isHousing = true, over85Sqm = true), 1e-9)
+        assertEquals(0.046, BidCalculator.acquisitionTaxRate(300_000_000, isHousing = false, over85Sqm = false), 1e-9)
+    }
+
+    @Test
+    fun calculatesCashAndProfit() {
+        val r = BidCalculator.calculate(
+            BidInputs(bidPrice = 300_000_000, expectedSalePrice = 400_000_000, isHousing = true, minPrice = 250_000_000, loanRatio = 0.6, loanRate = 0.05, holdingMonths = 12, evictionAndRepair = 3_000_000),
+        )
+        assertEquals(25_000_000L, r.deposit)              // 법원: 최저가의 10%
+        assertEquals(3_300_000L, r.acquisitionTax)
+        assertEquals(1_700_000L, r.legalFee)
+        assertEquals(180_000_000L, r.loanAmount)
+        assertEquals(9_000_000L, r.interest)
+        assertEquals(2_000_000L, r.saleCommission)
+        assertEquals(319_000_000L, r.totalCost)
+        assertEquals(139_000_000L, r.cashNeeded)
+        assertEquals(81_000_000L, r.profit)
+        assertEquals(58.3, Math.round(r.returnOnCash!! * 10) / 10.0)
+    }
+
+    @Test
+    fun defaultsAndSuggestedRange() {
+        val officetel = Property(id = "o", usageSmall = "오피스텔", appraisalPrice = 200_000_000, minBidPrice = 98_000_000, areaSqm = 30.0)
+        val d = BidCalculator.defaults(officetel, null)
+        assertFalse(d.isHousing)
+        assertTrue(d.depositOnBidPrice)                    // 공매는 입찰가 기준 보증금
+        assertEquals(200_000_000L, d.expectedSalePrice)
+        val range = BidCalculator.suggestedRange(officetel, null, null)!!
+        assertEquals(134_000_000L to 150_000_000L, range)  // 감정가 × 67~75%
+        val danger = Analysis(70, RiskLevel.DANGER, 50, 40, "C", emptyList(), "", true)
+        assertEquals(104_000_000L to 120_000_000L, BidCalculator.suggestedRange(officetel, danger, null))
+        assertEquals(110_000_000L to 120_000_000L, BidCalculator.suggestedRange(officetel.copy(minBidPrice = 110_000_000), danger, null)) // 최저가 아래로 내리지 않음
+    }
+}
+
+class ClaudePromptTest {
+    private val p = Property(
+        id = "2026-0100-000001", name = "연남동 아파트", sido = "서울특별시", sigungu = "마포구", dong = "연남동",
+        usageSmall = "아파트", appraisalPrice = 500_000_000, minBidPrice = 350_000_000, failCount = 2, notes = "대항력 있는 임차인 있음",
+    )
+
+    @Test
+    fun summaryAndDetailDiffer() {
+        val a = Analyzer.analyze(p)
+        val summary = ClaudePrompt.build(p, a, null, null, null, ClaudePrompt.Mode.SUMMARY, NOW)
+        val detail = ClaudePrompt.build(p, a, null, null, null, ClaudePrompt.Mode.DETAIL, NOW)
+        assertTrue(summary.contains("최저입찰가: 3억 5,000만원 (감정가의 70%, 유찰 2회)"))
+        assertTrue(summary.contains("한 줄 결론"))
+        assertTrue(detail.contains("권리분석: 말소기준권리"))
+        assertTrue(detail.contains("매수인이 떠안는 권리"))
+        assertFalse(summary.contains("도로명:"))            // 빈 값은 넣지 않는다
+    }
+
+    @Test
+    fun urlVersionIsShortAndKeepsRequest() {
+        val long = p.copy(notes = "가".repeat(3000))
+        val text = ClaudePrompt.build(long, null, null, null, null, ClaudePrompt.Mode.DETAIL, NOW)
+        assertEquals(text, ClaudePrompt.forUrl(text))      // 비고는 600자로 잘려 주소 한도 안에 든다
+        val short = ClaudePrompt.forUrl(text, 700)
+        assertTrue(short.length <= 700)
+        assertTrue(short.contains("[요청]"))
+        assertTrue(short.contains("…(일부 생략)"))
+        assertTrue(ClaudePrompt.webUrl(text).startsWith("https://claude.ai/new?q=%EB%84%88"))
+    }
+
+    @Test
+    fun checklistPutsImportantFirst() {
+        val land = Property(id = "l", usageSmall = "답", notes = "농지취득자격증명 필요", source = Source.COURT)
+        val items = Analyzer.checklist(land, Analyzer.analyze(land), null, null)
+        assertTrue(items.first().important)
+        assertTrue(items.any { it.title == "농지취득자격증명 준비" && it.important })
+        assertTrue(items.any { it.title == "매각물건명세서 확인" })
+        assertTrue(OfficialDoc.relevant(land).contains(OfficialDoc.LAND_USE))
+        assertFalse(OfficialDoc.relevant(land).contains(OfficialDoc.BUILDING))
     }
 }

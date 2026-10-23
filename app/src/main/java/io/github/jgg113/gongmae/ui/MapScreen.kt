@@ -55,6 +55,8 @@ fun MapScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
     // 위치를 받은 뒤 그 지역을 검색까지 할지 (아니면 내 위치로 이동만)
     var searchAfterLocate by remember { mutableStateOf(false) }
     var fittedIds by remember { mutableStateOf<List<String>?>(null) }
+    // 지도 페이지가 알려 온 문제 (타일 서버 실패·스크립트 오류 등)
+    var mapProblem by remember { mutableStateOf<String?>(null) }
 
     fun locate() {
         DeviceLocation.request(context) { position ->
@@ -95,7 +97,7 @@ fun MapScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
         if (!controller.ready) return@LaunchedEffect
         val ids = items.map { it.id }
         val fit = fittedIds != ids
-        controller.run("app.setItems(${MapPayload.items(items, vm::cachedPosition)}, $fit)")
+        controller.run("app.setItems(${MapPayload.items(items, vm::positionOf)}, $fit)")
         if (fit) fittedIds = ids
     }
 
@@ -121,7 +123,20 @@ fun MapScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
                 controller = controller,
                 modifier = Modifier.fillMaxSize(),
                 onEvent = { event ->
-                    if (event is MapEvent.MarkerClick) selectedId = event.id
+                    when (event) {
+                        is MapEvent.MarkerClick -> {
+                            selectedId = event.id
+                        }
+                        is MapEvent.Message -> {
+                            mapProblem = when {
+                                event.code.startsWith("TILES_OK") -> null
+                                event.code.startsWith("TILES_FAILED") -> "지도 그림 서버 연결 실패(${event.code.substringAfter(':')}) — 다른 지도로 바꾸는 중"
+                                event.code.startsWith("JS_ERROR") || event.code.startsWith("PAGE_ERROR") -> "지도 오류: " + event.code.substringAfter(':')
+                                else -> mapProblem
+                            }
+                        }
+                        else -> Unit
+                    }
                 },
             )
 
@@ -135,10 +150,14 @@ fun MapScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
             ) {
                 val progress = vm.geocodeProgress
                 val label = when {
+                    mapProblem != null -> mapProblem.orEmpty()
                     vm.searchState is SearchState.Loading -> "불러오는 중…"
                     vm.results.isEmpty() -> "검색 탭에서 지역을 검색하거나 '내 주변 찾기'를 누르세요"
                     progress != null -> "위치 찾는 중 ${progress.first}/${progress.second}"
-                    else -> "${items.size}건 · 파랑 공매 / 보라 경매"
+                    else -> {
+                        val located = items.count { vm.positionOf(it) != null }
+                        "${located}/${items.size}건 표시 · 파랑 공매 / 보라 경매"
+                    }
                 }
                 Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
             }

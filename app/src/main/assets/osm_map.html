@@ -24,6 +24,8 @@
   .poi { display: inline-block; transform: translate(-50%, -100%); margin-top: -4px; background: #fff; color: #222;
          border: 1px solid #0E7C66; border-radius: 10px; padding: 1px 6px; font-size: 11px; white-space: nowrap;
          box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  #status { position: absolute; left: 6px; bottom: 22px; z-index: 1000; display: none; max-width: 80%;
+            background: rgba(192,57,43,.9); color: #fff; padding: 4px 8px; border-radius: 8px; font-size: 11px; }
   .me { width: 14px; height: 14px; margin: -10px 0 0 -10px; border-radius: 50%; background: #2E7DF6; border: 3px solid #fff;
         box-shadow: 0 0 0 2px rgba(46,125,246,.35); }
 </style>
@@ -31,12 +33,25 @@
 <body>
 <div id="map"></div>
 <div id="msg"></div>
+<div id="status"></div>
 <script src="leaflet/leaflet.js"></script>
 <script src="leaflet/leaflet.markercluster.js"></script>
 <script>
   // 안드로이드 → app.xxx() 호출, 지도 → Android.xxx() 콜백. 지도는 키가 필요 없는 OpenStreetMap 계열 타일을 쓴다.
   var bridge = window.Android || { onReady: function () {}, onMessage: function () {}, onMarkerClick: function () {} };
   var app = { ready: false };
+
+  function showStatus(text) {
+    var el = document.getElementById('status');
+    el.textContent = text || '';
+    el.style.display = text ? 'block' : 'none';
+  }
+
+  // 스크립트 오류는 앱으로 알려 화면에서 원인을 볼 수 있게 한다.
+  window.onerror = function (message) {
+    showStatus('지도 스크립트 오류: ' + message);
+    bridge.onMessage('JS_ERROR:' + message);
+  };
 
   function showMsg(text) {
     var el = document.getElementById('msg');
@@ -60,8 +75,35 @@
         maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
       })
     };
+    // 지도 그림(타일) 서버가 막히면 다음 서버로 자동으로 바꾼다.
+    var order = ['기본', 'OSM', '위성'];
+    var current = 0;
+    var loaded = {}, failed = {};
+    order.forEach(function (name) {
+      loaded[name] = 0; failed[name] = 0;
+      layers[name].on('tileload', function () {
+        if (loaded[name]++ === 0) { showStatus(''); bridge.onMessage('TILES_OK:' + name); }
+      });
+      layers[name].on('tileerror', function () {
+        failed[name]++;
+        if (loaded[name] === 0 && failed[name] === 6 && order[current] === name) {
+          if (current < order.length - 1) {
+            map.removeLayer(layers[name]);
+            current++;
+            layers[order[current]].addTo(map);
+            showStatus('지도 그림 서버(' + name + ')에 연결하지 못해 ' + order[current] + ' 지도로 바꿨습니다.');
+          } else {
+            showStatus('지도 그림을 불러오지 못했습니다. 인터넷 연결을 확인하세요.');
+          }
+          bridge.onMessage('TILES_FAILED:' + name);
+        }
+      });
+    });
     layers['기본'].addTo(map);
     L.control.layers(layers, null, { position: 'topright' }).addTo(map);
+    // 처음 그릴 때 화면 크기가 0 이면 타일을 안 받으므로 잠시 뒤 크기를 다시 잰다.
+    setTimeout(function () { map.invalidateSize(); }, 300);
+    setTimeout(function () { map.invalidateSize(); }, 1500);
 
     var plain = L.layerGroup().addTo(map);
     var cluster = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 45, disableClusteringAtZoom: 17 });
