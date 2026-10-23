@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 108dp 적응형 아이콘: 안전영역(가운데 66dp) 안에 집과 돋보기 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 지붕 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,30 L80,51 L75,51 L75,54 L54,37 L33,54 L33,51 L28,51 Z" />
+    <!-- 벽 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M36,53 L54,39 L72,53 L72,76 L36,76 Z" />
+    <!-- 문 -->
+    <path
+        android:fillColor="#FF1F4FA3"
+        android:pathData="M49,62 L59,62 L59,76 L49,76 Z" />
+    <!-- 돋보기 -->
+    <path
+        android:fillColor="#FFFFC83D"
+        android:pathData="M66,58 A8,8 0 1,1 65.99,58 Z M66,61.5 A4.5,4.5 0 1,0 66.01,61.5 Z" />
+    <path
+        android:fillColor="#FFFFC83D"
+        android:pathData="M70.5,73.3 L73.3,70.5 L77.5,74.7 L74.7,77.5 Z" />
+</vector>

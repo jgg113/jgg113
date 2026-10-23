@@ -1,0 +1,97 @@
+name: 공매비교 APK
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # 같은 서명 키로 계속 빌드해야 휴대폰에서 업데이트(덮어쓰기) 설치가 된다.
+      # 저장소 Secrets 에 KEYSTORE_BASE64 가 있으면 그 키를 쓰고, 없으면 처음 만든 키를 캐시에 두고 재사용한다.
+      - name: Restore signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.gongmae-signing
+          key: gongmae-signing-key-v1
+
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            store="$RUNNER_TEMP/release.jks"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$store"
+            pass="$KEYSTORE_PASSWORD"
+            alias="${KEY_ALIAS:-gongmae}"
+          else
+            mkdir -p "$HOME/.gongmae-signing"
+            store="$HOME/.gongmae-signing/release.jks"
+            pass="gongmae-ci-key"
+            alias="gongmae"
+            if [ ! -f "$store" ]; then
+              keytool -genkeypair -keystore "$store" -alias "$alias" -keyalg RSA -keysize 2048 -validity 10000 \
+                -storepass "$pass" -keypass "$pass" -dname "CN=Gongmae Compare, C=KR"
+            fi
+          fi
+          {
+            echo "SIGNING_STORE_FILE=$store"
+            echo "SIGNING_STORE_PASSWORD=$pass"
+            echo "SIGNING_KEY_ALIAS=$alias"
+            echo "SIGNING_KEY_PASSWORD=$pass"
+          } >> "$GITHUB_ENV"
+
+      - name: Unit tests
+        run: ./gradlew :core:test --stacktrace
+
+      - name: Build APK
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+        run: ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk "out/gongmae-compare-1.0.${{ github.run_number }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gongmae-compare-apk
+          path: out/*.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: 공매비교 1.0.${{ github.run_number }}
+          make_latest: "true"
+          files: out/*.apk
+          body: |
+            휴대폰에서 아래 Assets 의 .apk 파일을 눌러 내려받은 뒤 설치하세요.
+            처음 설치할 때는 "출처를 알 수 없는 앱 설치"를 허용해야 합니다.
+
+            브랜치: ${{ github.ref_name }}
+            커밋: ${{ github.sha }}
