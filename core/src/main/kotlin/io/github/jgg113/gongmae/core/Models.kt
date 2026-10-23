@@ -51,13 +51,23 @@ enum class Category(val label: String) {
     FACTORY("공장·창고"),
     FOREST("임야"),
     LAND("토지"),
+    VEHICLE("자동차"),
+    MOVABLE("동산"),
     ETC("기타");
+
+    /** 차량·동산 (부동산이 아님) */
+    val isMovable: Boolean get() = this == VEHICLE || this == MOVABLE
 
     companion object {
         private val landTokens = setOf("전", "답", "대", "대지", "과수원", "목장용지", "잡종지", "도로", "구거", "하천", "유지", "묘지", "주차장")
         private val commercialWords = listOf("근린", "상가", "점포", "판매", "업무", "사무", "숙박", "상업", "의료", "교육", "위락", "운동", "종교")
 
+        // 대분류에서만 본다 ('자동차관련시설' 같은 건물 용도와 헷갈리지 않게).
+        private val vehicleWords = listOf("자동차", "차량", "운송장비", "중기", "건설기계", "선박")
+
         fun classify(usageLarge: String, usageMedium: String, usageSmall: String, name: String = ""): Category {
+            if (vehicleWords.any { usageLarge.contains(it) }) return VEHICLE
+            if (usageLarge.replace("부동산", "").contains("동산") || usageLarge.contains("물품")) return MOVABLE
             fromText("$usageSmall $usageMedium", usageSmall)?.let { return it }
             if (usageMedium.contains("토지") || usageLarge.contains("토지")) return LAND
             return fromText(name, "") ?: ETC
@@ -159,6 +169,8 @@ data class Property(
     val longitude: Double? = null,
     /** 시군구 행정코드 5자리 (국토부 실거래가 LAWD_CD) */
     val lawdCode: String = "",
+    /** 차량·동산 공매 물건이면 그 종류 */
+    val movableKind: MovableKind? = null,
 ) {
     val position: LatLng? get() = if (latitude != null && longitude != null) LatLng(latitude, longitude) else null
 
@@ -172,7 +184,7 @@ data class Property(
 
     val onbidUrl: String? get() = OnbidLinks.detailUrl(this)
 
-    val category: Category get() = Category.classify(usageLarge, usageMedium, usageSmall, name)
+    val category: Category get() = movableKind?.category ?: Category.classify(usageLarge, usageMedium, usageSmall, name)
 
     val usageLabel: String get() = usageSmall.ifBlank { usageMedium }.ifBlank { category.label }
 

@@ -1,5 +1,8 @@
 package io.github.jgg113.gongmae.core
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import java.time.LocalDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -342,11 +345,28 @@ class RealShapeTest {
     @Test
     fun geocodeQueriesGoFromLotToDistrict() {
         assertEquals(listOf("서울특별시 마포구 연남동 245-42", "서울특별시 마포구 연남동"), p.geocodeQueries)
-        val json = MapPayload.items(listOf(p, p.copy(id = "other", address = "", dong = "x"))) { item -> if (MapPayload.geoKey(item) == "서울특별시 마포구 연남동 245-42") LatLng(37.56, 126.92) else null }
-        assertTrue(json.contains("\"gk\":\"서울특별시 마포구 연남동 245-42\""))
-        assertTrue(json.contains("\"lat\":37.56"))
-        assertTrue(json.contains("\"label\":\"4,890만\""))
-        assertTrue(!json.contains("other"), "좌표 없는 물건은 빠진다")
+        assertEquals("서울특별시 마포구 연남동 245-42", MapPayload.geoKey(p))
+        assertEquals("4,890만", MapPayload.priceLabel(p))
+    }
+
+    @Test
+    fun markerLabelsAndClusters() {
+        val apt = Property(id = "a", usageSmall = "오피스텔", areaSqm = 46.3, minBidPrice = 190_000_000, failCount = 2)
+        assertEquals("1.9억", MapPayload.priceLabel(apt))
+        assertEquals("오피스텔 14평 · 유찰2", MapPayload.detailLabel(apt))
+        assertEquals("자동차 · 신건", MapPayload.detailLabel(Property(id = "v", movableKind = MovableKind.VEHICLE)))
+        assertEquals("주류 · 신건", MapPayload.detailLabel(Property(id = "g", name = "양주 2병", movableKind = MovableKind.GOODS)))
+
+        val near = listOf(
+            MapPoint("1", LatLng(37.5100, 127.0300)),
+            MapPoint("2", LatLng(37.5101, 127.0301)),
+            MapPoint("3", LatLng(37.5600, 126.9200)),
+        )
+        val far = MapClusterer.cluster(near, zoom = 11.0)
+        assertEquals(2, far.size)
+        assertEquals(listOf("1", "2"), far.first().ids)
+        assertEquals(3, MapClusterer.cluster(near, zoom = 17.0).size)
+        assertTrue(MapClusterer.cluster(near, zoom = 16.0).count { it.isSingle } >= 1)
     }
 }
 
@@ -841,5 +861,180 @@ class ClaudePromptTest {
         assertTrue(items.any { it.title == "매각물건명세서 확인" })
         assertTrue(OfficialDoc.relevant(land).contains(OfficialDoc.LAND_USE))
         assertFalse(OfficialDoc.relevant(land).contains(OfficialDoc.BUILDING))
+    }
+}
+
+class RiskAdjustTest {
+    private fun court(bigo: String = "", usage: String = "아파트", minPrice: String, fails: String) =
+        CourtClient.toProperty(OnbidResponseParser.parse("""{"body":{"items":[${courtRow("X", bigo, "", usage, "20000", minPrice = minPrice, fails = fails)}]}}""").items.single())!!
+
+    @Test
+    fun manyFailsWithoutReasonIsNotAttractive() {
+        val p = court(minPrice = "70000000", fails = "6")   // 감정가의 약 26%, 비고 없음
+        val a = Analyzer.analyze(p)
+        assertEquals(RiskLevel.DANGER, a.riskLevel, a.factors.toString())
+        assertTrue(a.attractiveness < 60, "attractiveness ${a.attractiveness}")
+        assertTrue(a.total <= 45, "total ${a.total}")
+        assertTrue(a.risks.any { it.title.startsWith("유찰 6회") })
+        assertTrue(a.factors.any { it.title == "위험도 반영 감점" })
+        assertTrue(a.factors.none { it.title == "특이사항 없음" })
+    }
+
+    @Test
+    fun courtCaseStakeholdersRaiseRisk() {
+        val data = Json.parseToJsonElement(
+            """{"dma_csBasInf":{"csNm":"부동산임의경매","clmAmt":"150000000","csRcptYmd":"20250310"},
+               "dlt_rletCsIntrpsLst":[{"auctnIntrpsDvsNm1":"채권자","intrpsNm1":"OO은행"},{"auctnIntrpsDvsNm1":"임차인","intrpsNm1":"김OO"},{"auctnIntrpsDvsNm2":"유치권자","intrpsNm2":"OO건설"}],
+               "dlt_csApalRaplDts":[],"dlt_dstrtDemnLstprdDts":[{"dstrtDemnLstprdYmd":"20250601"}]}""",
+        ).jsonObject
+        val case = CourtClient.parseCase(data)
+        assertEquals(150_000_000L, case.claimAmount)
+        assertEquals(1, case.count("임차"))
+        assertEquals("20250601", case.claimDeadline)
+        val p = court(minPrice = "200000000", fails = "1")
+        val before = Analyzer.analyze(p)
+        val after = Analyzer.analyze(p, courtCase = case)
+        assertTrue(after.riskScore >= before.riskScore + 40)
+        assertTrue(after.risks.any { it.title == "유치권자 신고" })
+        assertTrue(after.rightsChecked)
+        assertFailsWith<OnbidApiException> { CourtClient.parseCase(JsonObject(emptyMap())) }
+    }
+
+    @Test
+    fun specialRightsAndVehicleCategory() {
+        val p = Property(id = "s", notes = "건물은 매각에서 제외, 토지별도등기 있음")
+        assertEquals(setOf(SpecialRight.LAND_ONLY, SpecialRight.LAND_SEPARATE), SpecialRight.of(p))
+        assertEquals(Category.VEHICLE, Category.classify("차량및운송장비", "승용자동차", ""))
+        assertTrue(Category.classify("건물", "자동차관련시설", "주차장") != Category.VEHICLE)
+    }
+}
+
+class MovablesTest {
+    private fun pbanc(no: String, ymd: String) = """{"pbancMngNo":"$no","pbancYmd":"$ymd","pbctNsq":"001","onbidPbancNm":"공고 $no"}"""
+    private fun item(id: String, name: String, nsq: String, start: String, end: String, price: String, fails: String = "0", usage: String = "") =
+        """{"pbancMngNo":"P1","cltrMngNo":"$id","onbidCltrNm":"$name","cltrAdr":"경기도 광주시 오포읍","prptDivCd":"0007","prptDivNm":"압류재산",
+            "dspsMthodNm":"매각","bidMthodNm":"최고가방식","cltrUsgLclsCtgrNm":"$usage","cltrUsgSclsCtgrNm":"","usbdNft":"$fails","pbctNsq":"$nsq","pbctsn":"001",
+            "cltrBidBgngDt":"$start","cltrBidEndDt":"$end","apslEvlAmt":"10000000","lowstBidPrcIndctCont":"$price","pbctStatNm":"입찰준비중",
+            "thmImgUrl":"https://example/t.jpg","onbidPbancNo":"9001","pbctNo":"77"}"""
+    private fun body(vararg rows: String) = """{"header":{"resultCode":"00","resultMsg":"NORMAL SERVICE."},"body":{"items":{"item":[${rows.joinToString(",")}]},"totalCount":${rows.size}}}"""
+
+    @Test
+    fun noticesFallBackToEachDivisionAndSortNewestFirst() {
+        val urls = mutableListOf<String>()
+        val http = HttpGetter { url ->
+            urls += url
+            when {
+                url.contains("prptDivCd=0007%2C") -> HttpResult(200, """{"header":{"resultCode":"11","resultMsg":"INVALID_REQUEST_PARAMETER_ERROR"}}""")
+                url.contains("prptDivCd=0007") -> HttpResult(200, body(pbanc("A", "20261001"), pbanc("A", "20261001"), pbanc("B", "20261020")))
+                url.contains("prptDivCd=0004") -> HttpResult(200, body(pbanc("C", "20261010")))
+                else -> HttpResult(200, """{"header":{"resultCode":"03","resultMsg":"NODATA_ERROR"}}""")
+            }
+        }
+        val client = MovablesClient(OnbidClient("k", http), sleeper = {})
+        assertEquals(listOf("B", "C", "A"), client.notices(MovableKind.VEHICLE, java.time.LocalDate.of(2026, 10, 23), 21))
+        assertTrue(urls.first().contains("cltrTypeCd=0002") && urls.first().contains("opbdDtStart=20261023") && urls.first().contains("opbdDtEnd=20261113"))
+    }
+
+    @Test
+    fun assemblesCurrentRoundAndGroups() {
+        val rows = listOf(
+            item("V1", "2019 쏘나타 승용자동차", "001", "202610010900", "202610021700", "9000000", usage = "자동차"),
+            item("V1", "2019 쏘나타 승용자동차", "002", "202610270900", "202610281700", "8100000", fails = "1", usage = "자동차"),
+        ).map { Json.parseToJsonElement(it).jsonObject }
+        val p = MovablesClient.assemble(rows, MovableKind.VEHICLE, LocalDateTime.of(2026, 10, 23, 12, 0)).single()
+        assertEquals(Category.VEHICLE, p.category)
+        assertEquals("002", p.round)
+        assertEquals(8_100_000L, p.minBidPrice)
+        assertEquals(2, p.rounds.size)
+        assertEquals("경기도", p.sido)
+        assertEquals(GoodsGroup.CAR, GoodsGroup.of(p))
+
+        val liquor = MovablesClient.assemble(listOf(Json.parseToJsonElement(item("G1", "발렌타인 30년 양주 2병", "001", "202610270900", "202610281700", "500000")).jsonObject), MovableKind.GOODS, LocalDateTime.of(2026, 10, 23, 12, 0)).single()
+        assertEquals(Category.MOVABLE, liquor.category)
+        assertEquals(GoodsGroup.LIQUOR, GoodsGroup.of(liquor))
+        val a = Analyzer.analyze(liquor)
+        assertTrue(a.factors.none { it.title == "압류재산" })
+        assertTrue(OfficialDoc.relevant(liquor).isEmpty())
+    }
+}
+
+class QueryParserTest {
+    @Test
+    fun parsesRegionsCategoriesAndGoods() {
+        QueryParser.parse("논현동 아파트").let {
+            assertEquals("논현동", it.dong)
+            assertEquals(setOf(Category.APARTMENT), it.categories)
+            assertFalse(it.wantsMovables)
+        }
+        QueryParser.parse("양주").let {
+            assertEquals(setOf(GoodsGroup.LIQUOR), it.goods)
+            assertEquals("", it.sigungu)
+            assertTrue(it.wantsMovables)
+        }
+        QueryParser.parse("양주시 아파트").let {
+            assertEquals("경기도", it.sido)
+            assertEquals("양주시", it.sigungu)
+            assertTrue(it.goods.isEmpty())
+        }
+        QueryParser.parse("자동차").let {
+            assertEquals(setOf(Category.VEHICLE), it.categories)
+            assertTrue(it.goods.isEmpty())
+        }
+        QueryParser.parse("트럭").let { assertEquals(setOf(GoodsGroup.TRUCK), it.goods) }
+        QueryParser.parse("부산진구").let {
+            assertEquals("부산광역시", it.sido)
+            assertEquals("부산진구", it.sigungu)
+        }
+        QueryParser.parse("경기 광주 유찰 2회 이상 5억 이하").let {
+            assertEquals("경기도", it.sido)
+            assertEquals("광주시", it.sigungu)
+            assertEquals(2, it.minFails)
+            assertEquals(500_000_000L, it.maxPrice)
+            assertTrue(it.keywords.isEmpty(), it.keywords.toString())
+        }
+        QueryParser.parse("서울 강남구 오피스텔 3억~5억").let {
+            assertEquals("서울특별시", it.sido)
+            assertEquals("강남구", it.sigungu)
+            assertEquals(300_000_000L, it.minPrice)
+            assertEquals(500_000_000L, it.maxPrice)
+        }
+        QueryParser.parse("1억5천 이하 공매 상가").let {
+            assertEquals(150_000_000L, it.maxPrice)
+            assertEquals(setOf(Source.ONBID), it.sources)
+            assertEquals(setOf(Category.COMMERCIAL), it.categories)
+        }
+        assertEquals("2025타경103932", QueryParser.parse("2025 타경 103932").caseNo)
+        assertTrue(QueryParser.parse("신건 서울 빌라").newOnly)
+        assertEquals(listOf("래미안"), QueryParser.parse("래미안").keywords)
+    }
+
+    @Test
+    fun intentMatchesProperties() {
+        val liquor = Property(id = "g", name = "조니워커 블루 양주 3병", movableKind = MovableKind.GOODS)
+        val yangjuApt = Property(id = "a", name = "OO아파트", sido = "경기도", sigungu = "양주시", address = "경기도 양주시 옥정동 1", usageSmall = "아파트")
+        val car = Property(id = "c", name = "2018 포터 화물트럭", movableKind = MovableKind.VEHICLE)
+        val sedan = Property(id = "s", name = "2020 그랜저 승용", movableKind = MovableKind.VEHICLE)
+        val all = listOf(liquor, yangjuApt, car, sedan)
+        fun ids(q: String) = PropertyFilter(keyword = q).apply(all, NOW).map { it.id }
+        assertEquals(listOf("g"), ids("양주"))
+        assertEquals(listOf("a"), ids("양주시 아파트"))
+        assertEquals(listOf("c", "s"), ids("자동차"))
+        assertEquals(listOf("c"), ids("트럭"))
+        assertEquals(listOf("a"), ids("옥정동"))
+        assertEquals(listOf("g", "c", "s"), PropertyFilter(categories = setOf(Category.VEHICLE, Category.MOVABLE)).apply(all, NOW).map { it.id })
+        assertEquals(listOf("g"), PropertyFilter(goods = setOf(GoodsGroup.LIQUOR)).apply(all, NOW).map { it.id })
+    }
+
+    @Test
+    fun specialAndTenantFilters() {
+        val lien = Property(id = "l", notes = "유치권 신고 있음", usageSmall = "아파트", appraisalPrice = 100, minBidPrice = 80)
+        val clean = Property(id = "c", usageSmall = "아파트", appraisalPrice = 100, minBidPrice = 80)
+        val list = listOf(lien, clean)
+        val analyses = Analyzer.analyzeAll(list)
+        assertEquals(listOf("c"), PropertyFilter(excludeAllSpecial = true).apply(list, NOW, analyses).map { it.id })
+        assertEquals(listOf("l"), PropertyFilter(specials = setOf(SpecialRight.LIEN)).apply(list, NOW, analyses).map { it.id })
+        assertEquals(listOf("c"), PropertyFilter(specials = setOf(SpecialRight.LIEN), excludeSpecials = true).apply(list, NOW, analyses).map { it.id })
+        assertEquals(listOf("l", "c"), PropertyFilter(tenants = setOf(TenantStatus.UNKNOWN)).apply(list, NOW, analyses).map { it.id })
+        assertEquals(listOf("c"), PropertyFilter(maxFailCount = 0, specials = setOf(SpecialRight.LIEN), excludeSpecials = true).apply(list, NOW, analyses).map { it.id })
     }
 }

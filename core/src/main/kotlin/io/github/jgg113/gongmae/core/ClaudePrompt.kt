@@ -24,8 +24,13 @@ object ClaudePrompt {
         court: CourtDetail?,
         mode: Mode,
         now: LocalDateTime,
+        courtCase: CourtCase? = null,
     ): String = buildString {
-        appendLine("너는 한국 부동산 경매·공매 권리분석 전문가야. 아래 ${p.source.label} 물건을 분석해 줘.")
+        if (p.category.isMovable) {
+            appendLine("너는 한국 공매(온비드) ${p.category.label} 입찰 전문가야. 아래 물건을 분석해 줘.")
+        } else {
+            appendLine("너는 한국 부동산 경매·공매 권리분석 전문가야. 아래 ${p.source.label} 물건을 분석해 줘.")
+        }
         appendLine()
         appendLine("[물건]")
         line("구분", if (p.isCourt) "법원경매 ${p.organization} ${p.caseNo}" else "온비드 공매 ${p.id} (${p.assetTypeName})")
@@ -53,6 +58,17 @@ object ClaudePrompt {
         }
         if (mode == Mode.DETAIL && court != null && court.objects.isNotEmpty()) {
             appendLine("매각대상: " + court.objects.take(5).joinToString(" / ").take(300))
+        }
+
+        if (courtCase != null) {
+            appendLine()
+            appendLine("[법원 사건 정보]")
+            line("사건명", courtCase.caseName)
+            line("청구금액", courtCase.claimAmount?.let(Format::won).orEmpty())
+            line("배당요구종기", courtCase.claimDeadline.takeIf { it.isNotBlank() }?.let(RightsParser::formatYmd).orEmpty())
+            val kinds = courtCase.stakeholders.groupingBy { it.first }.eachCount()
+            if (kinds.isNotEmpty()) appendLine("이해관계인: " + kinds.entries.joinToString(", ") { (k, n) -> if (n > 1) "$k ${n}명" else k })
+            if (courtCase.appeals > 0) appendLine("항고 ${courtCase.appeals}건")
         }
 
         if (rights != null) {
@@ -94,6 +110,14 @@ object ClaudePrompt {
 
         appendLine()
         appendLine("[요청]")
+        if (p.category.isMovable) {
+            appendLine("1) 중고 시세와 비교한 적정 입찰가 범위")
+            appendLine("2) 상태·진품·인도(보관료·운반) 위험")
+            appendLine("3) 세금·이전 비용과 되팔 때 예상 수익")
+            appendLine("4) 입찰 전 확인할 것과 최종 의견 (입찰 추천 / 조건부 / 비추천)")
+            if (mode == Mode.SUMMARY) appendLine("짧고 쉽게 답해 줘.")
+            return@buildString
+        }
         when (mode) {
             Mode.SUMMARY -> {
                 appendLine("1) 한 줄 결론 (입찰 추천 / 조건부 / 비추천)")
@@ -151,6 +175,13 @@ enum class OfficialDoc(val title: String, val site: String, val url: String, val
         "열람·발급 무료",
         "위반건축물 여부와 실제 용도·면적을 확인합니다. 정부24에서 '건축물대장'을 검색하세요.",
     ),
+    VEHICLE_REGISTER(
+        "자동차등록원부",
+        "정부24",
+        "https://www.gov.kr/",
+        "열람 무료",
+        "압류·저당권이 남아 있는지, 차대번호·연식이 맞는지 확인합니다. 정부24에서 '자동차등록원부'를 검색하세요 (차량번호 필요).",
+    ),
     TRADE(
         "실거래가",
         "국토교통부 실거래가 공개시스템",
@@ -164,7 +195,13 @@ enum class OfficialDoc(val title: String, val site: String, val url: String, val
         /** 등기소 검색창에 넣기 좋은 주소: 지번 주소(동·번지)가 가장 잘 찾아진다. */
         fun searchAddress(p: Property): String = p.displayAddress.ifBlank { p.roadAddress }.ifBlank { p.name }
 
-        fun relevant(p: Property): List<OfficialDoc> = buildList {
+        fun relevant(p: Property): List<OfficialDoc> = when {
+            p.category == Category.VEHICLE -> listOf(VEHICLE_REGISTER)
+            p.category.isMovable -> emptyList()
+            else -> realEstate(p)
+        }
+
+        private fun realEstate(p: Property): List<OfficialDoc> = buildList {
             add(REGISTRY)
             if (p.category in setOf(Category.LAND, Category.FOREST, Category.HOUSE, Category.FACTORY)) add(LAND_USE)
             if (p.category !in setOf(Category.LAND, Category.FOREST)) add(BUILDING)

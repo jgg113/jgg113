@@ -24,7 +24,7 @@ enum class MarketKind(val label: String, val path: String, val nameTag: String, 
             Category.HOUSE -> SH
             Category.LAND, Category.FOREST -> LAND
             Category.COMMERCIAL, Category.FACTORY -> COMMERCIAL
-            Category.ETC -> null
+            Category.VEHICLE, Category.MOVABLE, Category.ETC -> null
         }
     }
 }

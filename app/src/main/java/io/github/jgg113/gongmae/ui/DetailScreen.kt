@@ -67,14 +67,14 @@ import io.github.jgg113.gongmae.core.Analyzer
 import io.github.jgg113.gongmae.core.BidCalculator
 import io.github.jgg113.gongmae.core.ClaudePrompt
 import io.github.jgg113.gongmae.core.Comparison
+import io.github.jgg113.gongmae.core.CourtCase
 import io.github.jgg113.gongmae.core.CourtDetail
 import io.github.jgg113.gongmae.core.Format
-import io.github.jgg113.gongmae.core.MapPayload
+import io.github.jgg113.gongmae.core.LatLng
 import io.github.jgg113.gongmae.core.NearbyCategory
 import io.github.jgg113.gongmae.core.Property
 import io.github.jgg113.gongmae.core.PropertyDetail
 import io.github.jgg113.gongmae.core.RightsParser
-import kotlinx.serialization.json.JsonPrimitive
 import java.time.LocalDateTime
 
 @Composable
@@ -114,7 +114,9 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
             LaunchedEffect(property.id) {
                 vm.ensurePositions(listOf(property))
                 vm.loadCourtDetail(property)
+                vm.loadCourtCase(property)
             }
+            val courtCase = vm.courtCaseOf(property.id)
             val detailState = vm.details[id]
             val courtState = vm.courtDetails[id]
             val courtDetail = (courtState as? CourtDetailState.Loaded)?.detail
@@ -128,7 +130,7 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
             val checklist = remember(analysis, loadedDetail, market) { Analyzer.checklist(property, analysis, loadedDetail, market) }
             var registryOpen by rememberSaveable { mutableStateOf(false) }
             val askClaude = { mode: ClaudePrompt.Mode ->
-                Links.askClaude(context, ClaudePrompt.build(property, analysis, loadedDetail, market, courtDetail, mode, now))
+                Links.askClaude(context, ClaudePrompt.build(property, analysis, loadedDetail, market, courtDetail, mode, now, courtCase))
             }
             if (registryOpen) RegistryDialog(property, onDismiss = { registryOpen = false })
             LazyColumn(
@@ -175,9 +177,9 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                     }
                 }
                 item { MarketCard(vm, property) }
-                item { BidCalculatorCard(property, market, range) }
+                if (!property.category.isMovable) item { BidCalculatorCard(property, market, range) }
                 item { DocumentsCard(property, onOpenRegistry = { registryOpen = true }) }
-                if (property.isCourt) item { CourtNoticeCard(property, courtDetail) }
+                if (property.isCourt) item { CourtNoticeCard(property, courtDetail, courtCase) }
                 item { LocationCard(vm, property) }
                 item { InfoCard(property, now) }
                 if (rounds.isNotEmpty()) {
@@ -320,7 +322,7 @@ private fun Header(property: Property, now: LocalDateTime) {
 
 /** 법원 공고의 비고·지분·매각 정보 */
 @Composable
-private fun CourtNoticeCard(property: Property, detail: CourtDetail?) {
+private fun CourtNoticeCard(property: Property, detail: CourtDetail?, case: CourtCase?) {
     SectionCard("법원 공고 내용") {
         InfoRow("사건번호", property.caseNo)
         InfoRow("법원·담당", property.organization)
@@ -338,6 +340,22 @@ private fun CourtNoticeCard(property: Property, detail: CourtDetail?) {
         detail?.objects?.takeIf { it.isNotEmpty() }?.let { objects ->
             Text("매각 대상", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             objects.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+        }
+        if (case != null) {
+            Text("사건 정보", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            if (case.caseName.isNotBlank()) InfoRow("사건명", case.caseName)
+            case.claimAmount?.let { InfoRow("청구금액", Format.won(it)) }
+            if (case.claimDeadline.isNotBlank()) InfoRow("배당요구종기", RightsParser.formatYmd(case.claimDeadline))
+            val kinds = case.stakeholders.groupingBy { it.first }.eachCount()
+            if (kinds.isNotEmpty()) {
+                InfoRow("이해관계인", kinds.entries.joinToString(", ") { (kind, n) -> if (n > 1) "$kind ${n}명" else kind })
+            }
+            if (case.appeals > 0) InfoRow("항고", "${case.appeals}건")
+            Text(
+                "이해관계인에 임차인·유치권자·전세권자가 있으면 AI 분석의 위험도에 반영했습니다. 대항력 여부는 매각물건명세서로 확인하세요.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -418,8 +436,9 @@ private fun LocationCard(vm: AppViewModel, property: Property) {
     val context = LocalContext.current
     val position = remember(vm.geoVersion, property.id) { vm.positionOf(property) }
     val query = property.geocodeQueries.firstOrNull() ?: property.displayAddress
-    val controller = rememberMapController()
+    val mapState = rememberNativeMapState()
     var category by rememberSaveable(property.id) { mutableStateOf<NearbyCategory?>(null) }
+    var style by rememberSaveable { mutableStateOf(MapStyle.STREET) }
     val nearbyState = category?.let { vm.nearby[vm.nearbyKey(property, it)] }
     val places = (nearbyState as? NearbyState.Loaded)?.places
 
@@ -432,23 +451,35 @@ private fun LocationCard(vm: AppViewModel, property: Property) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
+            val marker = remember(property.id, position, vm.analyses[property.id]) { mapMarker(property, position, vm.analyses[property.id]) }
+            val pois = remember(places) { places.orEmpty().take(15).map { PoiMarker(it.name, LatLng(it.lat, it.lng)) } }
             Box(
                 Modifier
                     .fillMaxWidth()
                     .height(260.dp)
                     .clip(RoundedCornerShape(12.dp)),
             ) {
-                MapView(controller = controller, modifier = Modifier.matchParentSize(), onEvent = {})
-            }
-            LaunchedEffect(controller.ready, position) {
-                if (controller.ready) controller.run("app.showProperty(${MapPayload.item(property, position)})")
-            }
-            LaunchedEffect(controller.ready, places) {
-                if (controller.ready && places != null) {
-                    val json = places.take(15).joinToString(",", "[", "]") { p ->
-                        "{\"name\":${JsonPrimitive(p.name)},\"lat\":${p.lat},\"lng\":${p.lng}}"
+                NativeMap(
+                    markers = listOf(marker),
+                    state = mapState,
+                    style = style,
+                    selectedId = property.id,
+                    pois = pois,
+                    cluster = false,
+                    modifier = Modifier.matchParentSize(),
+                )
+                Row(Modifier.align(Alignment.TopEnd).padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    MapStyle.entries.forEach { s ->
+                        FilterChip(selected = style == s, onClick = { style = s }, label = { Text(s.label) })
                     }
-                    controller.run("app.showPois($json)")
+                }
+            }
+            LaunchedEffect(mapState.ready, position) {
+                if (mapState.ready) mapState.moveTo(position, 16.5)
+            }
+            LaunchedEffect(mapState.ready, places) {
+                if (mapState.ready && !places.isNullOrEmpty()) {
+                    mapState.fit(listOf(position) + places.take(15).map { LatLng(it.lat, it.lng) }, maxZoom = 17.0)
                 }
             }
         }
@@ -469,7 +500,7 @@ private fun LocationCard(vm: AppViewModel, property: Property) {
                         category = if (category == c) null else c
                         val center = position
                         val selected = category
-                        if (selected != null && center != null) vm.loadNearby(property, center, selected) else controller.run("app.showPois([])")
+                        if (selected != null && center != null) vm.loadNearby(property, center, selected)
                     },
                     label = { Text(c.label) },
                 )

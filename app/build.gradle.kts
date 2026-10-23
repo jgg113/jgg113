@@ -79,5 +79,5 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.core)
     implementation(libs.coil.compose)
-    implementation(libs.androidx.webkit)
+    implementation(libs.osmdroid.android)
 }

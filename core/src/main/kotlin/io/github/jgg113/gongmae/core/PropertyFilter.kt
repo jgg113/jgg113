@@ -1,9 +1,20 @@
 package io.github.jgg113.gongmae.core
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import java.time.LocalDateTime
 
-/** 받아온 물건을 기기 안에서 거르는 조건. 금액은 만원 단위로 입력받는다. */
+/** 대항력 있는 임차인 여부 (상세 검색) */
+enum class TenantStatus(val label: String) {
+    NONE("대항력 없음"),
+    PRESENT("대항력 있음"),
+    UNKNOWN("미상"),
+}
+
+/**
+ * 받아온 물건을 기기 안에서 거르는 조건. 금액은 만원 단위로 입력받는다.
+ * [keyword] 는 통합 검색어로, [QueryParser] 가 지역·종류·가격 등으로 해석해 함께 건다.
+ */
 @Serializable
 data class PropertyFilter(
     val categories: Set<Category> = emptySet(),
@@ -18,37 +29,84 @@ data class PropertyFilter(
     val keyword: String = "",
     /** 이 위험도까지만 보여준다. null 이면 전부 */
     val maxRisk: RiskLevel? = null,
+    /** 비어 있으면 공매·경매 모두 */
+    val sources: Set<Source> = emptySet(),
+    /** 동산 세부 묶음 (주류·명품 …) */
+    val goods: Set<GoodsGroup> = emptySet(),
+    val minAppraisalManwon: Long? = null,
+    val maxAppraisalManwon: Long? = null,
+    /** 0 이면 신건만 */
+    val maxFailCount: Int? = null,
+    /** 고른 특수권리. [excludeSpecials] 면 이 권리가 있는 물건을 뺀다 */
+    val specials: Set<SpecialRight> = emptySet(),
+    val excludeSpecials: Boolean = false,
+    /** 빠른 검색 '특수 제외': 특수권리가 하나라도 있으면 뺀다 */
+    val excludeAllSpecial: Boolean = false,
+    val tenants: Set<TenantStatus> = emptySet(),
+    /** 입찰 마감(매각기일)까지 남은 날이 이 안인 것만 */
+    val withinDays: Int? = null,
+    /** AI 종합점수 하한 */
+    val minScore: Int? = null,
 ) {
+    @Transient
+    val intent: QueryIntent = QueryParser.parse(keyword)
+
     val activeCount: Int
         get() = listOf(
-            categories.isNotEmpty(),
+            categories.isNotEmpty() || goods.isNotEmpty(),
             minPriceManwon != null || maxPriceManwon != null,
             maxRatioPercent != null,
-            minFailCount > 0,
+            minFailCount > 0 || maxFailCount != null,
             minAreaSqm != null || maxAreaSqm != null,
             windows != DEFAULT_WINDOWS,
             disposal != Disposal.ALL,
             keyword.isNotBlank(),
             maxRisk != null,
+            sources.isNotEmpty(),
+            minAppraisalManwon != null || maxAppraisalManwon != null,
+            specials.isNotEmpty() || excludeAllSpecial,
+            tenants.isNotEmpty(),
+            withinDays != null,
+            minScore != null,
         ).count { it }
 
     fun matches(p: Property, now: LocalDateTime, analysis: Analysis? = null): Boolean {
         if (maxRisk != null && analysis != null && analysis.riskLevel > maxRisk) return false
-        if (categories.isNotEmpty() && p.category !in categories) return false
+        if (minScore != null && (analysis?.total ?: 0) < minScore) return false
+        if (sources.isNotEmpty() && p.source !in sources) return false
+        val categoryOk = when {
+            p.category.isMovable && goods.isNotEmpty() -> goods.any { it.matches(p) }
+            categories.isNotEmpty() -> p.category in categories
+            goods.isNotEmpty() -> false
+            else -> true
+        }
+        if (!categoryOk) return false
         if (minPriceManwon != null && (p.minBidPrice ?: return false) < minPriceManwon * 10_000) return false
         if (maxPriceManwon != null && (p.minBidPrice ?: return false) > maxPriceManwon * 10_000) return false
+        if (minAppraisalManwon != null && (p.appraisalPrice ?: return false) < minAppraisalManwon * 10_000) return false
+        if (maxAppraisalManwon != null && (p.appraisalPrice ?: return false) > maxAppraisalManwon * 10_000) return false
         if (maxRatioPercent != null && (p.appraisalRatio ?: return false) > maxRatioPercent + 1e-9) return false
         if (p.failCount < minFailCount) return false
+        if (maxFailCount != null && p.failCount > maxFailCount) return false
         if (minAreaSqm != null && (p.areaSqm ?: return false) < minAreaSqm) return false
         if (maxAreaSqm != null && (p.areaSqm ?: return false) > maxAreaSqm) return false
         val window = p.bidWindow(now)
         if (window != BidWindow.UNKNOWN && windows.isNotEmpty() && window !in windows) return false
-        if (!disposal.matches(p.disposalMethod)) return false
-        if (keyword.isNotBlank()) {
-            val words = keyword.trim().split(Regex("\\s+"))
-            val haystack = "${p.name} ${p.displayAddress} ${p.roadAddress} ${p.usageLabel} ${p.id}"
-            if (words.any { !haystack.contains(it, ignoreCase = true) }) return false
+        if (withinDays != null) {
+            val days = p.daysUntilEnd(now) ?: return false
+            if (days < 0 || days > withinDays) return false
         }
+        if (!disposal.matches(p.disposalMethod)) return false
+        if (specials.isNotEmpty() || excludeAllSpecial) {
+            val found = analysis?.specialRights ?: SpecialRight.of(p)
+            if (excludeAllSpecial && found.isNotEmpty()) return false
+            if (specials.isNotEmpty()) {
+                val hit = found.any { it in specials }
+                if (excludeSpecials == hit) return false
+            }
+        }
+        if (tenants.isNotEmpty() && (analysis?.tenantStatus ?: TenantStatus.UNKNOWN) !in tenants) return false
+        if (!intent.matches(p)) return false
         return true
     }
 

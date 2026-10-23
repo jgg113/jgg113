@@ -12,8 +12,10 @@ import androidx.lifecycle.viewModelScope
 import io.github.jgg113.gongmae.core.Analysis
 import io.github.jgg113.gongmae.core.Analyzer
 import io.github.jgg113.gongmae.core.AssetType
+import io.github.jgg113.gongmae.core.Category
 import io.github.jgg113.gongmae.core.Comparison
 import io.github.jgg113.gongmae.core.CourtClient
+import io.github.jgg113.gongmae.core.CourtCase
 import io.github.jgg113.gongmae.core.CourtDetail
 import io.github.jgg113.gongmae.core.CourtSearchRequest
 import io.github.jgg113.gongmae.core.LatLng
@@ -21,6 +23,9 @@ import io.github.jgg113.gongmae.core.MapPayload
 import io.github.jgg113.gongmae.core.MarketKind
 import io.github.jgg113.gongmae.core.MarketSummary
 import io.github.jgg113.gongmae.core.MolitClient
+import io.github.jgg113.gongmae.core.MovableKind
+import io.github.jgg113.gongmae.core.MovableSearchRequest
+import io.github.jgg113.gongmae.core.MovablesClient
 import io.github.jgg113.gongmae.core.NearbyCategory
 import io.github.jgg113.gongmae.core.NearbyPlace
 import io.github.jgg113.gongmae.core.NominatimClient
@@ -31,6 +36,7 @@ import io.github.jgg113.gongmae.core.ProgressListener
 import io.github.jgg113.gongmae.core.Property
 import io.github.jgg113.gongmae.core.PropertyDetail
 import io.github.jgg113.gongmae.core.PropertyFilter
+import io.github.jgg113.gongmae.core.QueryParser
 import io.github.jgg113.gongmae.core.Regions
 import io.github.jgg113.gongmae.core.SearchRequest
 import io.github.jgg113.gongmae.core.ServiceKey
@@ -47,6 +53,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -75,6 +82,13 @@ sealed interface NearbyState {
     data object Loading : NearbyState
     data class Error(val message: String) : NearbyState
     data class Loaded(val places: List<NearbyPlace>) : NearbyState
+}
+
+sealed interface MovableState {
+    data object Idle : MovableState
+    data class Loading(val label: String) : MovableState
+    data class Error(val message: String) : MovableState
+    data class Done(val fetchedAt: LocalDateTime, val kinds: Set<MovableKind>) : MovableState
 }
 
 sealed interface MarketState {
@@ -130,6 +144,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var markets by mutableStateOf<Map<String, MarketState>>(emptyMap())
         private set
+    /** 법원 사건 정보 (이해관계인 등). 실패하면 넣지 않는다. */
+    var courtCases by mutableStateOf<Map<String, CourtCase>>(emptyMap())
+        private set
+    /** 차량·동산 공매 (전국) — 부동산 검색 결과와 따로 둔다 */
+    var movables by mutableStateOf<List<Property>>(emptyList())
+        private set
+    var movableState by mutableStateOf<MovableState>(MovableState.Idle)
+        private set
+    /** 통합 검색이 한 일 ("논현동 → 서울 강남구를 불러옵니다") */
+    var queryNote by mutableStateOf<String?>(null)
+        private set
     var keyTest by mutableStateOf<KeyTestState>(KeyTestState.Idle)
         private set
 
@@ -147,11 +172,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val compareItems = mutableStateListOf<Property>()
 
     /** 검색 결과·관심·비교 물건의 자동 분석. 권리 상세를 불러온 물건은 그것까지 반영한다. */
+    /** 부동산(공매·경매) + 차량·동산 */
+    val allResults: List<Property> by derivedStateOf { (results + movables).distinctBy { it.id } }
+
     val analyses: Map<String, Analysis> by derivedStateOf {
-        val all = (results + favorites + compareItems).distinctBy { it.id }
+        val all = (allResults + favorites + compareItems).distinctBy { it.id }
         val rights = details.mapNotNull { (id, state) -> (state as? DetailState.Loaded)?.let { id to it.detail } }.toMap()
         val market = markets.mapNotNull { (id, state) -> (state as? MarketState.Loaded)?.let { id to it.summary } }.toMap()
-        Analyzer.analyzeAll(all, rights, market)
+        Analyzer.analyzeAll(all, rights, market, courtCases)
     }
 
     fun rightsOf(id: String): PropertyDetail? = (details[id] as? DetailState.Loaded)?.detail
@@ -162,8 +190,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     val visibleResults: List<Property> by derivedStateOf {
         val scored = analyses
-        sort.sort(filter.apply(results, now, scored), now, scored)
+        sort.sort(filter.apply(allResults, now, scored), now, scored)
     }
+
+    /** 상세 검색 화면에서 '몇 건 보기'를 미리 보여 줄 때 */
+    fun countMatching(draft: PropertyFilter): Int = draft.apply(allResults, now, analyses).size
 
     fun updateSettings(newSettings: SearchSettings) {
         settings = newSettings
@@ -253,9 +284,107 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 통합 검색. 검색어를 지역·종류·가격 등으로 해석해 필터로 걸고,
+     * 지금 불러온 지역과 다르면 그 지역을 새로 검색하고, 차량·동산이면 전국 차량·동산 공매를 불러온다.
+     */
+    fun runQuery(query: String) {
+        val intent = QueryParser.parse(query)
+        updateFilter(filter.copy(keyword = query.trim()))
+        queryNote = null
+        if (intent.isEmpty) return
+        if (intent.wantsMovables) {
+            val kinds = buildSet {
+                if (intent.categories.any { it == Category.VEHICLE }) add(MovableKind.VEHICLE)
+                if (intent.categories.any { it == Category.MOVABLE }) add(MovableKind.GOODS)
+            }
+            loadMovables(kinds)
+        }
+        val regionChanged = intent.sido.isNotEmpty() &&
+            (intent.sido != settings.sido || intent.sigungu.isNotEmpty() && intent.sigungu != settings.sigungu || intent.sigungu.isEmpty() && settings.sigungu.isNotEmpty())
+        when {
+            // "서울 논현동"처럼 시군구 없이 동이 있으면 동으로 시군구를 찾는다 (시도 전체 검색은 너무 넓다).
+            intent.dong.isNotEmpty() && intent.sigungu.isEmpty() && !intent.wantsMovables ->
+                resolveDong(listOf(Regions.shortName(intent.sido), intent.dong).filter { it.isNotBlank() }.joinToString(" "))
+            regionChanged -> {
+                updateSettings(settings.copy(sido = intent.sido, sigungu = intent.sigungu))
+                queryNote = "${Regions.shortName(intent.sido)} ${intent.sigungu.ifBlank { "전체" }} 물건을 불러옵니다."
+                search()
+            }
+            results.isEmpty() && !intent.wantsMovables && searchState !is SearchState.Loading -> search()
+        }
+    }
+
+    /** "논현동"처럼 동 이름만 있으면 어느 시군구인지 찾아 그 지역을 검색한다. */
+    private fun resolveDong(dong: String) {
+        queryNote = "$dong 위치를 찾는 중…"
+        viewModelScope.launch {
+            val region = withContext(Dispatchers.IO) {
+                val position = geocoder.locate(dong) ?: nominatim.search("$dong 대한민국")
+                position?.let { geocoder.addressOf(it) ?: nominatim.reverse(it) }?.let { Regions.fromAddress(it) }
+            }
+            if (region == null) {
+                queryNote = "'$dong'이 어느 지역인지 찾지 못했습니다. '서울 $dong'처럼 시·구를 함께 써 보세요."
+                return@launch
+            }
+            if (region.first == settings.sido && (region.second.isEmpty() || region.second == settings.sigungu) && results.isNotEmpty()) {
+                queryNote = null
+                return@launch
+            }
+            updateSettings(settings.copy(sido = region.first, sigungu = region.second))
+            queryNote = "$dong → ${Regions.shortName(region.first)} ${region.second.ifBlank { "전체" }} 물건을 불러옵니다. (다른 지역의 같은 이름이면 '시·구 + 동'으로 검색하세요)"
+            search()
+        }
+    }
+
+    /** 차량·동산 공매 (전국). 30분 안에 같은 종류를 이미 받았으면 다시 부르지 않는다. */
+    fun loadMovables(kinds: Set<MovableKind> = MovableKind.entries.toSet(), force: Boolean = false) {
+        val wanted = kinds.ifEmpty { MovableKind.entries.toSet() }
+        val current = movableState
+        if (current is MovableState.Loading) return
+        if (!force && current is MovableState.Done && current.kinds.containsAll(wanted) &&
+            Duration.between(current.fetchedAt, LocalDateTime.now()).toMinutes() < 30
+        ) return
+        val key = serviceKey
+        if (key.isBlank()) {
+            movableState = MovableState.Error("차량·동산 공매는 설정 탭에 공공데이터포털 인증키가 있어야 합니다.")
+            return
+        }
+        movableState = MovableState.Loading("차량·동산 공고 확인 중")
+        viewModelScope.launch {
+            movableState = try {
+                val outcome = withContext(Dispatchers.IO) {
+                    MovablesClient(OnbidClient(key)).search(MovableSearchRequest(kinds = wanted), LocalDateTime.now()) { done, total, label ->
+                        viewModelScope.launch { if (movableState is MovableState.Loading) movableState = MovableState.Loading("$label ($done/$total)") }
+                    }
+                }
+                movables = (movables.filterNot { it.movableKind in wanted } + outcome.properties).distinctBy { it.id }
+                if (outcome.warnings.isNotEmpty()) warnings = (warnings + outcome.warnings.take(3)).distinct()
+                MovableState.Done(LocalDateTime.now(), wanted + ((current as? MovableState.Done)?.kinds ?: emptySet()))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OnbidApiException) {
+                val approval = e.code in setOf("12", "20", "30", "HTTP401", "HTTP403")
+                MovableState.Error(
+                    if (approval) {
+                        "차량·동산은 공공데이터포털의 '차세대 온비드 공고목록 조회서비스'와 '공고상세 물건정보 조회서비스' 활용신청이 필요합니다. (${e.message})"
+                    } else {
+                        "차량·동산 공매를 불러오지 못했습니다: ${e.message}"
+                    },
+                )
+            } catch (e: Exception) {
+                MovableState.Error("차량·동산 공매를 불러오지 못했습니다: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun clearQueryNote() {
+        queryNote = null
+    }
+
     /** 목록에서 받은 물건을 우선한다. 상세 API 결과는 목록에 없을 때만 쓴다. */
     fun findProperty(id: String): Property? =
-        results.firstOrNull { it.id == id }
+        allResults.firstOrNull { it.id == id }
             ?: favorites.firstOrNull { it.id == id }
             ?: compareItems.firstOrNull { it.id == id }
             ?: (details[id] as? DetailState.Loaded)?.detail?.property
@@ -335,6 +464,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         courtDetails = courtDetails + (p.id to state)
     }
+
+    /** 법원 사건 이해관계인(임차인·유치권자 등). 상세 화면에서 한 번만 부르고, 실패해도 조용히 넘어간다. */
+    suspend fun loadCourtCase(p: Property) {
+        if (!p.isCourt || p.caseNo.isBlank() || p.courtCode.isBlank() || p.id in courtCases || p.id in caseTried) return
+        caseTried += p.id
+        val case = try {
+            courtLock.withLock { withContext(Dispatchers.IO) { courtClient.fetchCase(p) } }
+        } catch (e: CancellationException) {
+            caseTried -= p.id
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+        if (case != null) courtCases = courtCases + (p.id to case)
+    }
+
+    private val caseTried = mutableSetOf<String>()
+
+    fun courtCaseOf(id: String): CourtCase? = courtCases[id]
 
     fun courtPhotos(id: String): List<ByteArray> = (courtDetails[id] as? CourtDetailState.Loaded)?.detail?.photos.orEmpty()
 

@@ -333,12 +333,14 @@ fun BidCalculatorCard(property: Property, market: MarketSummary?, range: Pair<Lo
 /** 등기부등본·토지이용계획·건축물대장 등 공적 서류로 가는 길. */
 @Composable
 fun DocumentsCard(property: Property, onOpenRegistry: () -> Unit) {
+    val docs = OfficialDoc.relevant(property)
+    if (docs.isEmpty() && !property.isCourt) return
     val context = LocalContext.current
     SectionCard("서류 떼기·확인") {
         if (property.isCourt) {
             DocRow("매각물건명세서·현황조사서·감정평가서", "법원경매정보 · 무료", "사건번호를 복사해 두고 법원경매정보를 엽니다.") { Links.openCourt(context, property) }
         }
-        OfficialDoc.relevant(property).forEach { doc ->
+        docs.forEach { doc ->
             DocRow(doc.title, "${doc.site} · ${doc.fee}", doc.note) {
                 if (doc == OfficialDoc.REGISTRY) onOpenRegistry() else Links.openOfficialDoc(context, doc, property)
             }

@@ -30,6 +30,35 @@ data class CourtDetail(
 )
 
 /**
+ * 법원 경매사건 정보 (경매사건검색). 이해관계인 목록으로 임차인·유치권자 등이 권리신고를 했는지 본다.
+ * [stakeholders] 는 (구분, 이름) 쌍이다. 예: ("임차인", "김OO").
+ */
+data class CourtCase(
+    val caseName: String,
+    val claimAmount: Long?,
+    val receiptDate: String,
+    val stakeholders: List<Pair<String, String>>,
+    val appeals: Int,
+    val relatedCases: Int,
+    val claimDeadline: String,
+) {
+    data class RiskItem(val points: Int, val title: String, val detail: String)
+
+    fun count(keyword: String): Int = stakeholders.count { it.first.contains(keyword) }
+
+    /** 이해관계인 구성에서 읽히는 위험 신호 */
+    fun riskFactors(): List<RiskItem> = buildList {
+        val tenants = count("임차")
+        if (tenants > 0) add(RiskItem(15, "임차인 ${tenants}명이 이해관계인", "임차인이 권리신고를 했습니다. 매각물건명세서에서 전입일·확정일자를 보고 대항력(보증금 인수) 여부를 꼭 확인하세요."))
+        if (count("유치권") > 0) add(RiskItem(25, "유치권자 신고", "이해관계인에 유치권자가 있습니다. 점유를 풀려면 공사대금을 물어줘야 할 수 있습니다."))
+        if (count("전세권") > 0) add(RiskItem(10, "전세권자", "전세권이 말소기준권리보다 앞서면 낙찰자가 떠안을 수 있습니다."))
+        if (count("가처분") > 0) add(RiskItem(20, "가처분권자", "소유권 분쟁이 걸려 있을 수 있습니다."))
+        if (count("가등기") > 0) add(RiskItem(15, "가등기권자", "선순위 소유권이전청구권 가등기면 소유권을 잃을 수 있습니다."))
+        if (appeals > 0) add(RiskItem(5, "항고 ${appeals}건", "매각 절차에 이의가 제기돼 잔금·소유권 이전이 늦어질 수 있습니다."))
+    }
+}
+
+/**
  * 대법원 법원경매정보(courtauction.go.kr) 화면이 쓰는 JSON 을 그대로 호출한다. 공식 오픈API 가 아니다.
  *
  * - 진입 페이지 GET 으로 세션 쿠키를 받는다. 이때 HTTP 500 이 와도 쿠키는 내려오므로 상태코드는 따지지 않는다.
@@ -143,6 +172,18 @@ class CourtClient(
         return parseDetail(data["dma_result"] as? JsonObject ?: JsonObject(emptyMap()))
     }
 
+    /** 사건 단건 조회 (이해관계인·청구금액·항고). 상세 화면에서 한 번만 부른다. */
+    fun fetchCase(p: Property): CourtCase {
+        require(p.isCourt) { "법원경매 물건이 아닙니다" }
+        val payload = buildJsonObject {
+            put("dma_srchCsDtlInf", buildJsonObject {
+                put("cortOfcCd", p.courtCode)
+                put("csNo", p.caseNo)
+            })
+        }
+        return parseCase(post(CASE_URL, payload, submissionId = null, userId = null, referer = CASE_ENTRY_URL))
+    }
+
     private fun warmUp() {
         val response = try {
             transport.get(
@@ -160,7 +201,7 @@ class CourtClient(
         warmedUp = true
     }
 
-    private fun post(url: String, payload: JsonObject, submissionId: String, userId: String): JsonObject {
+    private fun post(url: String, payload: JsonObject, submissionId: String?, userId: String?, referer: String = ENTRY_URL): JsonObject {
         val now = clock()
         if (now < blockedUntil) {
             val minutes = ((blockedUntil - now) / 60_000).coerceAtLeast(1)
@@ -176,12 +217,11 @@ class CourtClient(
             "Accept" to "application/json, text/javascript, */*; q=0.01",
             "Accept-Language" to "ko-KR,ko;q=0.9,en;q=0.8",
             "Origin" to BASE,
-            "Referer" to ENTRY_URL,
+            "Referer" to referer,
             "X-Requested-With" to "XMLHttpRequest",
             "Content-Type" to "application/json; charset=UTF-8",
-            "submissionid" to submissionId,
-            "sc-userid" to userId,
-        ) + (if (cookies.isEmpty()) emptyMap() else mapOf("Cookie" to cookies.header()))
+        ) + listOfNotNull(submissionId?.let { "submissionid" to it }, userId?.let { "sc-userid" to it }) +
+            (if (cookies.isEmpty()) emptyMap() else mapOf("Cookie" to cookies.header()))
         val response = try {
             transport.post(url, headers, payload.toString())
         } catch (e: IOException) {
@@ -198,7 +238,11 @@ class CourtClient(
         }
         if (response.status >= 400 || root == null) {
             val reason = (root?.get("errors") as? JsonObject)?.str("errorMessage").orEmpty().ifEmpty { root?.str("message").orEmpty() }
-            val step = if (url == SEARCH_URL) "검색" else "상세"
+            val step = when (url) {
+                SEARCH_URL -> "검색"
+                CASE_URL -> "사건"
+                else -> "상세"
+            }
             throw OnbidApiException(
                 "COURT${response.status}",
                 "법원경매정보 $step 조회에 실패했습니다 (HTTP ${response.status}${if (reason.isNotEmpty()) ", $reason" else ""}). 잠시 후 다시 시도하세요.",
@@ -237,6 +281,8 @@ class CourtClient(
         const val ENTRY_URL = "$BASE/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ151F00.xml&pgjId=151F00"
         const val SEARCH_URL = "$BASE/pgj/pgjsearch/searchControllerMain.on"
         const val DETAIL_URL = "$BASE/pgj/pgj15B/selectAuctnCsSrchRslt.on"
+        const val CASE_URL = "$BASE/pgj/pgj15A/selectAuctnCsSrchRslt.on"
+        const val CASE_ENTRY_URL = "$BASE/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ159M00.xml&pgjId=159M00"
         private const val SEARCH_SUBMISSION = "mf_wfm_mainFrame_sbm_selectGdsDtlSrch"
         private const val DETAIL_SUBMISSION = "mf_wfm_mainFrame_sbm_selectGdsDtlSrchDtlInfo"
         const val USER_AGENT =
@@ -380,6 +426,24 @@ class CourtClient(
                 listOf(obj.str("objctArDts"), obj.str("pjbBuldList"), obj.str("dspslStkCtt")).filter { it.isNotBlank() }.joinToString(" ")
             }.filter { it.isNotBlank() }
             return CourtDetail(photos, rounds, current, objects)
+        }
+
+        fun parseCase(data: JsonObject): CourtCase {
+            val basis = data["dma_csBasInf"] as? JsonObject
+                ?: throw OnbidApiException("COURT_EMPTY", "법원경매정보에서 사건을 찾지 못했습니다 (비공개이거나 종결된 사건일 수 있습니다).")
+            val stakeholders = data["dlt_rletCsIntrpsLst"].objects().mapNotNull { row ->
+                val kind = row.firstStr("auctnIntrpsDvsNm1", "auctnIntrpsDvsNm2")
+                if (kind.isEmpty()) null else kind to row.firstStr("intrpsNm1", "intrpsNm2")
+            }
+            return CourtCase(
+                caseName = basis.str("csNm"),
+                claimAmount = parseAmount(basis.str("clmAmt"))?.takeIf { it > 0 },
+                receiptDate = basis.str("csRcptYmd").filter { it.isDigit() }.take(8),
+                stakeholders = stakeholders,
+                appeals = data["dlt_csApalRaplDts"].objects().size,
+                relatedCases = data["dlt_rletReltCsLst"].objects().size,
+                claimDeadline = data["dlt_dstrtDemnLstprdDts"].objects().firstOrNull()?.str("dstrtDemnLstprdYmd")?.filter { it.isDigit() }?.take(8).orEmpty(),
+            )
         }
 
         /** 법원경매정보는 상세 주소가 없어 검색 화면을 열고 사건번호를 넣게 한다. */
