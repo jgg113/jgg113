@@ -334,6 +334,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         val key = serviceKey
         searchJob?.cancel()
+        // 지역이 바뀌면 이전 결과의 위치 찾기는 그만둔다.
+        geocodeJob?.cancel()
+        geocodeJob = null
+        geocodeProgress = null
+        pendingGeocode = null
         searchState = SearchState.Loading(0, 1, "준비 중")
         searchJob = viewModelScope.launch {
             val found = mutableListOf<Property>()
@@ -704,7 +709,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val districts = withoutExact.map { districtKey(it) }.distinct().filter { it != "동:" && geoCache[it] == null && it !in geoFailed }
         val exact = withoutExact.filter { MapPayload.geoKey(it) !in geoFailed }.distinctBy { MapPayload.geoKey(it) }.take(150)
         if (districts.isEmpty() && exact.isEmpty()) return
-        geocodeJob?.cancel()
+        // 목록 순서만 바뀌어도 다시 불리므로, 진행 중이면 끊지 않고 새로 생긴 것만 끝난 뒤 이어서 처리한다.
+        val needed = (districts + exact.map { MapPayload.geoKey(it) }).toSet()
+        if (geocodeJob?.isActive == true) {
+            if (!geocodeKeys.containsAll(needed)) pendingGeocode = list
+            return
+        }
+        pendingGeocode = null
+        geocodeKeys = needed
         geocodeJob = viewModelScope.launch {
             val total = districts.size + exact.size
             var done = 0
@@ -742,8 +754,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (index % 5 == 4 || index == exact.lastIndex) geoVersion++
             }
             geocodeProgress = null
+            geocodeJob = null
+            pendingGeocode?.let { next ->
+                pendingGeocode = null
+                ensurePositions(next)
+            }
         }
     }
+
+    private var pendingGeocode: List<Property>? = null
+    private var geocodeKeys: Set<String> = emptySet()
 
     /** 내 위치의 시도·시군구를 찾아 그 지역을 검색한다. 찾은 지역 이름(실패하면 null)을 돌려준다. */
     fun searchAt(position: LatLng, onResult: (String?) -> Unit) {
