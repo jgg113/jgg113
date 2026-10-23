@@ -294,3 +294,91 @@ class RightsTest {
         assertEquals("034", detail.property.round)
     }
 }
+
+/** 실제 물건목록 응답 모양(2026-08 실측 구조): 전체주소 필드 없음, 썸네일은 thnlImgUrlAdr, 지번은 ltnoPnu. */
+private val realShapedRow = """
+    {"apslEvlAmt":489000000,"apslPrcCtrsLowstBidRto":null,"bidDivNm":"전자입찰","bidMthodNm":"최고가방식",
+     "bldSqms":41.11,"cltrBidBgngDt":"202612141400","cltrBidEndDt":"202612161700","cltrMngNo":"2022-08218-007",
+     "cltrUsgLclsCtgrNm":"부동산","cltrUsgMclsCtgrNm":"주거용건물","cltrUsgSclsCtgrNm":"다세대주택",
+     "collbBidPsblYn":"Y","dspsMthodNm":"매각","dtbtRqrEdtmCont":"2026/09/28","evcRsbyTrgtCont":"매수인",
+     "landSqms":17.5,"lctnEmdNm":"연남동","lctnSdnm":"서울특별시","lctnSggnm":"마포구",
+     "lowstBidPrcIndctCont":"48900000","ltnoPnu":"1144012400002450042",
+     "onbidCltrNm":"서울특별시 마포구 연남동 245-42 삼정도나빌 제2층 제204호","onbidCltrno":2030560,
+     "onbidPbancNo":902219,"orgNm":"한국자산관리공사","pbctCdtnNo":6162684,"pbctNo":10093226,"pbctNsq":"045",
+     "pbctStatCd":"0001","pbctStatNm":"입찰준비중","prptDivCd":"0007","prptDivNm":"압류재산","pvctTrgtYn":"N",
+     "rqstOrgNm":"남동세무서","subtBidPsblYn":"Y",
+     "thnlImgUrlAdr":"https://www.onbid.co.kr/op/cm/syc/filemng/filemngprcs/FileMngPrcsController/dnldFile.do?atchFileLstNo=1&atchSn=2",
+     "usbdNft":0}
+""".trimIndent()
+
+class RealShapeTest {
+    private val p = PropertyAssembler.assemble(OnbidResponseParser.parse(page(realShapedRow)).items, NOW).single()
+
+    @Test
+    fun mapsRealFields() {
+        assertEquals("서울특별시 마포구 연남동 245-42", p.address)
+        assertEquals("서울특별시 마포구 연남동 245-42", p.displayAddress)
+        assertTrue(p.thumbnailUrl.startsWith("https://www.onbid.co.kr/op/cm/syc/filemng"))
+        assertEquals("한국자산관리공사", p.organization)
+        assertEquals("남동세무서", p.requestOrg)
+        assertEquals("20260928", p.distributionDeadline)
+        assertEquals("매수인", p.evictionBy)
+        assertEquals(41.11, p.areaSqm)
+        assertEquals(10.0, p.appraisalRatio!!, 0.001)
+        assertEquals(Category.VILLA, p.category)
+    }
+
+    @Test
+    fun onbidDeepLinkUsesAllFourIds() {
+        assertEquals(
+            "https://www.onbid.co.kr/op/cltrpbancinf/cltrdtl/CltrDtlController/mvmnCltrDtl.do" +
+                "?onbidCltrno=2030560&onbidPbancNo=902219&pbctNo=10093226&pbctCdtnNo=6162684",
+            p.onbidUrl,
+        )
+        assertNull(p.copy(pbctNo = "").onbidUrl)
+    }
+
+    @Test
+    fun geocodeQueriesGoFromLotToDistrict() {
+        assertEquals(listOf("서울특별시 마포구 연남동 245-42", "서울특별시 마포구 연남동"), p.geocodeQueries)
+        val json = MapPayload.items(listOf(p)) { key -> if (key == "서울특별시 마포구 연남동 245-42") LatLng(37.56, 126.92) else null }
+        assertTrue(json.contains("\"gk\":\"서울특별시 마포구 연남동 245-42\""))
+        assertTrue(json.contains("\"lat\":37.56"))
+        assertTrue(json.contains("\"label\":\"4,890만\""))
+    }
+}
+
+class AddressTest {
+    @Test
+    fun lots() {
+        assertEquals("245-42", AddressParser.lotFromPnu("1144012400002450042"))
+        assertEquals("산181-11", AddressParser.lotFromPnu("4146025300101810011"))
+        assertEquals("72", AddressParser.lotFromPnu("1141011600000720000"))
+        assertNull(AddressParser.lotFromPnu("1141011600000000000"))
+        assertNull(AddressParser.lotFromPnu("12345"))
+        assertEquals("245-42", AddressParser.lotFromName("서울특별시 마포구 연남동 245-42 삼정도나빌 제2층", "연남동"))
+        assertEquals("산93-1", AddressParser.lotFromName("경기도 광주시 남종면 검천리 산 93-1 임야", "검천리"))
+        assertNull(AddressParser.lotFromName("래미안 아파트", "연남동"))
+        assertEquals("강남구 도곡동 467-6", AddressParser.stripTrailers("강남구 도곡동 467-6 외 2필지"))
+    }
+
+    @Test
+    fun undecidedDatesAreBlank() {
+        assertEquals("", normalizeDateTime("299901021000"))
+        val p = Property(id = "x", bidStart = normalizeDateTime("299901021000"), bidEnd = normalizeDateTime("299901021000"))
+        assertEquals(BidWindow.UNKNOWN, p.bidWindow(NOW))
+    }
+}
+
+class NearbyTest {
+    @Test
+    fun parsesPlacesFromMapPage() {
+        val list = NearbyPlace.parse("""[{"name":"홍대입구역 2호선","distance":350,"category":"교통,수송 > 지하철,전철 > 수도권2호선","url":"u"},{"name":""}]""")
+        assertEquals(1, list.size)
+        assertEquals(350, list[0].distanceM)
+        assertEquals("수도권2호선", list[0].category)
+        assertTrue(NearbyPlace.parse("not json").isEmpty())
+        assertEquals("350m · 도보 5분", Format.distance(350))
+        assertEquals("1.2km · 도보 18분", Format.distance(1200))
+    }
+}

@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.jgg113.gongmae.core.BidWindow
 import io.github.jgg113.gongmae.core.Format
+import io.github.jgg113.gongmae.core.LatLng
 import io.github.jgg113.gongmae.core.Property
 import java.time.LocalDateTime
 
@@ -60,11 +61,26 @@ object Links {
         }
     }
 
-    /** 온비드는 물건 주소를 외부에서 바로 열 수 없어 물건관리번호를 복사해 두고 홈을 연다. */
-    fun openOnbid(context: Context, id: String) {
-        copy(context, "물건관리번호", id)
-        Toast.makeText(context, "물건관리번호 $id 를 복사했습니다. 온비드 검색창에 붙여넣으세요.", Toast.LENGTH_LONG).show()
+    /** 온비드 물건 상세를 연다. 식별자가 모자라면 물건관리번호를 복사해 두고 홈을 연다. */
+    fun openOnbid(context: Context, property: Property) {
+        val url = property.onbidUrl
+        if (url != null) {
+            openUrl(context, url)
+            return
+        }
+        copy(context, "물건관리번호", property.id)
+        Toast.makeText(context, "물건관리번호 ${property.id} 를 복사했습니다. 온비드 검색창에 붙여넣으세요.", Toast.LENGTH_LONG).show()
         openUrl(context, ONBID_HOME)
+    }
+
+    /** 카카오맵 앱(없으면 웹)으로 위치를 연다. */
+    fun openKakaoMap(context: Context, name: String, position: LatLng?, query: String) {
+        val url = if (position != null) {
+            "https://map.kakao.com/link/map/" + Uri.encode(name.take(30)) + "," + position.lat + "," + position.lng
+        } else {
+            "https://map.kakao.com/link/search/" + Uri.encode(query)
+        }
+        openUrl(context, url)
     }
 
     fun copy(context: Context, label: String, text: String) {
@@ -80,6 +96,7 @@ object Links {
             appendLine("유찰 ${p.failCount}회 · ${p.bidWindow(now).label} ${Format.dDay(p, now)}".trimEnd())
             appendLine("입찰기간 ${Format.period(p.bidStart, p.bidEnd)}")
             append("온비드 물건관리번호 ${p.id}")
+            p.onbidUrl?.let { append("\n").append(it) }
         }
         val intent = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
         context.startActivity(Intent.createChooser(intent, "공유하기"))

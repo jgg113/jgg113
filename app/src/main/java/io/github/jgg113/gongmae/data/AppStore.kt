@@ -2,6 +2,7 @@ package io.github.jgg113.gongmae.data
 
 import android.content.Context
 import io.github.jgg113.gongmae.core.AssetType
+import io.github.jgg113.gongmae.core.LatLng
 import io.github.jgg113.gongmae.core.Property
 import io.github.jgg113.gongmae.core.PropertyFilter
 import io.github.jgg113.gongmae.core.SortOrder
@@ -20,6 +21,7 @@ data class SearchSettings(
 /** 인증키·검색조건·관심물건을 기기에만 저장한다. */
 class AppStore(context: Context) {
     private val prefs = context.getSharedPreferences("gongmae", Context.MODE_PRIVATE)
+    private val geoPrefs = context.getSharedPreferences("geocode", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
     private val propertyList = ListSerializer(Property.serializer())
 
@@ -28,6 +30,24 @@ class AppStore(context: Context) {
         set(value) {
             prefs.edit().putString("service_key", value).apply()
         }
+
+    var kakaoKey: String
+        get() = prefs.getString("kakao_js_key", null).orEmpty()
+        set(value) {
+            prefs.edit().putString("kakao_js_key", value).apply()
+        }
+
+    /** 주소 → 좌표 캐시. 같은 주소를 다시 지오코딩하지 않도록 기기에 남겨 둔다. */
+    fun loadGeoCache(): Map<String, LatLng> = geoPrefs.all.mapNotNull { (key, value) ->
+        val parts = (value as? String)?.split(',') ?: return@mapNotNull null
+        val lat = parts.getOrNull(0)?.toDoubleOrNull() ?: return@mapNotNull null
+        val lng = parts.getOrNull(1)?.toDoubleOrNull() ?: return@mapNotNull null
+        key to LatLng(lat, lng)
+    }.toMap()
+
+    fun saveGeo(key: String, position: LatLng) {
+        geoPrefs.edit().putString(key, "${position.lat},${position.lng}").apply()
+    }
 
     fun loadSettings(): SearchSettings {
         val types = prefs.getStringSet("asset_types", null)

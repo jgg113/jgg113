@@ -6,6 +6,8 @@ import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
@@ -29,6 +32,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,20 +42,30 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.jgg113.gongmae.core.Comparison
 import io.github.jgg113.gongmae.core.Format
+import io.github.jgg113.gongmae.core.MapPayload
+import io.github.jgg113.gongmae.core.NearbyCategory
+import io.github.jgg113.gongmae.core.NearbyPlace
 import io.github.jgg113.gongmae.core.Property
 import io.github.jgg113.gongmae.core.PropertyDetail
 import io.github.jgg113.gongmae.core.RightsParser
 import java.time.LocalDateTime
 
 @Composable
-fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
+fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit, onOpenSettings: () -> Unit) {
     val context = LocalContext.current
     val property = vm.findProperty(id)
     val now = vm.now
@@ -111,7 +125,7 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                             Spacer(Modifier.width(4.dp))
                             Text("지도")
                         }
-                        OutlinedButton(onClick = { Links.openOnbid(context, property.id) }, modifier = Modifier.weight(1f)) {
+                        OutlinedButton(onClick = { Links.openOnbid(context, property) }, modifier = Modifier.weight(1f)) {
                             Text("온비드")
                         }
                         val comparing = vm.isComparing(property.id)
@@ -125,6 +139,7 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                         ) { Text(if (comparing) "비교 빼기" else "비교 담기") }
                     }
                 }
+                item { LocationCard(vm, property, onOpenSettings) }
                 item { InfoCard(property, now) }
                 if (rounds.isNotEmpty()) {
                     item { RoundsCard(property, rounds, now) }
@@ -209,8 +224,126 @@ private fun InfoCard(property: Property, now: LocalDateTime) {
         InfoRow("입찰시작", Format.dateTime(property.bidStart))
         InfoRow("입찰마감", Format.dateTime(property.bidEnd))
         InfoRow("진행상태", listOf(property.bidWindow(now).label, property.statusName).filter { it.isNotBlank() }.distinct().joinToString(" · "))
-        InfoRow("집행기관", property.organization)
+        if (property.bidType.isNotBlank()) InfoRow("입찰구분", property.bidType)
+        InfoRow("공고기관", property.organization)
+        if (property.requestOrg.isNotBlank() && property.requestOrg != property.organization) InfoRow("위임기관", property.requestOrg)
+        if (property.distributionDeadline.isNotBlank()) InfoRow("배분요구종기", RightsParser.formatYmd(property.distributionDeadline))
+        if (property.evictionBy.isNotBlank()) InfoRow("명도책임", property.evictionBy)
+        if (property.jointBidAllowed.isNotBlank()) InfoRow("공동입찰", yesNo(property.jointBidAllowed))
+        if (property.proxyBidAllowed.isNotBlank()) InfoRow("대리입찰", yesNo(property.proxyBidAllowed))
         if (property.privateContract) InfoRow("수의계약", "가능")
+    }
+}
+
+private fun yesNo(flag: String): String = when (flag.uppercase()) {
+    "Y" -> "가능"
+    "N" -> "불가"
+    else -> flag
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LocationCard(vm: AppViewModel, property: Property, onOpenSettings: () -> Unit) {
+    val context = LocalContext.current
+    val geoKey = MapPayload.geoKey(property)
+    var position by remember(property.id) { mutableStateOf(vm.cachedPosition(geoKey)) }
+    val query = property.geocodeQueries.firstOrNull() ?: property.displayAddress
+
+    SectionCard("위치·주변 정보") {
+        Text(property.displayAddress, style = MaterialTheme.typography.bodyMedium)
+        if (vm.kakaoKey.isBlank()) {
+            MapKeyMissing(onOpenSettings)
+            OutlinedButton(onClick = { Links.openKakaoMap(context, property.name, position, query) }) { Text("카카오맵에서 보기") }
+        } else {
+            val controller = rememberKakaoMapController()
+            var category by rememberSaveable(property.id) { mutableStateOf<NearbyCategory?>(null) }
+            var places by remember(property.id) { mutableStateOf<List<NearbyPlace>?>(null) }
+            var roadviewOpen by remember { mutableStateOf(false) }
+            var note by remember { mutableStateOf<String?>(null) }
+
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(260.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+            ) {
+                KakaoMap(
+                    appKey = vm.kakaoKey,
+                    controller = controller,
+                    modifier = Modifier.matchParentSize(),
+                    onEvent = { event ->
+                        when (event) {
+                            is MapEvent.Located -> {
+                                position = event.position
+                                category?.let { controller.run("app.nearby('${it.code}')") }
+                            }
+                            is MapEvent.Geocoded -> vm.rememberPosition(event.key, event.position)
+                            is MapEvent.Nearby -> places = NearbyPlace.parse(event.json)
+                            is MapEvent.Message -> when (event.code) {
+                                "ROADVIEW_OPEN" -> roadviewOpen = true
+                                "NO_ROADVIEW" -> Toast.makeText(context, "이 근처에는 로드뷰가 없습니다.", Toast.LENGTH_SHORT).show()
+                                "GEOCODE_FAILED" -> note = "주소로 정확한 위치를 찾지 못했습니다."
+                                else -> Unit
+                            }
+                            else -> Unit
+                        }
+                    },
+                )
+                if (roadviewOpen) {
+                    FilledTonalButton(
+                        onClick = {
+                            controller.run("app.closeRoadview()")
+                            roadviewOpen = false
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp),
+                    ) { Text("지도로") }
+                }
+            }
+            LaunchedEffect(controller.ready) {
+                if (controller.ready) controller.run("app.showProperty(${MapPayload.item(property, position)})")
+            }
+            note?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { controller.run("app.openRoadview()") }, enabled = position != null) { Text("로드뷰") }
+                OutlinedButton(onClick = { Links.openKakaoMap(context, property.name, position, query) }) { Text("카카오맵 앱") }
+            }
+
+            Text("주변 시설 (반경 2km)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                NearbyCategory.entries.forEach { c ->
+                    FilterChip(
+                        selected = category == c,
+                        enabled = position != null,
+                        onClick = {
+                            category = if (category == c) null else c
+                            places = null
+                            controller.run("app.nearby('${category?.code.orEmpty()}')")
+                        },
+                        label = { Text(c.label) },
+                    )
+                }
+            }
+            val list = places
+            when {
+                category == null -> Unit
+                list == null -> Text("찾는 중…", style = MaterialTheme.typography.bodySmall)
+                list.isEmpty() -> Text("반경 2km 안에 ${category?.label} 이(가) 없습니다.", style = MaterialTheme.typography.bodySmall)
+                else -> list.take(8).forEach { place ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(place.name, style = MaterialTheme.typography.bodyMedium)
+                            if (place.category.isNotBlank()) {
+                                Text(place.category, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Text(Format.distance(place.distanceM), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                    }
+                }
+            }
+        }
     }
 }
 

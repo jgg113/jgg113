@@ -120,7 +120,28 @@ data class Property(
     val organization: String = "",
     val privateContract: Boolean = false,
     val rounds: List<BidRound> = emptyList(),
+    val onbidCltrNo: String = "",
+    val onbidPbancNo: String = "",
+    val pbctNo: String = "",
+    val lotPnu: String = "",
+    /** 공매를 맡긴 기관 (세무서·지자체 등). [organization] 은 공고기관. */
+    val requestOrg: String = "",
+    val bidType: String = "",
+    /** 배분요구종기 */
+    val distributionDeadline: String = "",
+    /** 명도책임 (매수인/매도인) */
+    val evictionBy: String = "",
+    val jointBidAllowed: String = "",
+    val proxyBidAllowed: String = "",
 ) {
+    /** 지오코딩에 넣을 주소 후보. 지번까지 있는 주소가 먼저, 읍면동 중심이 마지막. */
+    val geocodeQueries: List<String>
+        get() = listOf(AddressParser.stripTrailers(address), AddressParser.join(sido, sigungu, dong))
+            .filter { it.isNotBlank() }
+            .distinct()
+
+    val onbidUrl: String? get() = OnbidLinks.detailUrl(this)
+
     val category: Category get() = Category.classify(usageLarge, usageMedium, usageSmall, name)
 
     val usageLabel: String get() = usageSmall.ifBlank { usageMedium }.ifBlank { category.label }

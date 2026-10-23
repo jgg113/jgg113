@@ -61,6 +61,13 @@ object Format {
         }
     }
 
+    /** 350 → "350m · 도보 5분", 1200 → "1.2km · 도보 18분" (분속 67m 기준). */
+    fun distance(meters: Int): String {
+        val walk = maxOf(1, Math.round(meters / 67.0).toInt())
+        val length = if (meters < 1000) "${meters}m" else trimZeros(String.format(Locale.US, "%.1f", meters / 1000.0)) + "km"
+        return "$length · 도보 ${walk}분"
+    }
+
     private fun Long.grouped(): String = String.format(Locale.US, "%,d", this)
 
     private fun trimZeros(text: String): String =

@@ -10,12 +10,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.jgg113.gongmae.core.AssetType
 import io.github.jgg113.gongmae.core.Comparison
+import io.github.jgg113.gongmae.core.LatLng
 import io.github.jgg113.gongmae.core.OnbidApiException
 import io.github.jgg113.gongmae.core.OnbidClient
 import io.github.jgg113.gongmae.core.ProgressListener
 import io.github.jgg113.gongmae.core.Property
 import io.github.jgg113.gongmae.core.PropertyDetail
 import io.github.jgg113.gongmae.core.PropertyFilter
+import io.github.jgg113.gongmae.core.Regions
 import io.github.jgg113.gongmae.core.SearchRequest
 import io.github.jgg113.gongmae.core.ServiceKey
 import io.github.jgg113.gongmae.core.SortOrder
@@ -74,6 +76,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var keyTest by mutableStateOf<KeyTestState>(KeyTestState.Idle)
         private set
+    var kakaoKey by mutableStateOf(store.kakaoKey)
+        private set
+
+    private val geoCache = HashMap(store.loadGeoCache())
 
     val favorites = mutableStateListOf<Property>().apply { addAll(store.loadFavorites()) }
     val compareItems = mutableStateListOf<Property>()
@@ -198,6 +204,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun detailErrorMessage(e: OnbidApiException): String {
         val hint = "\n\n상세 정보는 '차세대 온비드 부동산 물건상세 조회서비스'를 따로 활용신청해야 합니다."
         return (e.message ?: "상세 조회 중 오류가 났습니다.") + if (e.code in setOf("12", "20", "30", "HTTP401", "HTTP403")) hint else ""
+    }
+
+    fun saveKakaoKey(raw: String) {
+        val key = raw.filterNot { it.isWhitespace() }
+        kakaoKey = key
+        store.kakaoKey = key
+    }
+
+    fun cachedPosition(key: String): LatLng? = geoCache[key]
+
+    fun rememberPosition(key: String, position: LatLng) {
+        if (key.isBlank() || geoCache[key] == position) return
+        geoCache[key] = position
+        store.saveGeo(key, position)
+    }
+
+    /**
+     * 지도에서 알아낸 내 위치의 시도·시군구로 검색한다. 카카오는 "수원시 장안구" 처럼 구까지 주므로 시 이름만 쓴다.
+     * 반환값은 화면에 보여 줄 지역 이름.
+     */
+    fun searchAround(kakaoSido: String, kakaoSigungu: String): String {
+        val sido = Regions.resolveSido(kakaoSido)
+        val city = kakaoSigungu.trim().split(' ').firstOrNull().orEmpty()
+        val sigungu = city.takeIf { it in Regions.sigunguOf(sido) }.orEmpty()
+        updateSettings(settings.copy(sido = sido, sigungu = sigungu))
+        search()
+        return "${Regions.shortName(sido)} ${sigungu.ifBlank { "전체" }}"
     }
 
     fun saveServiceKey(raw: String) {

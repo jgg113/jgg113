@@ -40,7 +40,15 @@ object PropertyAssembler {
         // pbctStatNm 에 코드가 그대로 들어오는 경우가 있다.
         val statusName = if (rawStatusName.isEmpty() || rawStatusName == statusCode) statusNames[statusCode].orEmpty() else rawStatusName
 
+        val sido = pick("lctnSdnm")
+        val sigungu = pick("lctnSggnm")
+        val dong = pick("lctnEmdNm")
+        val name = pick("onbidCltrNm", "cltrNm")
+        val pnu = pick("ltnoPnu")
+        // 전체 주소는 물건상세에만 있다. 목록에서는 PNU → 물건명 순으로 지번을 찾아 조립한다.
+        val lot = AddressParser.lotFromPnu(pnu) ?: AddressParser.lotFromName(name, dong)
         val address = pick("zadrNm", "cltrAdr", "cltrRadr")
+            .ifEmpty { if (lot != null && dong.isNotEmpty()) AddressParser.join(sido, sigungu, dong, lot) else "" }
         val road = pick("cltrRadr").takeIf { it != address }.orEmpty()
         val building = group.firstNotNullOfOrNull { it.decimal("bldSqms") }.takeIf { (it ?: 0.0) > 0.0 }
         val land = group.firstNotNullOfOrNull { it.decimal("landSqms") }.takeIf { (it ?: 0.0) > 0.0 }
@@ -49,12 +57,12 @@ object PropertyAssembler {
         return Property(
             id = current.str("cltrMngNo"),
             conditionNo = current.str("pbctCdtnNo"),
-            name = pick("onbidCltrNm", "cltrNm"),
+            name = name,
             address = address,
             roadAddress = road,
-            sido = pick("lctnSdnm"),
-            sigungu = pick("lctnSggnm"),
-            dong = pick("lctnEmdNm"),
+            sido = sido,
+            sigungu = sigungu,
+            dong = dong,
             assetTypeCode = assetCode,
             assetTypeName = pick("prptDivNm").ifEmpty { AssetType.labelOf(assetCode) },
             disposalMethod = pick("dspsMthodNm"),
@@ -74,10 +82,20 @@ object PropertyAssembler {
             round = current.str("pbctNsq"),
             bidStart = normalizeDateTime(current.str("cltrBidBgngDt")),
             bidEnd = normalizeDateTime(current.str("cltrBidEndDt"), endOfDay = true),
-            thumbnailUrl = absoluteImageUrl(pick("thmImgUrl", "cltrImgUrl")),
-            organization = pick("orgNm", "rqstOrgNm", "exctOrgNm"),
+            thumbnailUrl = absoluteImageUrl(pick("thnlImgUrlAdr", "thmImgUrl", "cltrImgUrl")),
+            organization = pick("orgNm", "exctOrgNm", "rqstOrgNm"),
             privateContract = pick("pvctTrgtYn").equals("Y", ignoreCase = true),
             rounds = rounds,
+            onbidCltrNo = current.str("onbidCltrno").ifEmpty { pick("onbidCltrno") },
+            onbidPbancNo = current.str("onbidPbancNo").ifEmpty { pick("onbidPbancNo") },
+            pbctNo = current.str("pbctNo").ifEmpty { pick("pbctNo") },
+            lotPnu = pnu,
+            requestOrg = pick("rqstOrgNm"),
+            bidType = pick("bidDivNm"),
+            distributionDeadline = pick("dtbtRqrEdtmCont").filter { it.isDigit() }.take(8),
+            evictionBy = pick("evcRsbyTrgtCont"),
+            jointBidAllowed = pick("collbBidPsblYn"),
+            proxyBidAllowed = pick("subtBidPsblYn"),
         )
     }
 

@@ -50,9 +50,13 @@ fun parseDecimal(raw: String?): Double? {
     return cleaned.toDoubleOrNull()
 }
 
-/** "202609281400" · "2026-09-28 14:00" · "20260928" → 12자리 yyyyMMddHHmm. 해석할 수 없으면 "". */
+/**
+ * "202609281400" · "2026-09-28 14:00" · "20260928" → 12자리 yyyyMMddHHmm. 해석할 수 없으면 "".
+ * 온비드는 일정 미정을 "2999…" 로 보내므로 2900년 이후는 미정("")으로 본다.
+ */
 fun normalizeDateTime(raw: String?, endOfDay: Boolean = false): String {
     val digits = raw.orEmpty().filter { it.isDigit() }
+    if (digits.length >= 4 && digits.substring(0, 4).toInt() >= 2900) return ""
     return when {
         digits.length >= 12 -> digits.substring(0, 12)
         digits.length == 8 -> digits + if (endOfDay) "2359" else "0000"
