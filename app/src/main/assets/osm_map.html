@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="stylesheet" href="leaflet/leaflet.css">
+<link rel="stylesheet" href="leaflet/MarkerCluster.css">
+<link rel="stylesheet" href="leaflet/MarkerCluster.Default.css">
+<style>
+  html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; font-family: sans-serif; }
+  #msg { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 1000; display: none;
+         background: rgba(0,0,0,.72); color: #fff; padding: 6px 12px; border-radius: 14px; font-size: 13px; white-space: nowrap; }
+  .price { background: transparent; border: 0; }
+  .bubble { display: inline-block; position: relative; transform: translate(-50%, -100%); margin-top: -8px;
+            background: #1F4FA3; color: #fff; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 700;
+            white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+  .bubble:after { content: ''; position: absolute; left: 50%; bottom: -6px; margin-left: -6px;
+                  border: 6px solid transparent; border-top-color: #1F4FA3; border-bottom: 0; }
+  .bubble small { font-weight: 400; margin-left: 3px; opacity: .9; }
+  .bubble.court { background: #7B3FA0; }
+  .bubble.court:after { border-top-color: #7B3FA0; }
+  .bubble.sel { background: #C0392B; }
+  .bubble.sel:after { border-top-color: #C0392B; }
+  .poi { display: inline-block; transform: translate(-50%, -100%); margin-top: -4px; background: #fff; color: #222;
+         border: 1px solid #0E7C66; border-radius: 10px; padding: 1px 6px; font-size: 11px; white-space: nowrap;
+         box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  .me { width: 14px; height: 14px; margin: -10px 0 0 -10px; border-radius: 50%; background: #2E7DF6; border: 3px solid #fff;
+        box-shadow: 0 0 0 2px rgba(46,125,246,.35); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="msg"></div>
+<script src="leaflet/leaflet.js"></script>
+<script src="leaflet/leaflet.markercluster.js"></script>
+<script>
+  // 안드로이드 → app.xxx() 호출, 지도 → Android.xxx() 콜백. 지도는 키가 필요 없는 OpenStreetMap 계열 타일을 쓴다.
+  var bridge = window.Android || { onReady: function () {}, onMessage: function () {}, onMarkerClick: function () {} };
+  var app = { ready: false };
+
+  function showMsg(text) {
+    var el = document.getElementById('msg');
+    el.textContent = text || '';
+    el.style.display = text ? 'block' : 'none';
+  }
+
+  (function () {
+    if (typeof L === 'undefined') { showMsg('지도를 불러오지 못했습니다.'); bridge.onMessage('LIB_FAILED'); return; }
+
+    var map = L.map('map', { zoomControl: true, attributionControl: true }).setView([37.5665, 126.9780], 11);
+    var layers = {
+      '기본': L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        subdomains: 'abcd', maxZoom: 20,
+        attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+      }),
+      '위성': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19, attribution: 'Tiles &copy; Esri'
+      }),
+      'OSM': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+      })
+    };
+    layers['기본'].addTo(map);
+    L.control.layers(layers, null, { position: 'topright' }).addTo(map);
+
+    var plain = L.layerGroup().addTo(map);
+    var cluster = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 45, disableClusteringAtZoom: 17 });
+    var markers = {};   // id → { marker, el }
+    var selectedId = null;
+    var pois = L.layerGroup().addTo(map);
+    var me = null;
+    var home = null;
+
+    function bubbleHtml(item, selected) {
+      var cls = 'bubble' + (item.court ? ' court' : '') + (selected ? ' sel' : '');
+      var sub = item.sub ? '<small>' + escapeHtml(item.sub) + '</small>' : '';
+      return '<div class="' + cls + '">' + escapeHtml(item.label || '-') + sub + '</div>';
+    }
+
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+
+    function icon(item, selected) {
+      return L.divIcon({ className: 'price', html: bubbleHtml(item, selected), iconSize: [0, 0] });
+    }
+
+    function select(id) {
+      if (selectedId && markers[selectedId]) markers[selectedId].marker.setIcon(icon(markers[selectedId].item, false));
+      selectedId = id;
+      if (markers[id]) {
+        markers[id].marker.setIcon(icon(markers[id].item, true));
+        markers[id].marker.setZIndexOffset(1000);
+      }
+    }
+
+    app.setItems = function (items, fit) {
+      plain.clearLayers();
+      cluster.clearLayers();
+      map.removeLayer(cluster);
+      markers = {};
+      selectedId = null;
+      // 물건이 많으면 가까운 것끼리 묶어서 보여준다.
+      var target = items.length > 80 ? cluster : plain;
+      var points = [];
+      items.forEach(function (item) {
+        if (typeof item.lat !== 'number' || typeof item.lng !== 'number') return;
+        var marker = L.marker([item.lat, item.lng], { icon: icon(item, false) });
+        marker.on('click', function () { select(item.id); bridge.onMarkerClick(item.id); });
+        markers[item.id] = { marker: marker, item: item };
+        target.addLayer(marker);
+        points.push([item.lat, item.lng]);
+      });
+      if (target === cluster) map.addLayer(cluster);
+      if (fit && points.length) {
+        if (points.length === 1) map.setView(points[0], 16);
+        else map.fitBounds(points, { padding: [40, 40], maxZoom: 16 });
+      }
+      bridge.onMessage('ITEMS_SHOWN:' + points.length);
+    };
+
+    app.focus = function (id) {
+      var m = markers[id];
+      if (!m) return;
+      select(id);
+      map.setView(m.marker.getLatLng(), Math.max(map.getZoom(), 16));
+    };
+
+    app.progress = function (text) { showMsg(text); };
+
+    app.showMe = function (lat, lng, pan) {
+      if (!me) me = L.marker([lat, lng], { icon: L.divIcon({ className: '', html: '<div class="me"></div>', iconSize: [0, 0] }), zIndexOffset: 2000 });
+      me.setLatLng([lat, lng]).addTo(map);
+      if (pan) map.setView([lat, lng], 15);
+    };
+
+    // 상세 화면: 물건 하나와 주변 시설
+    app.showProperty = function (item) {
+      app.setItems([], false);
+      pois.clearLayers();
+      if (home) map.removeLayer(home);
+      home = L.marker([item.lat, item.lng], { icon: icon(item, true), zIndexOffset: 1500 }).addTo(map);
+      map.setView([item.lat, item.lng], 16);
+    };
+
+    app.showPois = function (list) {
+      pois.clearLayers();
+      var points = home ? [home.getLatLng()] : [];
+      list.forEach(function (p) {
+        L.marker([p.lat, p.lng], {
+          icon: L.divIcon({ className: '', html: '<div class="poi">' + escapeHtml(p.name) + '</div>', iconSize: [0, 0] })
+        }).addTo(pois);
+        points.push([p.lat, p.lng]);
+      });
+      if (points.length > 1) map.fitBounds(points.slice(0, 6), { padding: [30, 30], maxZoom: 17 });
+      else if (home) map.setView(home.getLatLng(), 16);
+    };
+
+    app.relayout = function () { map.invalidateSize(); };
+
+    window.addEventListener('resize', function () { map.invalidateSize(); });
+    app.ready = true;
+    bridge.onReady();
+  })();
+</script>
+</body>
+</html>

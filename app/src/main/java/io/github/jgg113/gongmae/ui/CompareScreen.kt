@@ -64,7 +64,8 @@ fun CompareScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit, onOpenSearch
             )
         } else {
             val now = vm.now
-            val rows = remember(items, now) { Comparison.rows(items, now) }
+            val analyses = vm.analyses
+            val rows = remember(items, now, analyses) { Comparison.rows(items, now, analyses) }
             val horizontal = rememberScrollState()
             BoxWithConstraints(
                 Modifier

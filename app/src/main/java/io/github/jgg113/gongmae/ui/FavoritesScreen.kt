@@ -51,6 +51,8 @@ fun FavoritesScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
                 items(favorites, key = { it.id }) { p ->
                     PropertyCard(
                         property = p,
+                        analysis = vm.analyses[p.id],
+                        photo = vm.courtPhotos(p.id).firstOrNull(),
                         now = vm.now,
                         isFavorite = true,
                         isComparing = vm.isComparing(p.id),

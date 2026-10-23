@@ -18,6 +18,11 @@ enum class AssetType(val code: String, val label: String, val hasPrivateContract
     }
 }
 
+enum class Source(val label: String) {
+    ONBID("공매"),
+    COURT("경매"),
+}
+
 enum class BidWindow(val label: String) {
     OPEN("입찰중"),
     UPCOMING("입찰예정"),
@@ -133,7 +138,25 @@ data class Property(
     val evictionBy: String = "",
     val jointBidAllowed: String = "",
     val proxyBidAllowed: String = "",
+    val source: Source = Source.ONBID,
+    /** 법원경매: 사건번호 "2023타경6292", 법원코드 "B000210", 물건번호 */
+    val caseNo: String = "",
+    val courtCode: String = "",
+    val itemSeq: String = "",
+    /** 법원경매 비고(특이사항) — 지분·유치권·법정지상권 같은 위험 신호가 여기 적힌다. */
+    val notes: String = "",
+    /** 지분 매각 내용 ("갑구 1번 홍길동 지분 160.8분의 40 전부") */
+    val shareInfo: String = "",
+    val salePlace: String = "",
+    val contact: String = "",
+    val viewCount: Int = 0,
+    val interestCount: Int = 0,
+    /** 재매각 명령일 — 전 낙찰자가 대금을 안 낸 물건 */
+    val reauctionDate: String = "",
+    val photoUrls: List<String> = emptyList(),
 ) {
+    val isCourt: Boolean get() = source == Source.COURT
+
     /** 지오코딩에 넣을 주소 후보. 지번까지 있는 주소가 먼저, 읍면동 중심이 마지막. */
     val geocodeQueries: List<String>
         get() = listOf(AddressParser.stripTrailers(address), AddressParser.join(sido, sigungu, dong))

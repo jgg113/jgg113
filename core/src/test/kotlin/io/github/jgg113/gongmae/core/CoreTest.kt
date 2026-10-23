@@ -341,10 +341,11 @@ class RealShapeTest {
     @Test
     fun geocodeQueriesGoFromLotToDistrict() {
         assertEquals(listOf("서울특별시 마포구 연남동 245-42", "서울특별시 마포구 연남동"), p.geocodeQueries)
-        val json = MapPayload.items(listOf(p)) { key -> if (key == "서울특별시 마포구 연남동 245-42") LatLng(37.56, 126.92) else null }
+        val json = MapPayload.items(listOf(p, p.copy(id = "other", address = "", dong = "x"))) { key -> if (key == "서울특별시 마포구 연남동 245-42") LatLng(37.56, 126.92) else null }
         assertTrue(json.contains("\"gk\":\"서울특별시 마포구 연남동 245-42\""))
         assertTrue(json.contains("\"lat\":37.56"))
         assertTrue(json.contains("\"label\":\"4,890만\""))
+        assertTrue(!json.contains("other"), "좌표 없는 물건은 빠진다")
     }
 }
 
@@ -372,13 +373,224 @@ class AddressTest {
 
 class NearbyTest {
     @Test
-    fun parsesPlacesFromMapPage() {
-        val list = NearbyPlace.parse("""[{"name":"홍대입구역 2호선","distance":350,"category":"교통,수송 > 지하철,전철 > 수도권2호선","url":"u"},{"name":""}]""")
-        assertEquals(1, list.size)
-        assertEquals(350, list[0].distanceM)
-        assertEquals("수도권2호선", list[0].category)
-        assertTrue(NearbyPlace.parse("not json").isEmpty())
+    fun parsesOverpassElements() {
+        val center = LatLng(37.5600, 126.9200)
+        val body = """{"elements":[
+            {"type":"node","id":1,"lat":37.5571,"lon":126.9245,"tags":{"name":"홍대입구","name:ko":"홍대입구역","railway":"station"}},
+            {"type":"way","id":2,"center":{"lat":37.5610,"lon":126.9210},"tags":{"name":"연남초등학교"}},
+            {"type":"node","id":3,"lat":37.5572,"lon":126.9246,"tags":{"name:ko":"홍대입구역"}},
+            {"type":"node","id":4,"lat":37.5,"lon":126.9}]}"""
+        val places = OverpassClient().parse(body, NearbyCategory.SUBWAY, center)
+        assertEquals(listOf("연남초등학교", "홍대입구역"), places.map { it.name })
+        assertTrue(places.last().distanceM in 450..550)
+        val q = OverpassClient().query(NearbyCategory.MART, center, 1000)
+        assertTrue(q.contains("nwr[\"shop\"~\"^(supermarket|department_store|mall)$\"](around:1000,37.56,126.92);"))
+        assertTrue(q.contains("nwr[\"amenity\"=\"marketplace\"](around:1000,37.56,126.92);"))
         assertEquals("350m · 도보 5분", Format.distance(350))
         assertEquals("1.2km · 도보 18분", Format.distance(1200))
+    }
+
+    @Test
+    fun fallsBackToSecondServer() {
+        val transport = object : WebTransport {
+            val urls = mutableListOf<String>()
+            override fun get(url: String, headers: Map<String, String>) = error("unused")
+            override fun post(url: String, headers: Map<String, String>, body: String): WebResponse {
+                urls += url
+                return if (urls.size == 1) WebResponse(504, "busy") else WebResponse(200, """{"elements":[]}""")
+            }
+        }
+        assertTrue(OverpassClient(transport).search(NearbyCategory.BANK, LatLng(37.0, 127.0)).isEmpty())
+        assertEquals(OverpassClient.ENDPOINTS, transport.urls)
+    }
+}
+
+/** 법원경매정보 검색 응답 모양 (2026-06 화면 캡처 구조). */
+private fun courtRow(
+    docid: String,
+    bigo: String = "",
+    share: String = "",
+    usage: String = "다세대",
+    large: String = "20000",
+    appraisal: String = "271000000",
+    minPrice: String = "14899000",
+    fails: String = "14",
+    sigungu: String = "관악구",
+    extra: String = "",
+) = """{"docid":"$docid","boCd":"B000210","saNo":"20230130006292","maemulSer":"1","mokmulSer":"1","srnSaNo":"2023타경6292",
+    "mulJinYn":"Y","mulBigo":"$bigo","gamevalAmt":"$appraisal","minmaePrice":"$minPrice","yuchalCnt":"$fails","inqCnt":"12",
+    "gwansMulRegCnt":"21","remaeordDay":"","ipchalGbncd":"000331","maeGiil":"20260916","maeHh1":"1000","maePlace":"제4별관2층211호법정",
+    "stopsaGbncd":"00","hjguSido":"서울특별시","hjguSigu":"$sigungu","hjguDong":"남현동","hjguRd":"","daepyoLotno":"1064-23",
+    "buldNm":"씨에스타운","buldList":"비동 2층205호","areaList":"","lclsUtilCd":"$large","sclsUtilCd":"20106",
+    "pjbBuldList":"철근콘크리트구조 28.33㎡","minArea":"28","jiwonNm":"서울중앙지방법원","jpDeptNm":"경매3계",
+    "tel":"530-1815","maejibun":"$share","rd1Nm":"서울특별시","rd2Nm":"관악구","rdEubMyun":"","rdNm":"남현3길","buldNo":"39",
+    "dspslUsgNm":"$usage"$extra}"""
+
+private fun courtPage(vararg rows: String, total: Int = rows.size) =
+    """{"status":200,"message":"검색 결과가 조회되었습니다.","errors":null,"data":{"dma_pageInfo":{"pageNo":1,"pageSize":50,"totalCnt":"$total"},"ipcheck":true,"dlt_srchResult":[${rows.joinToString(",")}]}}"""
+
+private class FakeWeb(val onPost: (String, Map<String, String>, String) -> WebResponse) : WebTransport {
+    val posts = mutableListOf<Pair<Map<String, String>, String>>()
+    var gets = 0
+    override fun get(url: String, headers: Map<String, String>): WebResponse {
+        gets++
+        return WebResponse(200, "<html/>", listOf("JSESSIONID=abc123; Path=/; HttpOnly", "WMONID=w1; Path=/"))
+    }
+    override fun post(url: String, headers: Map<String, String>, body: String): WebResponse {
+        posts += headers to body
+        return onPost(url, headers, body)
+    }
+}
+
+class CourtTest {
+    @Test
+    fun mapsSearchRow() {
+        val row = OnbidResponseParser.parse("""{"header":{"resultCode":"00"},"body":{"items":[${courtRow("B0002102023013000629211")}]}}""").items.single()
+        val p = CourtClient.toProperty(row)!!
+        assertEquals(Source.COURT, p.source)
+        assertEquals("2023타경6292", p.caseNo)
+        assertEquals("서울특별시 관악구 남현동 1064-23", p.address)
+        assertEquals("서울특별시 관악구 남현동 1064-23 씨에스타운 비동 2층205호", p.name)
+        assertEquals("서울특별시 관악구 남현3길 39", p.roadAddress)
+        assertEquals(271_000_000L, p.appraisalPrice)
+        assertEquals(14_899_000L, p.minBidPrice)
+        assertEquals(14, p.failCount)
+        assertEquals(28.33, p.areaSqm)
+        assertEquals("202609161000", p.bidStart)
+        assertEquals(BidWindow.UPCOMING, p.bidWindow(NOW))
+        assertEquals("D-14", Format.dDay(p, NOW))
+        assertEquals(Category.VILLA, p.category)
+        assertEquals("서울중앙지방법원 경매3계", p.organization)
+        assertEquals(21, p.interestCount)
+        assertNull(CourtClient.toProperty(OnbidResponseParser.parse("""{"body":{"items":[{"docid":"x","lclsUtilCd":"30000"}]}}""").items.single()))
+    }
+
+    @Test
+    fun searchWarmsUpSendsHeadersAndPages() {
+        val sleeps = mutableListOf<Long>()
+        val web = FakeWeb { _, _, body ->
+            when {
+                body.contains("\"pageNo\":1") -> WebResponse(200, courtPage(*Array(50) { courtRow("D$it") }, total = 52))
+                else -> WebResponse(200, courtPage(courtRow("E1"), courtRow("E2", sigungu = "동작구"), total = 52))
+            }
+        }
+        val out = CourtClient(web, delayMs = 700, sleeper = { sleeps += it }, clock = { 1_000L })
+            .search(CourtSearchRequest("서울특별시", sigungu = "관악구", weeks = 4), NOW)
+        assertEquals(1, web.gets)
+        assertEquals(2, web.posts.size)
+        val (headers, body) = web.posts.first()
+        assertEquals("JSESSIONID=abc123; WMONID=w1", headers["Cookie"])
+        assertEquals("mf_wfm_mainFrame_sbm_selectGdsDtlSrch", headers["submissionid"])
+        assertEquals("SYSTEM", headers["sc-userid"])
+        assertTrue(body.contains("\"rdDspslPlcAdongSdCd\":\"11\""))
+        assertTrue(body.contains("\"bidBgngYmd\":\"20260902\""))
+        assertTrue(body.contains("\"bidEndYmd\":\"20260930\""))
+        assertTrue(body.contains("\"pageSize\":50"))
+        assertEquals(listOf(700L), sleeps)
+        assertEquals(51, out.properties.size) // 동작구 1건은 걸러진다
+    }
+
+    @Test
+    fun blockedAccessIsReported() {
+        val web = FakeWeb { _, _, _ -> WebResponse(200, """{"status":200,"data":{"ipcheck":false,"dlt_srchResult":[]}}""") }
+        val e = assertFailsWith<OnbidApiException> { CourtClient(web, sleeper = {}).search(CourtSearchRequest("서울특별시"), NOW) }
+        assertEquals("COURT_LIMIT", e.code)
+    }
+
+    @Test
+    fun parsesDetailPhotosAndRounds() {
+        val jpeg = java.util.Base64.getEncoder().encodeToString(ByteArray(200) { it.toByte() })
+        val result = OnbidResponseParser.parse("""{"body":{"items":[{
+            "csPicLst":[{"cortAuctnPicDvsCd":"000245","cortAuctnPicSeq":"1","picFile":"$jpeg"},
+                        {"cortAuctnPicDvsCd":"000241","cortAuctnPicSeq":"2","picFile":"$jpeg"},
+                        {"cortAuctnPicDvsCd":"000241","cortAuctnPicSeq":"1","picFile":""}],
+            "gdsDspslDxdyLst":[{"dxdyYmd":"20260812","auctnDxdyKndCd":"01","auctnDxdyRsltCd":"002","tsLwsDspslPrc":21284000},
+                               {"dxdyYmd":"20260916","auctnDxdyKndCd":"01","auctnDxdyRsltCd":"","tsLwsDspslPrc":14899000},
+                               {"dxdyYmd":"20260923","auctnDxdyKndCd":"02","tsLwsDspslPrc":0}],
+            "gdsDspslObjctLst":[{"objctArDts":"28.33㎡","pjbBuldList":"철근콘크리트구조"}]}]}}""").items.single()
+        val detail = CourtClient.parseDetail(result)
+        assertEquals(2, detail.photos.size)
+        assertEquals(2, detail.rounds.size)
+        assertEquals(14_899_000L, detail.currentMinPrice)
+        assertEquals("예정", detail.rounds[1].statusName)
+        assertEquals(listOf("28.33㎡ 철근콘크리트구조"), detail.objects)
+    }
+}
+
+class AnalyzerTest {
+    private fun court(bigo: String = "", share: String = "", usage: String = "다세대", large: String = "20000", minPrice: String = "14899000", fails: String = "14") =
+        CourtClient.toProperty(OnbidResponseParser.parse("""{"body":{"items":[${courtRow("X", bigo, share, usage, large, minPrice = minPrice, fails = fails)}]}}""").items.single())!!
+
+    @Test
+    fun shareSaleWithSurfaceRightIsDangerous() {
+        val a = Analyzer.analyze(court(bigo = "1.일괄매각\n2.지분매각임\n3.지상 소재 건물을 위하여 법정지상권 성립할 여지 있음", share = "갑구 1번 지분 160.8분의 40 전부", usage = "대지", large = "10000"))
+        assertEquals(RiskLevel.DANGER, a.riskLevel)
+        assertTrue(a.risks.map { it.title }.containsAll(listOf("지분 매각", "법정지상권 성립 여지")))
+        assertTrue(a.headline.startsWith("⚠ "))
+        assertTrue(a.summary.contains("위험 요소"))
+    }
+
+    @Test
+    fun cleanCheapApartmentScoresHigh() {
+        val apt = court(usage = "아파트", minPrice = "135500000", fails = "2")  // 감정가 2.71억의 50%
+        val a = Analyzer.analyze(apt)
+        assertEquals(RiskLevel.SAFE, a.riskLevel)
+        assertTrue(a.attractiveness >= 60, "attractiveness ${a.attractiveness}")
+        assertTrue(a.total >= 70, "total ${a.total}")
+        assertTrue(a.merits.any { it.title.startsWith("감정가의 50%") })
+    }
+
+    @Test
+    fun onbidSeizedNeedsRightsAndSeniorTenantIsDanger() {
+        val p = PropertyAssembler.assemble(OnbidResponseParser.parse(page(realShapedRow)).items, NOW).single()
+        val before = Analyzer.analyze(p)
+        assertTrue(before.factors.any { it.title == "권리정보 미확인" })
+        assertTrue(before.factors.any { it.title == "명도 책임: 매수인" })
+        val rights = PropertyDetail(p, emptyList(), emptyList(), emptyList(), emptyList(), "20200115", 50_000_000, listOf("전입일이 말소기준권리보다 빠른 임차인"))
+        val after = Analyzer.analyze(p, rights = rights)
+        assertTrue(after.rightsChecked)
+        assertTrue(after.riskScore > before.riskScore)
+        assertTrue(after.risks.first().title.startsWith("선순위 임차보증금 5,000만원"))
+    }
+
+    @Test
+    fun peerComparisonAndSorting() {
+        fun apt(id: String, price: Long) = Property(id = id, sigungu = "마포구", usageSmall = "아파트", minBidPrice = price, appraisalPrice = 500_000_000, areaSqm = 84.0)
+        val list = listOf(apt("a", 300_000_000), apt("b", 400_000_000), apt("c", 450_000_000), apt("d", 460_000_000))
+        val analyses = Analyzer.analyzeAll(list)
+        assertTrue(analyses.getValue("a").merits.any { it.title.startsWith("주변 비슷한 물건보다 평당") })
+        assertTrue(analyses.getValue("d").factors.any { it.title.startsWith("주변보다 평당") })
+        assertEquals("a", SortOrder.SCORE_DESC.sort(list, NOW, analyses).first().id)
+        assertEquals(list.size, PropertyFilter(maxRisk = RiskLevel.SAFE).apply(list, NOW, analyses).size)
+    }
+
+    @Test
+    fun onbidPhotoGallery() {
+        val urls = OnbidLinks.photoUrls("https://www.onbid.co.kr/op/cm/syc/filemng/filemngprcs/FileMngPrcsController/dnldFile.do?atchFileLstNo=17076355&atchSn=2&hashCrpsNo=AB&downloadImageKind=THNL_NM", 3)
+        assertEquals(3, urls.size)
+        assertTrue(urls[0].endsWith("dnldImgFile.do?atchFileLstNo=17076355&atchSn=2&thnImgDownloadFlag=false&downloadImageKind=CLG_FILE_NM"))
+        assertTrue(urls[2].contains("atchSn=4"))
+        assertTrue(OnbidLinks.photoUrls("").isEmpty())
+    }
+}
+
+class RegionFromAddressTest {
+    @Test
+    fun findsSidoAndSigungu() {
+        assertEquals("서울특별시" to "마포구", Regions.fromAddress("대한민국 서울특별시 마포구 연남동 245-42"))
+        assertEquals("경기도" to "수원시", Regions.fromAddress("대한민국 경기도 수원시 장안구 정자동 1"))
+        assertEquals("세종특별자치시" to "", Regions.fromAddress("대한민국 세종특별자치시 한누리대로 2130"))
+        assertNull(Regions.fromAddress("Tokyo Japan"))
+    }
+
+    @Test
+    fun compareIncludesScores() {
+        val a = Property(id = "a", minBidPrice = 100, appraisalPrice = 200, usageSmall = "아파트")
+        val b = Property(id = "b", minBidPrice = 190, appraisalPrice = 200, usageSmall = "아파트", notes = "유치권 신고 있음")
+        val analyses = Analyzer.analyzeAll(listOf(a, b))
+        val rows = Comparison.rows(listOf(a, b), NOW, analyses).associateBy { it.label }
+        assertEquals(setOf(0), rows.getValue("종합점수").best)
+        assertEquals(setOf(0), rows.getValue("위험도").best)
+        assertTrue("종합점수" !in Comparison.rows(listOf(a, b), NOW).map { it.label })
     }
 }

@@ -46,6 +46,19 @@ object OnbidLinks {
         if (ids.any { it.second.isBlank() }) return null
         return DETAIL + "?" + ids.joinToString("&") { (k, v) -> "$k=$v" }
     }
+
+    private const val IMAGE = "https://www.onbid.co.kr/op/cm/syc/filemng/filemngprcs/FileMngPrcsController/dnldImgFile.do"
+    private val attachmentList = Regex("atchFileLstNo=(\\d+)")
+
+    /**
+     * 썸네일 URL 의 첨부목록번호로 큰 사진들(atchSn 2부터)을 만든다. 실제 장수는 알 수 없어 없는 번호는 화면에서 건너뛴다.
+     */
+    fun photoUrls(thumbnailUrl: String, count: Int = 6): List<String> {
+        val list = attachmentList.find(thumbnailUrl)?.groupValues?.get(1) ?: return emptyList()
+        return (2 until 2 + count).map { sn ->
+            "$IMAGE?atchFileLstNo=$list&atchSn=$sn&thnImgDownloadFlag=false&downloadImageKind=CLG_FILE_NM"
+        }
+    }
 }
 
 data class LatLng(val lat: Double, val lng: Double)

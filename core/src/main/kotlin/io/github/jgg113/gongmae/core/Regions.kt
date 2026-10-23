@@ -36,6 +36,17 @@ object Regions {
 
     fun sigunguOf(sido: String): List<String> = sigunguBySido[sido].orEmpty()
 
+    /**
+     * 주소 문자열(휴대폰 지오코더의 "대한민국 경기도 수원시 장안구 …" 등)에서 시도·시군구를 찾는다.
+     * 시군구가 목록에 없으면 빈 문자열.
+     */
+    fun fromAddress(text: String): Pair<String, String>? {
+        val tokens = text.split(' ', ',').map { it.trim() }.filter { it.isNotEmpty() }
+        val sido = tokens.firstNotNullOfOrNull { token -> resolveSido(token).takeIf { it in sidoList } } ?: return null
+        val sigungu = tokens.firstOrNull { it in sigunguOf(sido) }.orEmpty()
+        return sido to sigungu
+    }
+
     /** "서울특별시" → "서울" (화면 표시용). */
     fun shortName(sido: String): String = shortNames.entries.firstOrNull { it.value == sido }?.key ?: sido
 

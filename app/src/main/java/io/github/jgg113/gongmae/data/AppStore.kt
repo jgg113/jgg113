@@ -6,16 +6,20 @@ import io.github.jgg113.gongmae.core.LatLng
 import io.github.jgg113.gongmae.core.Property
 import io.github.jgg113.gongmae.core.PropertyFilter
 import io.github.jgg113.gongmae.core.SortOrder
+import io.github.jgg113.gongmae.core.Source
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
-/** API 로 보내는 검색 조건 (지역·재산유형). */
+/** 검색 조건 (지역·공매/경매·재산유형). */
 data class SearchSettings(
     val sido: String = "서울특별시",
     val sigungu: String = "",
+    val sources: Set<Source> = Source.entries.toSet(),
     val assetTypes: Set<AssetType> = AssetType.entries.toSet(),
     val includePrivateContract: Boolean = false,
+    /** 법원경매: 오늘부터 몇 주 안의 매각기일까지 */
+    val courtWeeks: Int = 4,
 )
 
 /** 인증키·검색조건·관심물건을 기기에만 저장한다. */
@@ -29,12 +33,6 @@ class AppStore(context: Context) {
         get() = prefs.getString("service_key", null).orEmpty()
         set(value) {
             prefs.edit().putString("service_key", value).apply()
-        }
-
-    var kakaoKey: String
-        get() = prefs.getString("kakao_js_key", null).orEmpty()
-        set(value) {
-            prefs.edit().putString("kakao_js_key", value).apply()
         }
 
     /** 주소 → 좌표 캐시. 같은 주소를 다시 지오코딩하지 않도록 기기에 남겨 둔다. */
@@ -53,7 +51,12 @@ class AppStore(context: Context) {
         val types = prefs.getStringSet("asset_types", null)
             ?.mapNotNull { code -> AssetType.entries.firstOrNull { it.code == code } }
             ?.toSet()
+        val sources = prefs.getStringSet("sources", null)
+            ?.mapNotNull { name -> Source.entries.firstOrNull { it.name == name } }
+            ?.toSet()
         return SearchSettings(
+            sources = sources?.takeIf { it.isNotEmpty() } ?: Source.entries.toSet(),
+            courtWeeks = prefs.getInt("court_weeks", 4),
             sido = prefs.getString("sido", null) ?: "서울특별시",
             sigungu = prefs.getString("sigungu", null).orEmpty(),
             assetTypes = types?.takeIf { it.isNotEmpty() } ?: AssetType.entries.toSet(),
@@ -67,6 +70,8 @@ class AppStore(context: Context) {
             .putString("sigungu", settings.sigungu)
             .putStringSet("asset_types", settings.assetTypes.map { it.code }.toSet())
             .putBoolean("private_contract", settings.includePrivateContract)
+            .putStringSet("sources", settings.sources.map { it.name }.toSet())
+            .putInt("court_weeks", settings.courtWeeks)
             .apply()
     }
 
@@ -75,7 +80,7 @@ class AppStore(context: Context) {
     fun saveFilter(filter: PropertyFilter) = encode("filter", PropertyFilter.serializer(), filter)
 
     fun loadSort(): SortOrder =
-        prefs.getString("sort", null)?.let { name -> SortOrder.entries.firstOrNull { it.name == name } } ?: SortOrder.DEADLINE
+        prefs.getString("sort", null)?.let { name -> SortOrder.entries.firstOrNull { it.name == name } } ?: SortOrder.SCORE_DESC
 
     fun saveSort(sort: SortOrder) {
         prefs.edit().putString("sort", sort.name).apply()

@@ -16,6 +16,8 @@ data class PropertyFilter(
     val windows: Set<BidWindow> = setOf(BidWindow.OPEN, BidWindow.UPCOMING),
     val disposal: Disposal = Disposal.ALL,
     val keyword: String = "",
+    /** 이 위험도까지만 보여준다. null 이면 전부 */
+    val maxRisk: RiskLevel? = null,
 ) {
     val activeCount: Int
         get() = listOf(
@@ -27,9 +29,11 @@ data class PropertyFilter(
             windows != DEFAULT_WINDOWS,
             disposal != Disposal.ALL,
             keyword.isNotBlank(),
+            maxRisk != null,
         ).count { it }
 
-    fun matches(p: Property, now: LocalDateTime): Boolean {
+    fun matches(p: Property, now: LocalDateTime, analysis: Analysis? = null): Boolean {
+        if (maxRisk != null && analysis != null && analysis.riskLevel > maxRisk) return false
         if (categories.isNotEmpty() && p.category !in categories) return false
         if (minPriceManwon != null && (p.minBidPrice ?: return false) < minPriceManwon * 10_000) return false
         if (maxPriceManwon != null && (p.minBidPrice ?: return false) > maxPriceManwon * 10_000) return false
@@ -48,7 +52,8 @@ data class PropertyFilter(
         return true
     }
 
-    fun apply(list: List<Property>, now: LocalDateTime): List<Property> = list.filter { matches(it, now) }
+    fun apply(list: List<Property>, now: LocalDateTime, analyses: Map<String, Analysis> = emptyMap()): List<Property> =
+        list.filter { matches(it, now, analyses[it.id]) }
 
     companion object {
         val DEFAULT_WINDOWS = setOf(BidWindow.OPEN, BidWindow.UPCOMING)
@@ -56,6 +61,9 @@ data class PropertyFilter(
 }
 
 enum class SortOrder(val label: String) {
+    SCORE_DESC("종합점수 높은순"),
+    ATTRACT_DESC("투자매력 높은순"),
+    SAFE_FIRST("안전한 순"),
     DEADLINE("마감 임박순"),
     PRICE_ASC("최저가 낮은순"),
     RATIO_ASC("감정가 대비 낮은순"),
@@ -63,7 +71,10 @@ enum class SortOrder(val label: String) {
     PYEONG_ASC("평당가 낮은순"),
     APPRAISAL_DESC("감정가 높은순");
 
-    fun sort(list: List<Property>, now: LocalDateTime): List<Property> = when (this) {
+    fun sort(list: List<Property>, now: LocalDateTime, analyses: Map<String, Analysis> = emptyMap()): List<Property> = when (this) {
+        SCORE_DESC -> list.sortedByDescending { analyses[it.id]?.total ?: -1 }
+        ATTRACT_DESC -> list.sortedByDescending { analyses[it.id]?.attractiveness ?: -1 }
+        SAFE_FIRST -> list.sortedWith(compareBy<Property> { analyses[it.id]?.riskScore ?: 101 }.thenByDescending { analyses[it.id]?.total ?: -1 })
         DEADLINE -> list.sortedWith(
             compareBy<Property> { deadlineRank(it.bidWindow(now)) }.thenBy { it.bidEnd.ifEmpty { "9".repeat(12) } },
         )

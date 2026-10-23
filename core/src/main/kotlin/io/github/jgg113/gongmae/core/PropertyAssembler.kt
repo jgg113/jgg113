@@ -53,6 +53,7 @@ object PropertyAssembler {
         val building = group.firstNotNullOfOrNull { it.decimal("bldSqms") }.takeIf { (it ?: 0.0) > 0.0 }
         val land = group.firstNotNullOfOrNull { it.decimal("landSqms") }.takeIf { (it ?: 0.0) > 0.0 }
         val assetCode = pick("prptDivCd")
+        val thumbnail = absoluteImageUrl(pick("thnlImgUrlAdr", "thmImgUrl", "cltrImgUrl"))
 
         return Property(
             id = current.str("cltrMngNo"),
@@ -82,7 +83,8 @@ object PropertyAssembler {
             round = current.str("pbctNsq"),
             bidStart = normalizeDateTime(current.str("cltrBidBgngDt")),
             bidEnd = normalizeDateTime(current.str("cltrBidEndDt"), endOfDay = true),
-            thumbnailUrl = absoluteImageUrl(pick("thnlImgUrlAdr", "thmImgUrl", "cltrImgUrl")),
+            thumbnailUrl = thumbnail,
+            photoUrls = OnbidLinks.photoUrls(thumbnail),
             organization = pick("orgNm", "exctOrgNm", "rqstOrgNm"),
             privateContract = pick("pvctTrgtYn").equals("Y", ignoreCase = true),
             rounds = rounds,

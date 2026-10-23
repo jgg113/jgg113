@@ -8,7 +8,14 @@ data class CompareRow(val label: String, val values: List<String>, val best: Set
 object Comparison {
     const val MAX_ITEMS = 4
 
-    fun rows(items: List<Property>, now: LocalDateTime): List<CompareRow> = listOf(
+    fun rows(items: List<Property>, now: LocalDateTime, analyses: Map<String, Analysis> = emptyMap()): List<CompareRow> = listOfNotNull(
+        CompareRow("종합점수", items.map { a -> analyses[a.id]?.let { "${it.total}점 (${it.grade})" } ?: "-" }, highest(items) { analyses[it.id]?.total?.toDouble() })
+            .takeIf { analyses.isNotEmpty() },
+        CompareRow("위험도", items.map { a -> analyses[a.id]?.let { "${it.riskLevel.label} ${it.riskScore}" } ?: "-" }, lowest(items) { analyses[it.id]?.riskScore?.toDouble() })
+            .takeIf { analyses.isNotEmpty() },
+        CompareRow("투자매력", items.map { a -> analyses[a.id]?.let { "${it.attractiveness}점" } ?: "-" }, highest(items) { analyses[it.id]?.attractiveness?.toDouble() })
+            .takeIf { analyses.isNotEmpty() },
+        CompareRow("구분", items.map { it.source.label + if (it.isCourt) " ${it.caseNo}" else "" }),
         CompareRow("용도", items.map { it.usageLabel }),
         CompareRow("재산유형", items.map { it.assetTypeName.ifBlank { "-" } }),
         CompareRow("처분방식", items.map { it.disposalMethod.ifBlank { "-" } }),

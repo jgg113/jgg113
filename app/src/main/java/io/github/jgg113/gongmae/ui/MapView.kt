@@ -11,36 +11,32 @@ import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.WebViewAssetLoader
 import io.github.jgg113.gongmae.core.LatLng
 
-/** 지도 페이지(assets/kakao_map.html)에서 올라오는 이벤트. */
+/** 지도 페이지(assets/osm_map.html)에서 올라오는 이벤트. */
 sealed interface MapEvent {
     data object Ready : MapEvent
     data class Message(val code: String) : MapEvent
     data class MarkerClick(val id: String) : MapEvent
-    data class Geocoded(val key: String, val position: LatLng) : MapEvent
-    data class Located(val position: LatLng) : MapEvent
-    data class Nearby(val json: String) : MapEvent
-    data class Region(val sido: String, val sigungu: String) : MapEvent
 }
 
 /** 화면 쪽에서 지도에 명령을 보낸다. 지도가 준비되기 전 명령은 버린다(준비되면 화면이 다시 보낸다). */
-class KakaoMapController {
+class MapController {
     internal var webView: WebView? = null
     var ready by mutableStateOf(false)
-        internal set
-    var failed by mutableStateOf(false)
         internal set
 
     fun run(script: String) {
@@ -50,7 +46,7 @@ class KakaoMapController {
 }
 
 @Composable
-fun rememberKakaoMapController(): KakaoMapController = remember { KakaoMapController() }
+fun rememberMapController(): MapController = remember { MapController() }
 
 /** JS → Kotlin 다리. 자바스크립트 스레드에서 불리므로 메인 스레드로 넘긴다. */
 class MapBridge(private val onEvent: (MapEvent) -> Unit) {
@@ -68,74 +64,61 @@ class MapBridge(private val onEvent: (MapEvent) -> Unit) {
 
     @JavascriptInterface
     fun onMarkerClick(id: String) = post(MapEvent.MarkerClick(id))
-
-    @JavascriptInterface
-    fun onGeocoded(key: String, lat: Double, lng: Double) = post(MapEvent.Geocoded(key, LatLng(lat, lng)))
-
-    @JavascriptInterface
-    fun onLocated(lat: Double, lng: Double) = post(MapEvent.Located(LatLng(lat, lng)))
-
-    @JavascriptInterface
-    fun onNearby(json: String) = post(MapEvent.Nearby(json))
-
-    @JavascriptInterface
-    fun onRegion(sido: String, sigungu: String) = post(MapEvent.Region(sido, sigungu))
 }
 
+private const val ASSET_HOST = "https://appassets.androidplatform.net"
+
 /**
- * 카카오맵 JavaScript API 를 WebView 로 띄운다.
- * 카카오는 JavaScript 키를 등록된 도메인에서만 허용하므로 페이지 출처를 http://localhost 로 둔다.
+ * OpenStreetMap 기반 지도 (Leaflet, 키 필요 없음). 라이브러리는 앱 안에 들어 있고 지도 그림(타일)만 인터넷에서 받는다.
+ * 페이지를 https 주소로 띄워야 타일 서버가 출처(Referer)를 확인할 수 있어 WebViewAssetLoader 를 쓴다.
  */
 @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
 @Composable
-fun KakaoMap(
-    appKey: String,
-    controller: KakaoMapController,
+fun MapView(
+    controller: MapController,
     modifier: Modifier = Modifier,
     onEvent: (MapEvent) -> Unit,
 ) {
     val currentOnEvent by rememberUpdatedState(onEvent)
-    key(appKey) {
-        AndroidView(
-            modifier = modifier,
-            factory = { context ->
-                WebView(context).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    webViewClient = WebViewClient()
-                    addJavascriptInterface(
-                        MapBridge { event ->
-                            when (event) {
-                                MapEvent.Ready -> controller.ready = true
-                                is MapEvent.Message -> if (event.code == "SDK_FAILED") controller.failed = true
-                                else -> Unit
-                            }
-                            currentOnEvent(event)
-                        },
-                        "Android",
-                    )
-                    // 목록 안에 있어도 지도를 끌면 목록이 아니라 지도가 움직이게 한다.
-                    setOnTouchListener { view, event ->
-                        if (event.action == MotionEvent.ACTION_DOWN) view.parent?.requestDisallowInterceptTouchEvent(true)
-                        false
-                    }
-                    controller.webView = this
-                    controller.ready = false
-                    controller.failed = false
-                    val html = context.assets.open("kakao_map.html").bufferedReader().use { it.readText() }
-                        .replace("__APPKEY__", appKey.trim())
-                    loadDataWithBaseURL("http://localhost/", html, "text/html", "UTF-8", null)
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            val assets = WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
+                .build()
+            WebView(context).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.userAgentString = settings.userAgentString + " GongmaeCompare/1.0"
+                webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                        assets.shouldInterceptRequest(request.url)
                 }
-            },
-            onRelease = { view ->
-                if (controller.webView === view) {
-                    controller.webView = null
-                    controller.ready = false
+                addJavascriptInterface(
+                    MapBridge { event ->
+                        if (event == MapEvent.Ready) controller.ready = true
+                        currentOnEvent(event)
+                    },
+                    "Android",
+                )
+                // 목록 안에 있어도 지도를 끌면 목록이 아니라 지도가 움직이게 한다.
+                setOnTouchListener { view, event ->
+                    if (event.action == MotionEvent.ACTION_DOWN) view.parent?.requestDisallowInterceptTouchEvent(true)
+                    false
                 }
-                view.destroy()
-            },
-        )
-    }
+                controller.webView = this
+                controller.ready = false
+                loadUrl("$ASSET_HOST/assets/osm_map.html")
+            }
+        },
+        onRelease = { view ->
+            if (controller.webView === view) {
+                controller.webView = null
+                controller.ready = false
+            }
+            view.destroy()
+        },
+    )
 }
 
 object DeviceLocation {

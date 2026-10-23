@@ -47,19 +47,11 @@ private val guideSteps = listOf(
     "신청 직후에는 키가 반영되기까지 1~2시간 걸릴 수 있습니다. [연결 테스트]로 확인하세요.",
 )
 
-private val kakaoSteps = listOf(
-    "developers.kakao.com 에 카카오 계정으로 로그인하고 [내 애플리케이션] → [애플리케이션 추가하기]로 앱을 만듭니다. 이름은 아무거나 괜찮습니다.",
-    "앱의 플랫폼(또는 JavaScript 키) 설정에서 Web 사이트 도메인에 http://localhost 를 등록합니다. 이 앱은 그 주소로 지도를 띄웁니다.",
-    "[앱 키]의 JavaScript 키를 복사해 위 칸에 붙여넣고 저장합니다.",
-    "'카카오맵' 사용 설정 항목이 보이면 켭니다. 지도가 안 뜨면 대부분 2번 도메인이나 이 설정 문제입니다.",
-)
-
 @Composable
 fun SettingsScreen(vm: AppViewModel) {
     val context = LocalContext.current
     var input by rememberSaveable { mutableStateOf(vm.serviceKey) }
     var reveal by rememberSaveable { mutableStateOf(false) }
-    var kakaoInput by rememberSaveable { mutableStateOf(vm.kakaoKey) }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("설정", fontWeight = FontWeight.Bold) }) },
@@ -75,7 +67,7 @@ fun SettingsScreen(vm: AppViewModel) {
         ) {
             SectionCard("공공데이터포털 인증키") {
                 Text(
-                    "공매 물건은 한국자산관리공사 온비드 공공데이터(오픈API)로 불러옵니다. 인증키는 이 휴대폰에만 저장됩니다.",
+                    "공매(온비드) 물건은 공공데이터포털 오픈API로 불러오므로 인증키가 필요합니다. 법원경매·지도·주변 시설은 키 없이 됩니다. 인증키는 이 휴대폰에만 저장됩니다.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -131,37 +123,6 @@ fun SettingsScreen(vm: AppViewModel) {
                 }
             }
 
-            SectionCard("카카오 지도 키 (지도·주변시설·로드뷰)") {
-                Text(
-                    "지도 탭과 상세 화면의 지도는 카카오맵을 씁니다. 카카오 개발자 사이트에서 무료로 받는 JavaScript 키가 필요합니다.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = kakaoInput,
-                    onValueChange = { kakaoInput = it },
-                    label = { Text("카카오 JavaScript 키") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Button(onClick = {
-                    vm.saveKakaoKey(kakaoInput)
-                    kakaoInput = vm.kakaoKey
-                }) { Text("저장") }
-                Text(
-                    if (vm.kakaoKey.isBlank()) "저장된 카카오 키가 없습니다." else "저장된 키: ${vm.kakaoKey.take(6)}…",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                kakaoSteps.forEachIndexed { index, step ->
-                    Row {
-                        Text("${index + 1}.", modifier = Modifier.width(22.dp), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                        Text(step, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-                OutlinedButton(onClick = { Links.openUrl(context, "https://developers.kakao.com/console/app") }) { Text("카카오 개발자 사이트 열기") }
-            }
-
             SectionCard("공공데이터포털 인증키 받는 방법") {
                 guideSteps.forEachIndexed { index, step ->
                     Row {
@@ -179,9 +140,11 @@ fun SettingsScreen(vm: AppViewModel) {
 
             SectionCard("앱 정보") {
                 InfoRow("버전", BuildConfig.VERSION_NAME)
-                InfoRow("데이터", "한국자산관리공사 온비드 (공공데이터포털 오픈API)")
+                InfoRow("공매", "한국자산관리공사 온비드 (공공데이터포털 오픈API)")
+                InfoRow("경매", "대법원 법원경매정보 (공개 화면)")
+                InfoRow("지도", "OpenStreetMap · CARTO · Esri")
                 Text(
-                    "이 앱은 공매 정보를 조회하고 비교만 합니다. 입찰은 온비드에서 직접 하세요. 표시되는 권리 분석은 자동 점검 결과로 참고용입니다.",
+                    "이 앱은 공매·경매 정보를 조회하고 비교만 합니다. 입찰은 온비드·법원에서 직접 하세요. AI 분석(위험도·투자매력·종합점수)은 공개 정보를 정해진 기준으로 점수화한 참고 자료입니다.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

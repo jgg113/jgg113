@@ -74,7 +74,9 @@ import io.github.jgg113.gongmae.core.Comparison
 import io.github.jgg113.gongmae.core.Disposal
 import io.github.jgg113.gongmae.core.PropertyFilter
 import io.github.jgg113.gongmae.core.Regions
+import io.github.jgg113.gongmae.core.RiskLevel
 import io.github.jgg113.gongmae.core.SortOrder
+import io.github.jgg113.gongmae.core.Source
 import java.time.format.DateTimeFormatter
 
 private val timeFormat = DateTimeFormatter.ofPattern("M월 d일 HH:mm")
@@ -94,7 +96,7 @@ fun SearchScreen(
     val visible = vm.visibleResults
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("공매 검색", fontWeight = FontWeight.Bold) }) },
+        topBar = { TopAppBar(title = { Text("공매·경매 검색", fontWeight = FontWeight.Bold) }) },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
     ) { padding ->
         Column(
@@ -121,6 +123,24 @@ fun SearchScreen(
                     }
                 }
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Source.entries.forEach { source ->
+                        FilterChip(
+                            selected = source in settings.sources,
+                            onClick = { vm.updateSettings(settings.copy(sources = settings.sources.toggle(source))) },
+                            label = { Text(if (source == Source.ONBID) "공매 (온비드)" else "경매 (법원)") },
+                        )
+                    }
+                    if (Source.COURT in settings.sources) {
+                        listOf(2, 4, 8).forEach { weeks ->
+                            FilterChip(
+                                selected = settings.courtWeeks == weeks,
+                                onClick = { vm.updateSettings(settings.copy(courtWeeks = weeks)) },
+                                label = { Text("경매 ${weeks}주 안") },
+                            )
+                        }
+                    }
+                }
+                if (Source.ONBID in settings.sources) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     AssetType.entries.forEach { type ->
                         FilterChip(
                             selected = type in settings.assetTypes,
@@ -168,18 +188,16 @@ fun SearchScreen(
                         },
                     )
                     vm.results.isEmpty() && state is SearchState.Done -> EmptyState(
-                        title = "공매 물건이 없습니다",
-                        message = "선택한 지역·재산유형에 지금 진행 중인 공매 물건이 없습니다. 지역을 넓히거나 재산유형을 더 골라 보세요.",
+                        title = "물건이 없습니다",
+                        message = "선택한 지역에 지금 진행 중인 물건이 없습니다. 지역을 넓히거나 경매 기간·재산유형을 더 골라 보세요." +
+                            vm.warnings.joinToString("") { "\n\n$it" },
                     )
                     vm.results.isEmpty() && state !is SearchState.Loading -> EmptyState(
-                        title = "공매 물건을 찾아보세요",
-                        message = if (vm.serviceKey.isBlank()) {
-                            "처음이라면 설정 탭에서 공공데이터포털 인증키를 입력하세요.\n그다음 지역을 고르고 [검색]을 누르면 온비드 공매 물건을 불러옵니다."
-                        } else {
-                            "지역과 재산유형을 고르고 [검색]을 누르세요.\n불러온 뒤에는 필터와 정렬로 바로 좁혀 볼 수 있습니다."
-                        },
-                        action = if (vm.serviceKey.isBlank()) {
-                            { Button(onClick = onOpenSettings) { Text("인증키 설정하기") } }
+                        title = "공매·경매 물건을 찾아보세요",
+                        message = "지역을 고르고 [검색]을 누르세요. 법원경매는 바로 볼 수 있고, 공매(온비드)는 설정 탭에 공공데이터포털 인증키가 있어야 합니다.\n" +
+                            "불러온 물건마다 AI 분석으로 위험도·투자매력·종합점수를 매겨 줍니다.",
+                        action = if (vm.serviceKey.isBlank() && Source.ONBID in settings.sources) {
+                            { OutlinedButton(onClick = onOpenSettings) { Text("공매 인증키 설정하기") } }
                         } else {
                             null
                         },
@@ -199,6 +217,9 @@ fun SearchScreen(
                         items(visible, key = { it.id }) { p ->
                             PropertyCard(
                                 property = p,
+                                analysis = vm.analyses[p.id],
+                                photo = vm.courtPhotos(p.id).firstOrNull(),
+                                onVisible = { vm.loadCourtDetail(p) },
                                 now = vm.now,
                                 isFavorite = vm.isFavorite(p.id),
                                 isComparing = vm.isComparing(p.id),
@@ -490,6 +511,26 @@ private fun FilterSheet(initial: PropertyFilter, onDismiss: () -> Unit, onApply:
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            FilterSection("AI 위험도") {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf<RiskLevel?>(null, RiskLevel.SAFE, RiskLevel.CAUTION).forEach { level ->
+                        FilterChip(
+                            selected = draft.maxRisk == level,
+                            onClick = { draft = draft.copy(maxRisk = level) },
+                            label = {
+                                Text(
+                                    when (level) {
+                                        null -> "전체"
+                                        RiskLevel.SAFE -> "안전만"
+                                        else -> "주의까지 (위험 제외)"
+                                    },
+                                )
+                            },
+                        )
+                    }
+                }
             }
 
             FilterSection("입찰 상태") {

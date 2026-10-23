@@ -95,7 +95,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 )
             }
             composable(Tab.MAP.route) {
-                MapScreen(vm, onOpenDetail = openDetail, onOpenSettings = { nav.openTab(Tab.SETTINGS) })
+                MapScreen(vm, onOpenDetail = openDetail)
             }
             composable(Tab.FAVORITES.route) { FavoritesScreen(vm, onOpenDetail = openDetail) }
             composable(Tab.COMPARE.route) {
@@ -103,12 +103,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
             }
             composable(Tab.SETTINGS.route) { SettingsScreen(vm) }
             composable(DETAIL_ROUTE) { entry ->
-                DetailScreen(
-                    vm,
-                    id = entry.arguments?.getString("id").orEmpty(),
-                    onBack = { nav.popBackStack() },
-                    onOpenSettings = { nav.openTab(Tab.SETTINGS) },
-                )
+                DetailScreen(vm, id = entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() })
             }
         }
     }
