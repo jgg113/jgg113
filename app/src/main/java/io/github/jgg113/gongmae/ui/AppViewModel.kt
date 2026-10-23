@@ -944,7 +944,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         facts = facts + (p.id to state)
     }
 
-    fun setAutoLookup(enabled: Boolean) {
+    fun changeAutoLookup(enabled: Boolean) {
         autoLookup = enabled
         store.autoLookup = enabled
     }

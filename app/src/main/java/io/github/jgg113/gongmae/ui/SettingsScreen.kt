@@ -364,7 +364,7 @@ private fun LookupAndAlertCard(vm: AppViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Switch(checked = vm.autoLookup, onCheckedChange = vm::setAutoLookup)
+            Switch(checked = vm.autoLookup, onCheckedChange = vm::changeAutoLookup)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
