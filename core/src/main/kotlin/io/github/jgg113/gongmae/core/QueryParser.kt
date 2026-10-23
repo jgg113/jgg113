@@ -20,6 +20,8 @@ data class QueryIntent(
     val newOnly: Boolean = false,
     /** 어디에도 해당하지 않는 낱말 — 물건명·주소·비고에 모두 들어 있어야 한다 */
     val keywords: List<String> = emptyList(),
+    /** "전국" 이라고 썼는지 */
+    val nationwide: Boolean = false,
 ) {
     val isEmpty: Boolean get() = text.isBlank()
 
@@ -32,7 +34,7 @@ data class QueryIntent(
     /** 화면에 보여 줄 해석 ("서울 강남구 · 아파트 · 5억 이하") */
     val description: String
         get() = listOfNotNull(
-            listOf(Regions.shortName(sido), sigungu, dong).filter { it.isNotBlank() }.joinToString(" ").ifBlank { null },
+            if (nationwide && sido.isEmpty()) "전국" else listOf(Regions.shortName(sido), sigungu, dong).filter { it.isNotBlank() }.joinToString(" ").ifBlank { null },
             sources.singleOrNull()?.label,
             ((categories - goods.map { it.category }.toSet()).map { it.label } + goods.map { it.label })
                 .joinToString(", ").ifBlank { null },
@@ -157,6 +159,8 @@ object QueryParser {
         val categories = mutableSetOf<Category>()
         val goods = mutableSetOf<GoodsGroup>()
         val keywords = mutableListOf<String>()
+        val nationwide = Regex("전국").containsMatchIn(text)
+        text = text.replace("전국", " ")
         val tokens = text.split(Regex("[\\s,]+")).map { it.trim('.', '·') }.filter { it.isNotEmpty() }
         val sidoTokens = tokens.mapNotNull { sidoOf(it) }
         if (sidoTokens.isNotEmpty()) sido = sidoTokens.first()
@@ -204,6 +208,7 @@ object QueryParser {
             minFails = minFails,
             newOnly = newOnly,
             keywords = keywords,
+            nationwide = nationwide,
         )
     }
 

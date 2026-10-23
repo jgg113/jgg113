@@ -58,7 +58,17 @@ enum class Category(val label: String) {
     /** 차량·동산 (부동산이 아님) */
     val isMovable: Boolean get() = this == VEHICLE || this == MOVABLE
 
+    val group: KindGroup
+        get() = when (this) {
+            VEHICLE -> KindGroup.VEHICLE
+            MOVABLE -> KindGroup.GOODS
+            else -> KindGroup.REAL_ESTATE
+        }
+
     companion object {
+        /** 부동산 세부 종류 (화면 순서) */
+        val realEstate: List<Category> = listOf(APARTMENT, OFFICETEL, VILLA, HOUSE, COMMERCIAL, FACTORY, LAND, FOREST, ETC)
+
         private val landTokens = setOf("전", "답", "대", "대지", "과수원", "목장용지", "잡종지", "도로", "구거", "하천", "유지", "묘지", "주차장")
         private val commercialWords = listOf("근린", "상가", "점포", "판매", "업무", "사무", "숙박", "상업", "의료", "교육", "위락", "운동", "종교")
 
@@ -89,6 +99,30 @@ enum class Category(val label: String) {
             }
         }
     }
+}
+
+/** 온비드처럼 물건을 크게 셋으로 나눈다. 세부는 부동산이면 [Category], 차량·동산이면 [GoodsGroup]. */
+enum class KindGroup(val label: String, val emoji: String) {
+    REAL_ESTATE("부동산", "🏢"),
+    VEHICLE("차량", "🚗"),
+    GOODS("동산", "📦");
+
+    val categories: Set<Category>
+        get() = when (this) {
+            REAL_ESTATE -> Category.realEstate.toSet()
+            VEHICLE -> setOf(Category.VEHICLE)
+            GOODS -> setOf(Category.MOVABLE)
+        }
+
+    /** 차량·동산 세부 묶음 */
+    val goods: List<GoodsGroup> get() = GoodsGroup.entries.filter { it.group == this }
+
+    val movableKind: MovableKind?
+        get() = when (this) {
+            REAL_ESTATE -> null
+            VEHICLE -> MovableKind.VEHICLE
+            GOODS -> MovableKind.GOODS
+        }
 }
 
 /** 한 물건의 입찰 회차 1건. 날짜는 yyyyMMddHHmm 12자리 문자열. */

@@ -36,6 +36,25 @@ object Regions {
 
     fun sigunguOf(sido: String): List<String> = sigunguBySido[sido].orEmpty()
 
+    /** 검색 지역의 시도가 빈 문자열이면 전국이다. */
+    const val NATIONWIDE = ""
+
+    /** 시군구 여러 개는 쉼표로 이어 저장한다 ("강남구,서초구"). */
+    fun splitSigungu(value: String): List<String> = value.split(',').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+    fun joinSigungu(values: Collection<String>): String = values.filter { it.isNotBlank() }.distinct().joinToString(",")
+
+    /** 화면 표시: "전국", "서울 전체", "서울 강남구", "서울 강남구 외 2" */
+    fun label(sido: String, sigungu: String): String {
+        if (sido.isBlank()) return "전국"
+        val list = splitSigungu(sigungu)
+        return when (list.size) {
+            0 -> "${shortName(sido)} 전체"
+            1 -> "${shortName(sido)} ${list[0]}"
+            else -> "${shortName(sido)} ${list[0]} 외 ${list.size - 1}"
+        }
+    }
+
     /**
      * 주소 문자열(휴대폰 지오코더의 "대한민국 경기도 수원시 장안구 …" 등)에서 시도·시군구를 찾는다.
      * 시군구가 목록에 없으면 빈 문자열.

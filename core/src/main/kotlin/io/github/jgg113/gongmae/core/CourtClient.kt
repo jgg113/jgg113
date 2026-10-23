@@ -394,6 +394,11 @@ class CourtClient(
                 longitude = position?.lng,
                 lawdCode = row.str("srchHjguSiguCd").takeIf { it.length == 5 }
                     ?: (row.str("daepyoSidoCd") + row.str("daepyoSiguCd")).takeIf { it.length == 5 }.orEmpty(),
+                // 법정동코드 + 대표 지번으로 PNU 를 만들어 공시지가·건축물대장 조회에 쓴다.
+                lotPnu = Parcel.onbidStylePnu(
+                    row.str("srchHjguRdCd").takeIf { it.length == 10 } ?: row.str("srchHjguDongCd").takeIf { it.length == 8 }?.plus("00").orEmpty(),
+                    row.str("daepyoLotno"),
+                ),
             )
         }
 

@@ -27,6 +27,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
@@ -49,8 +50,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import io.github.jgg113.gongmae.core.Analysis
+import io.github.jgg113.gongmae.core.BidWindow
 import io.github.jgg113.gongmae.core.Category
 import io.github.jgg113.gongmae.core.Comparison
+import io.github.jgg113.gongmae.core.GeoMath
 import io.github.jgg113.gongmae.core.LatLng
 import io.github.jgg113.gongmae.core.MapPayload
 import io.github.jgg113.gongmae.core.MovableKind
@@ -72,6 +75,20 @@ private val mapKinds = listOf(
     "동산" to setOf(Category.MOVABLE),
 )
 
+/** 지도에 보여 줄 층 (미스고처럼 켜고 끈다) */
+private enum class MapLayer(val label: String) {
+    ONBID("공매"),
+    COURT("경매"),
+    MOVABLE("차량·동산"),
+    UPCOMING("입찰예정만"),
+}
+
+private enum class MeasureMode(val label: String) {
+    OFF("재기"),
+    DISTANCE("거리"),
+    AREA("면적"),
+}
+
 /** 지도 마커 정보: 첫 줄 가격, 둘째 줄 종류·평수·유찰. 공매 파랑, 경매 보라, 차량·동산 초록. */
 fun mapMarker(p: Property, position: LatLng, analysis: Analysis?): MapMarker = MapMarker(
     id = p.id,
@@ -90,13 +107,29 @@ fun mapMarker(p: Property, position: LatLng, analysis: Analysis?): MapMarker = M
 fun MapScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
     val context = LocalContext.current
     val mapState = rememberNativeMapState()
-    val items = vm.visibleResults
+    var layers by rememberSaveable { mutableStateOf(setOf(MapLayer.ONBID, MapLayer.COURT, MapLayer.MOVABLE)) }
+    val visible = vm.visibleResults
+    val now = vm.now
+    val items = remember(visible, layers, now) {
+        visible.filter { p ->
+            val layerOk = when {
+                p.category.isMovable -> MapLayer.MOVABLE in layers
+                p.isCourt -> MapLayer.COURT in layers
+                else -> MapLayer.ONBID in layers
+            }
+            layerOk && (MapLayer.UPCOMING !in layers || p.bidWindow(now) == BidWindow.UPCOMING)
+        }
+    }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var style by rememberSaveable { mutableStateOf(MapStyle.STREET) }
+    var cadastral by rememberSaveable { mutableStateOf(false) }
+    var measure by rememberSaveable { mutableStateOf(MeasureMode.OFF) }
+    var measurePoints by remember { mutableStateOf<List<LatLng>>(emptyList()) }
     var me by remember { mutableStateOf<LatLng?>(null) }
     // 위치를 받은 뒤 그 지역을 검색까지 할지 (아니면 내 위치로 이동만)
     var searchAfterLocate by remember { mutableStateOf(false) }
     var fittedIds by remember { mutableStateOf<List<String>?>(null) }
+    val vworldKey = vm.vworldKey
 
     fun locate() {
         DeviceLocation.request(context) { position ->
@@ -130,7 +163,7 @@ fun MapScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
         if (granted) locate() else permissionLauncher.launch(locationPermissions)
     }
 
-    // 좌표 없는 물건은 휴대폰 지오코더 → OpenStreetMap 주소 검색으로 찾는다.
+    // 좌표 없는 물건은 동 중심을 먼저 찾아 바로 보여 주고, 그다음 지번 위치를 찾는다.
     LaunchedEffect(items) { vm.ensurePositions(items) }
 
     val markers = remember(items, vm.geoVersion, vm.analyses) {
@@ -170,45 +203,46 @@ fun MapScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
                 style = style,
                 selectedId = selectedId,
                 myLocation = me,
+                vworldKey = vworldKey,
+                cadastral = cadastral,
+                measurePoints = measurePoints,
+                measureArea = measure == MeasureMode.AREA,
+                onMapTap = if (measure == MeasureMode.OFF) null else { point -> measurePoints = measurePoints + point },
                 modifier = Modifier.fillMaxSize(),
                 onSelect = { selectedId = it },
             )
 
             Column(Modifier.align(Alignment.TopStart).fillMaxWidth()) {
                 KindChips(vm)
-                Surface(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    shape = MaterialTheme.shapes.medium,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-                    shadowElevation = 2.dp,
-                ) {
-                    val progress = vm.geocodeProgress
-                    val movable = vm.movableState
-                    val label = when {
-                        vm.searchState is SearchState.Loading -> "불러오는 중…"
-                        movable is MovableState.Loading -> "차량·동산 ${movable.label}"
-                        vm.allResults.isEmpty() -> "검색 탭에서 지역을 검색하거나 '내 주변 찾기'를 누르세요"
-                        progress != null -> "위치 찾는 중 ${progress.first}/${progress.second} · 표시 ${markers.size}건"
-                        items.isEmpty() -> "조건에 맞는 물건이 없습니다 (검색 탭의 조건을 확인하세요)"
-                        else -> "${markers.size}/${items.size}건 표시 · 파랑 공매 · 보라 경매 · 초록 차량·동산"
-                    }
-                    Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
-                }
+                LayerChips(layers) { layers = it }
+                MapStatus(vm, markers.size, items.size)
             }
 
             Column(
                 Modifier
                     .align(Alignment.CenterEnd)
                     .padding(end = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
                 horizontalAlignment = Alignment.End,
             ) {
-                MapStyle.entries.forEach { s ->
-                    SmallFloatingActionButton(
-                        onClick = { style = s },
-                        containerColor = if (style == s) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                        contentColor = if (style == s) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                    ) { Text(s.label, style = MaterialTheme.typography.labelMedium) }
+                MapStyle.entries.filter { !it.needsVworldKey || vworldKey.isNotBlank() }.forEach { s ->
+                    MapToggle(s.label, style == s) { style = s }
+                }
+                if (vworldKey.isNotBlank()) {
+                    MapToggle("지적", cadastral) {
+                        cadastral = !cadastral
+                        if (cadastral && mapState.zoom < 15.5) {
+                            Toast.makeText(context, "지적도는 동네 수준으로 크게 확대했을 때 보입니다.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                MapToggle(if (measure == MeasureMode.OFF) "재기" else measure.label, measure != MeasureMode.OFF) {
+                    measure = when (measure) {
+                        MeasureMode.OFF -> MeasureMode.DISTANCE
+                        MeasureMode.DISTANCE -> MeasureMode.AREA
+                        MeasureMode.AREA -> MeasureMode.OFF
+                    }
+                    measurePoints = emptyList()
                 }
             }
 
@@ -221,10 +255,32 @@ fun MapScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                if (measure != MeasureMode.OFF) {
+                    MeasurePanel(
+                        mode = measure,
+                        points = measurePoints,
+                        onUndo = { measurePoints = measurePoints.dropLast(1) },
+                        onClear = { measurePoints = emptyList() },
+                        onClose = {
+                            measure = MeasureMode.OFF
+                            measurePoints = emptyList()
+                        },
+                    )
+                }
                 FloatingActionButton(onClick = { requestLocation(search = false) }) {
                     Icon(Icons.Filled.LocationOn, contentDescription = "내 위치")
                 }
-                if (selected != null) {
+                if (selected != null && measure == MeasureMode.OFF) {
+                    val position = vm.positionOf(selected)
+                    if (position != null) {
+                        Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surface, shadowElevation = 2.dp) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                TextButton(onClick = { Links.openStreetView(context, position) }) { Text("거리뷰") }
+                                TextButton(onClick = { Links.openRoadview(context, position) }) { Text("로드뷰") }
+                                TextButton(onClick = { Links.openNaverMap(context, selected.name, position, selected.displayAddress) }) { Text("네이버지도") }
+                            }
+                        }
+                    }
                     Box {
                         PropertyCard(
                             property = selected,
@@ -247,6 +303,95 @@ fun MapScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MapToggle(label: String, on: Boolean, onClick: () -> Unit) {
+    SmallFloatingActionButton(
+        onClick = onClick,
+        containerColor = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+        contentColor = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+    ) { Text(label, style = MaterialTheme.typography.labelMedium) }
+}
+
+/** 지금 무엇을 하는지 한 줄로 (불러오는 중이면 진행 정도와 지금까지 표시한 수) */
+@Composable
+private fun MapStatus(vm: AppViewModel, shown: Int, total: Int) {
+    val state = vm.searchState
+    val progress = vm.geocodeProgress
+    val movable = vm.movableState
+    Surface(
+        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+        shadowElevation = 2.dp,
+    ) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            val label = when {
+                state is SearchState.Loading -> "${state.label} 불러오는 중 (${state.done}/${state.total}) · 지금까지 ${shown}건 표시"
+                movable is MovableState.Loading -> "차량·동산 ${movable.label} · ${shown}건 표시"
+                vm.allResults.isEmpty() && state is SearchState.Error -> "불러오지 못했습니다: ${state.message.lineSequence().first()}"
+                vm.allResults.isEmpty() -> "검색 탭이나 홈에서 지역을 검색하거나 '내 주변 찾기'를 누르세요"
+                progress != null -> "위치 찾는 중 ${progress.first}/${progress.second} · ${shown}/${total}건 표시"
+                total == 0 -> "조건에 맞는 물건이 없습니다 (검색 조건·위 칩을 확인하세요)"
+                shown == 0 -> "${total}건의 위치를 찾지 못했습니다. 인터넷 연결을 확인하세요"
+                else -> "${shown}/${total}건 표시 · 파랑 공매 · 보라 경매 · 초록 차량·동산"
+            }
+            Text(label, style = MaterialTheme.typography.labelLarge)
+            if (state is SearchState.Loading || progress != null) {
+                LinearProgressIndicator(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LayerChips(layers: Set<MapLayer>, onChange: (Set<MapLayer>) -> Unit) {
+    Row(
+        Modifier
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        MapLayer.entries.forEach { layer ->
+            FilterChip(
+                selected = layer in layers,
+                onClick = { onChange(layers.toggle(layer)) },
+                label = { Text(layer.label) },
+                colors = FilterChipDefaults.filterChipColors(containerColor = MaterialTheme.colorScheme.surface),
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeasurePanel(mode: MeasureMode, points: List<LatLng>, onUndo: () -> Unit, onClear: () -> Unit, onClose: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 4.dp,
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            val result = when {
+                points.size < 2 -> "지도를 눌러 점을 찍으세요 (${if (mode == MeasureMode.AREA) "3점 이상" else "2점 이상"})"
+                mode == MeasureMode.AREA && points.size < 3 -> "한 점 더 찍으면 면적이 나옵니다 · ${GeoMath.formatLength(GeoMath.pathLength(points))}"
+                mode == MeasureMode.AREA -> "면적 ${GeoMath.formatArea(GeoMath.area(points))} · 둘레 ${GeoMath.formatLength(GeoMath.pathLength(points + points.first()))}"
+                else -> "거리 ${GeoMath.formatLength(GeoMath.pathLength(points))}"
+            }
+            Text("${mode.label} 재기 (지도를 누르면 점이 찍힙니다)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            Text(result, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Row {
+                TextButton(onClick = onUndo, enabled = points.isNotEmpty()) { Text("되돌리기") }
+                TextButton(onClick = onClear, enabled = points.isNotEmpty()) { Text("지우기") }
+                TextButton(onClick = onClose) { Text("끝내기") }
             }
         }
     }

@@ -25,6 +25,9 @@ object ClaudePrompt {
         mode: Mode,
         now: LocalDateTime,
         courtCase: CourtCase? = null,
+        facts: PublicFacts? = null,
+        rent: RentSummary? = null,
+        usageStat: UsageStat? = null,
     ): String = buildString {
         if (p.category.isMovable) {
             appendLine("너는 한국 공매(온비드) ${p.category.label} 입찰 전문가야. 아래 물건을 분석해 줘.")
@@ -87,13 +90,46 @@ object ClaudePrompt {
 
         if (market != null && market.estimatedValue != null) {
             appendLine()
-            appendLine("[최근 ${market.months}개월 실거래 (${if (market.sameDong) "같은 동" else "같은 시군구"}, 비슷한 면적 ${market.trades.size}건)]")
+            appendLine("[최근 ${market.months}개월 실거래 (${market.scope}, 비슷한 면적 ${market.trades.size}건)]")
             line("㎡당 중간값", Format.won(market.medianPerSqm))
+            market.trendPercent?.let { line("최근 3개월 추세", "${if (it >= 0) "+" else ""}${Format.percent(it)}") }
             line("이 면적 시세 추정", "${Format.won(market.estimatedValue)} (최저가는 그 ${Format.percent(market.ratioOf(p.minBidPrice))})")
             if (mode == Mode.DETAIL) {
                 market.trades.take(5).forEach { t ->
                     appendLine("- ${t.date} ${t.name} ${Format.area(t.areaSqm)} ${t.floor.takeIf { it.isNotBlank() }?.let { "${it}층 " }.orEmpty()}${Format.won(t.price)}")
                 }
+            }
+        }
+
+        if (rent != null && (rent.jeonseCount > 0 || rent.monthlyCount > 0)) {
+            appendLine()
+            appendLine("[최근 ${rent.months}개월 전월세 (${rent.scope}, 비슷한 면적)]")
+            if (rent.jeonseEstimate != null) line("전세 추정", "${Format.won(rent.jeonseEstimate)} (전세 ${rent.jeonseCount}건, 최저가 대비 ${Format.percent(rent.jeonseRatio(p.minBidPrice))})")
+            if (rent.monthlyRent != null) line("월세 추정", "보증금 ${Format.won(rent.monthlyDeposit)} / 월 ${Format.won(rent.monthlyRent)} (월세 ${rent.monthlyCount}건, 최저가 기준 연 ${Format.percent(rent.monthlyYield(p.minBidPrice))})")
+        }
+
+        if (usageStat != null) {
+            appendLine()
+            appendLine("[온비드 같은 용도 낙찰 통계 (${usageStat.usage})]")
+            line("평균 낙찰가율", Format.percent(usageStat.priceRate))
+            line("낙찰률·경쟁률", "${Format.percent(usageStat.soldRate)} · ${usageStat.competition ?: "-"}:1 (입찰 ${usageStat.bidCount}건 중 낙찰 ${usageStat.soldCount}건)")
+        }
+
+        if (facts != null && !facts.isEmpty) {
+            appendLine()
+            appendLine("[공적 자료 (자동 조회)]")
+            facts.parcel?.let { line("지번", it.lot) }
+            facts.latestLandPrice?.let { lp ->
+                line("개별공시지가", "${lp.year}년 ㎡당 ${Format.won(lp.pricePerSqm)}" + (facts.landPriceChange?.let { " (전년 대비 ${if (it >= 0) "+" else ""}${Format.percent(it)})" } ?: ""))
+                facts.landValue(p)?.let { line("공시지가 × 토지면적", Format.won(it)) }
+            }
+            facts.latestHousePrice?.let { line("개별주택가격", "${it.year}년 ${Format.won(it.price)}") }
+            facts.building?.let { b ->
+                line("건축물대장", listOf(b.mainPurpose, b.structure, "지상 ${b.groundFloors}층/지하 ${b.undergroundFloors}층").filter { it.isNotBlank() }.joinToString(", "))
+                line("사용승인", b.approvalDate.takeIf { it.length == 8 }?.let { RightsParser.formatYmd(it) + (b.age()?.let { a -> " (${a}년 경과)" } ?: "") }.orEmpty())
+                if (b.households > 0) line("세대수", "${b.households}세대")
+                if (b.parking > 0 || b.elevators > 0) line("주차·승강기", "주차 ${b.parking}대, 승강기 ${b.elevators}대")
+                if (b.otherPurposes.isNotBlank()) line("기타 용도", b.otherPurposes.take(80))
             }
         }
 

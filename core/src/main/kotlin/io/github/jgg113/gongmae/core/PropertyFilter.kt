@@ -11,6 +11,41 @@ enum class TenantStatus(val label: String) {
     UNKNOWN("미상"),
 }
 
+/** 감정가 대비 최저가 구간 (여러 개 고를 수 있다) */
+enum class RatioBand(val label: String, val min: Double, val max: Double) {
+    UNDER_50("50% 미만", 0.0, 50.0),
+    FROM_50("50~70%", 50.0, 70.0),
+    FROM_70("70~90%", 70.0, 90.0),
+    FROM_90("90% 이상", 90.0, Double.MAX_VALUE);
+
+    fun contains(ratio: Double): Boolean = ratio >= min && ratio < max
+}
+
+/** 금액 구간 (원). 감정가·최저가 칩 */
+enum class PriceBand(val label: String, val min: Long, val max: Long) {
+    UNDER_10M("1천만 미만", 0, 10_000_000),
+    TO_50M("1천~5천만", 10_000_000, 50_000_000),
+    TO_100M("5천만~1억", 50_000_000, 100_000_000),
+    TO_300M("1억~3억", 100_000_000, 300_000_000),
+    TO_500M("3억~5억", 300_000_000, 500_000_000),
+    TO_1B("5억~10억", 500_000_000, 1_000_000_000),
+    TO_3B("10억~30억", 1_000_000_000, 3_000_000_000),
+    OVER_3B("30억 이상", 3_000_000_000, Long.MAX_VALUE);
+
+    fun contains(won: Long): Boolean = won >= min && won < max
+}
+
+/** 유찰 횟수 칩: 0 신건, 1·2·3회, 4 = 4회 이상 */
+object FailBucket {
+    val all: List<Int> = listOf(0, 1, 2, 3, 4)
+    fun label(bucket: Int): String = when (bucket) {
+        0 -> "신건"
+        4 -> "4회 이상"
+        else -> "${bucket}회"
+    }
+    fun of(failCount: Int): Int = failCount.coerceIn(0, 4)
+}
+
 /**
  * 받아온 물건을 기기 안에서 거르는 조건. 금액은 만원 단위로 입력받는다.
  * [keyword] 는 통합 검색어로, [QueryParser] 가 지역·종류·가격 등으로 해석해 함께 건다.
@@ -47,13 +82,24 @@ data class PropertyFilter(
     val withinDays: Int? = null,
     /** AI 종합점수 하한 */
     val minScore: Int? = null,
+    /** 부동산·차량·동산 (비어 있으면 [categories]·[goods] 에서 짐작한다) */
+    val groups: Set<KindGroup> = emptySet(),
+    /** 유찰 횟수 칩 (여러 개). [FailBucket] */
+    val failBuckets: Set<Int> = emptySet(),
+    val riskLevels: Set<RiskLevel> = emptySet(),
+    val ratioBands: Set<RatioBand> = emptySet(),
+    val priceBands: Set<PriceBand> = emptySet(),
+    val appraisalBands: Set<PriceBand> = emptySet(),
+    /** 진행상태 이름에 들어 있는 낱말 ("진행", "정지", "입찰준비" …) */
+    val statuses: Set<String> = emptySet(),
+    val disposals: Set<Disposal> = emptySet(),
 ) {
     @Transient
     val intent: QueryIntent = QueryParser.parse(keyword)
 
     val activeCount: Int
         get() = listOf(
-            categories.isNotEmpty() || goods.isNotEmpty(),
+            categories.isNotEmpty() || goods.isNotEmpty() || groups.isNotEmpty(),
             minPriceManwon != null || maxPriceManwon != null,
             maxRatioPercent != null,
             minFailCount > 0 || maxFailCount != null,
@@ -68,19 +114,49 @@ data class PropertyFilter(
             tenants.isNotEmpty(),
             withinDays != null,
             minScore != null,
+            failBuckets.isNotEmpty(),
+            riskLevels.isNotEmpty(),
+            ratioBands.isNotEmpty(),
+            priceBands.isNotEmpty(),
+            appraisalBands.isNotEmpty(),
+            statuses.isNotEmpty(),
+            disposals.isNotEmpty(),
         ).count { it }
+
+    /** 고른 큰 종류. 직접 고르지 않았으면 세부 종류에서 짐작한다. */
+    val effectiveGroups: Set<KindGroup>
+        get() = groups + categories.map { it.group } + goods.map { it.group }
+
+    /** 큰 종류·세부 종류 조건 */
+    fun matchesKind(p: Property): Boolean {
+        val wanted = effectiveGroups
+        if (wanted.isEmpty()) return true
+        val group = p.category.group
+        if (group !in wanted) return false
+        return when (group) {
+            KindGroup.REAL_ESTATE -> {
+                val subs = categories.filter { it.group == KindGroup.REAL_ESTATE }
+                subs.isEmpty() || p.category in subs
+            }
+            else -> {
+                val subs = goods.filter { it.group == group }
+                subs.isEmpty() || subs.any { it.matches(p) } || (GoodsGroup.ETC in subs && GoodsGroup.of(p) == GoodsGroup.ETC)
+            }
+        }
+    }
 
     fun matches(p: Property, now: LocalDateTime, analysis: Analysis? = null): Boolean {
         if (maxRisk != null && analysis != null && analysis.riskLevel > maxRisk) return false
+        if (riskLevels.isNotEmpty() && analysis != null && analysis.riskLevel !in riskLevels) return false
         if (minScore != null && (analysis?.total ?: 0) < minScore) return false
         if (sources.isNotEmpty() && p.source !in sources) return false
-        val categoryOk = when {
-            p.category.isMovable && goods.isNotEmpty() -> goods.any { it.matches(p) }
-            categories.isNotEmpty() -> p.category in categories
-            goods.isNotEmpty() -> false
-            else -> true
-        }
-        if (!categoryOk) return false
+        if (!matchesKind(p)) return false
+        if (failBuckets.isNotEmpty() && FailBucket.of(p.failCount) !in failBuckets) return false
+        if (ratioBands.isNotEmpty() && ratioBands.none { band -> p.appraisalRatio?.let(band::contains) == true }) return false
+        if (priceBands.isNotEmpty() && priceBands.none { band -> p.minBidPrice?.let(band::contains) == true }) return false
+        if (appraisalBands.isNotEmpty() && appraisalBands.none { band -> p.appraisalPrice?.let(band::contains) == true }) return false
+        if (statuses.isNotEmpty() && statuses.none { p.statusName.contains(it) }) return false
+        if (disposals.isNotEmpty() && disposals.none { it.matches(p.disposalMethod) }) return false
         if (minPriceManwon != null && (p.minBidPrice ?: return false) < minPriceManwon * 10_000) return false
         if (maxPriceManwon != null && (p.minBidPrice ?: return false) > maxPriceManwon * 10_000) return false
         if (minAppraisalManwon != null && (p.appraisalPrice ?: return false) < minAppraisalManwon * 10_000) return false

@@ -8,13 +8,15 @@ import java.time.format.DateTimeFormatter
 import javax.xml.parsers.DocumentBuilderFactory
 
 /** 국토교통부 실거래가 공개 API 종류 (공공데이터포털에서 따로 활용신청한다). */
-enum class MarketKind(val label: String, val path: String, val nameTag: String, val areaTag: String, val apiName: String) {
-    APT("아파트", "RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev", "aptNm", "excluUseAr", "국토교통부_아파트 매매 실거래가 상세 자료"),
-    RH("연립·다세대", "RTMSDataSvcRHTrade/getRTMSDataSvcRHTrade", "mhouseNm", "excluUseAr", "국토교통부_연립다세대 매매 실거래가 자료"),
-    OFFI("오피스텔", "RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade", "offiNm", "excluUseAr", "국토교통부_오피스텔 매매 실거래가 자료"),
-    SH("단독·다가구", "RTMSDataSvcSHTrade/getRTMSDataSvcSHTrade", "umdNm", "totalFloorAr", "국토교통부_단독/다가구 매매 실거래가 자료"),
-    LAND("토지", "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade", "umdNm", "dealArea", "국토교통부_토지 매매 실거래가 자료"),
-    COMMERCIAL("상업·업무용", "RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade", "umdNm", "buildingAr", "국토교통부_상업업무용 부동산 매매 실거래가 자료");
+enum class MarketKind(val label: String, val path: String, val nameTag: String, val areaTag: String, val apiName: String, val datasetId: String) {
+    APT("아파트", "RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade", "aptNm", "excluUseAr", "국토교통부_아파트 매매 실거래가 자료", "15126469"),
+    RH("연립·다세대", "RTMSDataSvcRHTrade/getRTMSDataSvcRHTrade", "mhouseNm", "excluUseAr", "국토교통부_연립다세대 매매 실거래가 자료", "15126467"),
+    OFFI("오피스텔", "RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade", "offiNm", "excluUseAr", "국토교통부_오피스텔 매매 신고 자료", "15126464"),
+    SH("단독·다가구", "RTMSDataSvcSHTrade/getRTMSDataSvcSHTrade", "umdNm", "totalFloorAr", "국토교통부_단독/다가구 매매 실거래가 자료", "15126465"),
+    LAND("토지", "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade", "umdNm", "dealArea", "국토교통부_토지 매매 신고 자료", "15126466"),
+    COMMERCIAL("상업·업무용", "RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade", "umdNm", "buildingAr", "국토교통부_상업업무용 부동산 매매 신고 자료", "15126463");
+
+    val pageUrl: String get() = "https://www.data.go.kr/data/$datasetId/openapi.do"
 
     companion object {
         fun of(category: Category): MarketKind? = when (category) {
@@ -26,6 +28,59 @@ enum class MarketKind(val label: String, val path: String, val nameTag: String, 
             Category.COMMERCIAL, Category.FACTORY -> COMMERCIAL
             Category.VEHICLE, Category.MOVABLE, Category.ETC -> null
         }
+    }
+}
+
+/** 국토교통부 전월세 실거래 API (전세가율·월세 수익률 계산용) */
+enum class RentKind(val label: String, val path: String, val nameTag: String, val areaTag: String, val apiName: String, val datasetId: String) {
+    APT("아파트", "RTMSDataSvcAptRent/getRTMSDataSvcAptRent", "aptNm", "excluUseAr", "국토교통부_아파트 전월세 자료", "15126474"),
+    RH("연립·다세대", "RTMSDataSvcRHRent/getRTMSDataSvcRHRent", "mhouseNm", "excluUseAr", "국토교통부_연립다세대 전월세 실거래가 자료", "15126473"),
+    OFFI("오피스텔", "RTMSDataSvcOffiRent/getRTMSDataSvcOffiRent", "offiNm", "excluUseAr", "국토교통부_오피스텔 전월세 자료", "15126475"),
+    SH("단독·다가구", "RTMSDataSvcSHRent/getRTMSDataSvcSHRent", "umdNm", "totalFloorAr", "국토교통부_단독/다가구 전월세 자료", "15126472");
+
+    val pageUrl: String get() = "https://www.data.go.kr/data/$datasetId/openapi.do"
+
+    companion object {
+        fun of(category: Category): RentKind? = when (category) {
+            Category.APARTMENT -> APT
+            Category.VILLA -> RH
+            Category.OFFICETEL -> OFFI
+            Category.HOUSE -> SH
+            else -> null
+        }
+    }
+}
+
+/** 전월세 한 건 (금액은 원) */
+data class Rent(val name: String, val dong: String, val jibun: String, val areaSqm: Double, val deposit: Long, val monthly: Long, val date: String)
+
+/** 주변 전월세 요약 */
+data class RentSummary(
+    val kind: RentKind,
+    val months: Int,
+    val scope: String,
+    /** 비교에 쓴 전세 건수·월세 건수 */
+    val jeonseCount: Int,
+    val monthlyCount: Int,
+    /** 이 면적으로 환산한 전세 보증금 추정 */
+    val jeonseEstimate: Long?,
+    /** 월세의 보증금·월세 중간값 (이 면적 환산) */
+    val monthlyDeposit: Long?,
+    val monthlyRent: Long?,
+) {
+    /** 최저가 대비 전세가율(%) */
+    fun jeonseRatio(price: Long?): Double? {
+        val jeonse = jeonseEstimate ?: return null
+        if (price == null || price <= 0) return null
+        return jeonse * 100.0 / price
+    }
+
+    /** 이 값에 사서 월세를 놓을 때 연 수익률(%) — 대출·세금 제외 */
+    fun monthlyYield(price: Long?): Double? {
+        val rent = monthlyRent ?: return null
+        if (price == null || price <= 0) return null
+        val invested = price - (monthlyDeposit ?: 0)
+        return if (invested > 0) rent * 12 * 100.0 / invested else null
     }
 }
 
@@ -48,6 +103,10 @@ data class MarketSummary(
     val medianPerSqm: Long?,
     /** 이 물건 면적으로 환산한 시세 추정 */
     val estimatedValue: Long?,
+    /** 비교 범위 ("같은 단지", "같은 동", "같은 시군구") */
+    val scope: String = if (sameDong) "같은 동" else "같은 시군구",
+    /** 최근 3개월 ㎡당 중간값이 그 전 3개월보다 몇 % 오르내렸는지 (거래가 모자라면 null) */
+    val trendPercent: Double? = null,
 ) {
     /** 최저입찰가가 시세 추정의 몇 % 인지 */
     fun ratioOf(price: Long?): Double? {
@@ -73,6 +132,17 @@ class MolitClient(serviceKey: String, private val http: HttpGetter = UrlConnecti
             throw OnbidApiException(OnbidApiException.NETWORK, "인터넷 연결을 확인하세요. (${e.message ?: e.javaClass.simpleName})")
         }
         return parse(result.body, kind, result.status)
+    }
+
+    fun rents(kind: RentKind, lawdCode: String, yearMonth: String): List<Rent> {
+        val url = "https://apis.data.go.kr/1613000/${kind.path}?serviceKey=" + URLEncoder.encode(key, "UTF-8") +
+            "&LAWD_CD=$lawdCode&DEAL_YMD=$yearMonth&pageNo=1&numOfRows=1000"
+        val result = try {
+            http.get(url)
+        } catch (e: IOException) {
+            throw OnbidApiException(OnbidApiException.NETWORK, "인터넷 연결을 확인하세요. (${e.message ?: e.javaClass.simpleName})")
+        }
+        return parseRents(result.body, kind, result.status)
     }
 
     fun summarize(p: Property, now: LocalDate = LocalDate.now(), months: Int = 6): MarketSummary? {
@@ -129,15 +199,93 @@ class MolitClient(serviceKey: String, private val http: HttpGetter = UrlConnecti
             }
         }
 
-        fun summarize(p: Property, kind: MarketKind, all: List<Trade>, months: Int): MarketSummary {
+        fun summarize(p: Property, kind: MarketKind, all: List<Trade>, months: Int, today: LocalDate = LocalDate.now()): MarketSummary {
             val area = p.areaSqm
             fun similar(t: Trade) = area == null || area <= 0 || t.areaSqm in area * 0.8..area * 1.2
+            // 같은 단지(같은 동·같은 지번)가 2건 이상이면 그것만, 아니면 같은 동 3건 이상, 아니면 시군구 전체.
+            val lot = sameLot(p)
+            val sameComplex = if (lot == null) emptyList() else all.filter { it.dong == p.dong && lotKey(it.jibun) == lot && similar(it) }
             val sameDong = all.filter { it.dong == p.dong && similar(it) }
-            val chosen = if (sameDong.size >= 3) sameDong else all.filter(::similar)
-            val perSqm = chosen.filter { it.areaSqm > 0 }.map { Math.round(it.price / it.areaSqm) }.sorted()
-            val median = perSqm.takeIf { it.isNotEmpty() }?.let { it[it.size / 2] }
+            val (chosen, scope) = when {
+                sameComplex.size >= 2 && kind in setOf(MarketKind.APT, MarketKind.OFFI, MarketKind.RH) -> sameComplex to "같은 단지"
+                sameDong.size >= 3 -> sameDong to "같은 동"
+                else -> all.filter(::similar) to "같은 시군구"
+            }
+            val median = medianPerSqm(chosen)
             val estimate = if (median != null && area != null && area > 0) Math.round(median * area) else null
-            return MarketSummary(kind, months, chosen.sortedByDescending { it.date }, sameDong.size >= 3, median, estimate)
+            val cut = today.minusMonths(3).format(DOTTED)
+            val recent = medianPerSqm(chosen.filter { it.date >= cut })
+            val older = medianPerSqm(chosen.filter { it.date < cut })
+            val enough = chosen.count { it.date >= cut } >= 2 && chosen.count { it.date < cut } >= 2
+            val trend = if (enough && recent != null && older != null && older > 0) (recent - older) * 100.0 / older else null
+            return MarketSummary(kind, months, chosen.sortedByDescending { it.date }, scope != "같은 시군구", median, estimate, scope, trend)
+        }
+
+        private val DOTTED: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy.MM.dd")
+
+        fun parseRents(body: String, kind: RentKind, status: Int = 200): List<Rent> =
+            DataGoXml.items(body, status).mapNotNull { item ->
+                if (item["cdealType"].equals("O", ignoreCase = true)) return@mapNotNull null
+                val deposit = parseAmount(item["deposit"])?.times(10_000) ?: return@mapNotNull null
+                val area = parseDecimal(item[kind.areaTag]) ?: return@mapNotNull null
+                Rent(
+                    name = item[kind.nameTag].orEmpty(),
+                    dong = item["umdNm"].orEmpty(),
+                    jibun = item["jibun"].orEmpty(),
+                    areaSqm = area,
+                    deposit = deposit,
+                    monthly = (parseAmount(item["monthlyRent"]) ?: 0) * 10_000,
+                    date = "${item["dealYear"].orEmpty()}.${item["dealMonth"].orEmpty().padStart(2, '0')}.${item["dealDay"].orEmpty().padStart(2, '0')}",
+                )
+            }
+
+        /** 같은 단지 → 같은 동 → 시군구 순으로 비슷한 면적 전세·월세를 골라 이 면적으로 환산한다. */
+        fun summarizeRents(p: Property, kind: RentKind, all: List<Rent>, months: Int): RentSummary {
+            val area = p.areaSqm
+            fun similar(r: Rent) = area == null || area <= 0 || r.areaSqm in area * 0.8..area * 1.2
+            val lot = sameLot(p)
+            val complex = if (lot == null) emptyList() else all.filter { it.dong == p.dong && lotKey(it.jibun) == lot && similar(it) }
+            val dong = all.filter { it.dong == p.dong && similar(it) }
+            val (chosen, scope) = when {
+                complex.size >= 2 && kind != RentKind.SH -> complex to "같은 단지"
+                dong.size >= 3 -> dong to "같은 동"
+                else -> all.filter(::similar) to "같은 시군구"
+            }
+            fun perSqmMedian(values: List<Pair<Long, Double>>): Long? {
+                val list = values.filter { it.second > 0 }.map { Math.round(it.first / it.second) }.sorted()
+                return list.takeIf { it.isNotEmpty() }?.let { it[it.size / 2] }
+            }
+            fun scale(perSqm: Long?) = if (perSqm != null && area != null && area > 0) Math.round(perSqm * area) else null
+            val jeonse = chosen.filter { it.monthly == 0L }
+            val monthly = chosen.filter { it.monthly > 0 }
+            return RentSummary(
+                kind = kind,
+                months = months,
+                scope = scope,
+                jeonseCount = jeonse.size,
+                monthlyCount = monthly.size,
+                jeonseEstimate = scale(perSqmMedian(jeonse.map { it.deposit to it.areaSqm })),
+                monthlyDeposit = scale(perSqmMedian(monthly.map { it.deposit to it.areaSqm })),
+                monthlyRent = scale(perSqmMedian(monthly.map { it.monthly to it.areaSqm })),
+            )
+        }
+
+        private fun medianPerSqm(trades: List<Trade>): Long? {
+            val perSqm = trades.filter { it.areaSqm > 0 }.map { Math.round(it.price / it.areaSqm) }.sorted()
+            return perSqm.takeIf { it.isNotEmpty() }?.let { it[it.size / 2] }
+        }
+
+        /** "936-31" → "936-31", "0936-0031" → "936-31", "936" → "936" */
+        private fun lotKey(jibun: String): String? {
+            val match = Regex("(\\d+)(?:-(\\d+))?").find(jibun.replace("산", "")) ?: return null
+            val main = match.groupValues[1].toIntOrNull() ?: return null
+            val sub = match.groupValues[2].toIntOrNull() ?: 0
+            return if (sub > 0) "$main-$sub" else "$main"
+        }
+
+        private fun sameLot(p: Property): String? {
+            val lot = AddressParser.lotFromPnu(p.lotPnu) ?: AddressParser.lotFromName(p.name, p.dong) ?: return null
+            return lotKey(lot)
         }
     }
 }

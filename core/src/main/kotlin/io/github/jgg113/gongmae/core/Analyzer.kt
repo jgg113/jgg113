@@ -1,5 +1,6 @@
 package io.github.jgg113.gongmae.core
 
+import java.time.LocalDate
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -71,6 +72,8 @@ data class Analysis(
     val marketRatio: Double? = null,
     /** 찾은 특수권리 */
     val specialRights: Set<SpecialRight> = emptySet(),
+    /** 공시가격·건축물대장까지 반영했는지 */
+    val recordsChecked: Boolean = false,
 ) {
     val risks: List<Factor> get() = factors.filter { it.isRisk && it.points > 0 }.sortedByDescending { it.points }
     val merits: List<Factor> get() = factors.filter { !it.isRisk && it.points > 0 }.sortedByDescending { it.points }
@@ -110,12 +113,14 @@ object Analyzer {
         rights: Map<String, PropertyDetail> = emptyMap(),
         markets: Map<String, MarketSummary> = emptyMap(),
         cases: Map<String, CourtCase> = emptyMap(),
+        facts: Map<String, PublicFacts> = emptyMap(),
+        rents: Map<String, RentSummary> = emptyMap(),
     ): Map<String, Analysis> {
         val medians = list.filter { it.pricePerPyeong != null }
             .groupBy { it.sigungu to it.category }
             .filterValues { it.size >= 3 }
             .mapValues { (_, items) -> median(items.mapNotNull { it.pricePerPyeong }) }
-        return list.associate { p -> p.id to analyze(p, medians[p.sigungu to p.category], rights[p.id], markets[p.id], cases[p.id]) }
+        return list.associate { p -> p.id to analyze(p, medians[p.sigungu to p.category], rights[p.id], markets[p.id], cases[p.id], facts[p.id], rents[p.id]) }
     }
 
     fun analyze(
@@ -124,6 +129,9 @@ object Analyzer {
         rights: PropertyDetail? = null,
         market: MarketSummary? = null,
         courtCase: CourtCase? = null,
+        facts: PublicFacts? = null,
+        rent: RentSummary? = null,
+        today: LocalDate = LocalDate.now(),
     ): Analysis {
         val factors = mutableListOf<Factor>()
         fun risk(points: Int, title: String, detail: String) = factors.add(Factor(title, detail, points, isRisk = true))
@@ -191,6 +199,17 @@ object Analyzer {
             risk(5, "권리정보 미확인", "상세 화면에서 권리·임대차 정보를 불러오면 더 정확해집니다.")
         }
 
+        val building = facts?.building
+        if (building != null && !p.category.isMovable) {
+            val age = building.age(today)
+            if (building.residentialOnCommercial && p.category in setOf(Category.VILLA, Category.HOUSE, Category.APARTMENT)) {
+                risk(12, "건축물대장 용도: ${building.mainPurpose}", "주택으로 나왔지만 공부상 근린생활시설입니다('근생빌라' 의심). 주택담보대출·전입·이행강제금 문제가 생길 수 있습니다.")
+            }
+            if (age != null && age >= 30 && p.category != Category.APARTMENT) {
+                risk(5, "노후 건물 (사용승인 ${age}년)", "지은 지 ${age}년이 지나 수리비가 많이 들 수 있습니다. 누수·배관·구조 상태를 현장에서 확인하세요.")
+            }
+        }
+
         val riskScore = (10 + factors.filter { it.isRisk }.sumOf { it.points }).coerceIn(0, 100)
         val level = when {
             riskScore >= 55 -> RiskLevel.DANGER
@@ -218,11 +237,60 @@ object Analyzer {
         val marketRatio = market?.ratioOf(p.minBidPrice)
         if (market != null && marketRatio != null && market.trades.size >= 2) {
             val gap = 100 - marketRatio
-            val basis = "최근 ${market.months}개월 ${if (market.sameDong) "같은 동" else "같은 시군구"} 비슷한 면적 실거래 ${market.trades.size}건으로 추정한 시세 ${Format.wonShort(market.estimatedValue)}"
+            val basis = "최근 ${market.months}개월 ${market.scope} 비슷한 면적 실거래 ${market.trades.size}건으로 추정한 시세 ${Format.wonShort(market.estimatedValue)}"
             if (gap >= 5) {
                 merit((gap * 0.5).coerceAtMost(25.0).roundToInt(), "실거래 시세의 ${Format.percent(marketRatio)}", "$basis 보다 쌉니다.")
             } else if (gap <= -5) {
                 merit(-(abs(gap) * 0.4).coerceAtMost(15.0).roundToInt(), "실거래 시세보다 비싼 최저가", "$basis 보다 ${Format.percent(abs(gap))} 비쌉니다.")
+            }
+        }
+        val trend = market?.trendPercent
+        if (trend != null && market != null && market.trades.size >= 4) {
+            if (trend >= 5) merit(3, "실거래 시세 상승세 (+${trend.roundToInt()}%)", "최근 3개월 ㎡당 거래가가 그 전 3개월보다 올랐습니다.")
+            if (trend <= -5) merit(-4, "실거래 시세 하락세 (${trend.roundToInt()}%)", "최근 3개월 ㎡당 거래가가 그 전 3개월보다 내렸습니다. 매도가를 보수적으로 잡으세요.")
+        }
+        if (rent != null) {
+            val jeonseRatio = rent.jeonseRatio(p.minBidPrice)
+            if (jeonseRatio != null && rent.jeonseCount >= 2) {
+                val basis = "최근 ${rent.months}개월 ${rent.scope} 전세 ${rent.jeonseCount}건으로 추정한 전세가 ${Format.wonShort(rent.jeonseEstimate)}"
+                when {
+                    jeonseRatio >= 100 -> merit(8, "최저가가 전세 시세 이하", "$basis 가 최저가보다 높습니다. 전세를 놓으면 투자금이 거의 들지 않을 수 있습니다 (역전세·세입자 확보 위험은 따로 확인).")
+                    jeonseRatio >= 80 -> merit(4, "전세가율 ${Format.percent(jeonseRatio)}", "$basis 입니다. 전세를 끼면 투자금이 적게 듭니다.")
+                    else -> Unit
+                }
+            }
+            val yieldRate = rent.monthlyYield(p.minBidPrice)
+            if (yieldRate != null && rent.monthlyCount >= 2) {
+                if (yieldRate >= 6) {
+                    merit(if (yieldRate >= 8) 6 else 4, "월세 수익률 약 ${Format.percent(yieldRate)}", "${rent.scope} 월세 ${rent.monthlyCount}건 기준 보증금 ${Format.wonShort(rent.monthlyDeposit)}·월 ${Format.wonShort(rent.monthlyRent)}로 놓을 때 (대출·세금 제외)입니다.")
+                } else if (yieldRate < 3) {
+                    merit(-3, "월세 수익률 낮음 (약 ${Format.percent(yieldRate)})", "임대 수익보다 시세 차익을 노려야 하는 가격입니다.")
+                }
+            }
+        }
+        if (facts != null) {
+            val landValue = facts.landValue(p)
+            val price = p.minBidPrice
+            if (landValue != null && price != null && landValue > 0 && p.category in setOf(Category.LAND, Category.FOREST)) {
+                val r = price * 100.0 / landValue
+                if (r <= 100) {
+                    merit(((100 - r) * 0.25).coerceIn(2.0, 15.0).roundToInt(), "공시지가의 ${Format.percent(r)}", "개별공시지가(${facts.latestLandPrice?.year}년 ㎡당 ${Format.wonShort(facts.latestLandPrice?.pricePerSqm)}) × 면적 ${Format.wonShort(landValue)}보다 쌉니다. 보통 시세는 공시지가보다 높습니다.")
+                } else if (r >= 300) {
+                    merit(-5, "공시지가의 ${Format.percent(r)}", "최저가가 공시지가 합계의 3배가 넘습니다. 주변 토지 실거래와 꼭 비교하세요.")
+                }
+            }
+            val house = facts.latestHousePrice
+            if (house != null && price != null && p.category == Category.HOUSE) {
+                val r = price * 100.0 / house.price
+                if (r <= 100) merit(((100 - r) * 0.25).coerceIn(2.0, 12.0).roundToInt(), "개별주택가격의 ${Format.percent(r)}", "${house.year}년 개별주택가격 ${Format.wonShort(house.price)}보다 쌉니다. 공시가격은 보통 시세의 60~70% 수준입니다.")
+            }
+            val b = facts.building
+            if (b != null && !p.category.isMovable) {
+                val age = b.age(today)
+                if (age != null && age <= 5) merit(4, "신축급 (사용승인 ${age}년)", "지은 지 ${age}년 된 건물입니다.")
+                if (p.category == Category.APARTMENT && b.households >= 500) merit(3, "대단지 (${b.households}세대)", "세대수가 많아 거래가 잦고 시세 확인이 쉽습니다.")
+                if (p.category == Category.APARTMENT && b.households in 1..99) merit(-3, "소규모 단지 (${b.households}세대)", "세대수가 적은 아파트는 시세 상승과 환금성이 약한 편입니다.")
+                if (p.category == Category.APARTMENT && age != null && age >= 30) merit(2, "재건축 연한 (사용승인 ${age}년)", "재건축 기대가 있을 수 있지만 안전진단·사업 진행을 따로 확인해야 합니다.")
             }
         }
         val liquidity = when (p.category) {
@@ -259,7 +327,7 @@ object Analyzer {
             total >= 40 -> "C"
             else -> "D"
         }
-        val analysis = Analysis(riskScore, level, attractiveness, total, grade, factors.toList(), "", rights != null || courtCase != null, marketRatio, specials)
+        val analysis = Analysis(riskScore, level, attractiveness, total, grade, factors.toList(), "", rights != null || courtCase != null, marketRatio, specials, facts?.isEmpty == false)
         return analysis.copy(summary = summarize(analysis))
     }
 

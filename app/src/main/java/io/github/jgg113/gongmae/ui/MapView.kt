@@ -41,27 +41,35 @@ import org.osmdroid.events.MapListener
 import org.osmdroid.events.ScrollEvent
 import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
+import org.osmdroid.tileprovider.MapTileProviderBasic
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.tileprovider.tilesource.XYTileSource
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.util.MapTileIndex
 import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
+import org.osmdroid.views.Projection
 import org.osmdroid.views.overlay.CopyrightOverlay
 import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Overlay
+import org.osmdroid.views.overlay.TilesOverlay
 import org.osmdroid.views.overlay.infowindow.MarkerInfoWindow
 import java.io.File
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 
-/** 지도 그림 종류 */
-enum class MapStyle(val label: String) {
+/**
+ * 지도 그림 종류. 키 없이 쓰는 OpenStreetMap·Esri 가 기본이고,
+ * 브이월드(국토부 공간정보) 키를 넣으면 브이월드 지도·항공사진과 지적도 겹치기를 쓸 수 있다.
+ */
+enum class MapStyle(val label: String, val needsVworldKey: Boolean = false) {
     STREET("일반"),
-    OSM("OSM"),
+    ROAD("도로"),
     SATELLITE("위성"),
+    VWORLD("브이월드", true),
+    VWORLD_SAT("항공", true),
 }
 
 /** 지도에 찍을 물건 하나 */
@@ -140,9 +148,20 @@ fun NativeMap(
     myLocation: LatLng? = null,
     pois: List<PoiMarker> = emptyList(),
     cluster: Boolean = true,
+    /** 브이월드 인증키 (없으면 브이월드 지도·지적도는 일반 지도로 대신한다) */
+    vworldKey: String = "",
+    /** 지적도(필지 경계) 겹치기 — 브이월드 키가 있어야 한다 */
+    cadastral: Boolean = false,
+    /** 거리·면적 재기 점들 */
+    measurePoints: List<LatLng> = emptyList(),
+    /** 참이면 면적(닫힌 도형), 거짓이면 거리(꺾은선) */
+    measureArea: Boolean = false,
+    /** null 이 아니면 지도를 누를 때 물건 선택 대신 이 함수를 부른다 (재기 모드) */
+    onMapTap: ((LatLng) -> Unit)? = null,
     onSelect: (String?) -> Unit = {},
 ) {
     val currentOnSelect by rememberUpdatedState(onSelect)
+    val currentOnMapTap by rememberUpdatedState(onMapTap)
     val renderer = remember { MarkerRenderer() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, state) {
@@ -162,8 +181,9 @@ fun NativeMap(
         factory = { context ->
             configureOsmdroid(context)
             MapView(context).apply {
-                setTileSource(tileSource(style))
+                setTileSource(tileSource(style, vworldKey))
                 renderer.style = style
+                renderer.vworldKey = vworldKey
                 setMultiTouchControls(true)
                 zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
                 setTilesScaledToDpi(true)
@@ -175,12 +195,18 @@ fun NativeMap(
                 controller.setCenter(GeoPoint(NativeMapState.KOREA_CENTER.lat, NativeMapState.KOREA_CENTER.lng))
                 overlays.add(MapEventsOverlay(object : MapEventsReceiver {
                     override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
+                        val tap = currentOnMapTap
+                        if (tap != null && p != null) {
+                            tap(LatLng(p.latitude, p.longitude))
+                            return true
+                        }
                         renderer.onSelect(null)
                         return false
                     }
 
                     override fun longPressHelper(p: GeoPoint?): Boolean = false
                 }))
+                overlays.add(renderer.measureOverlay)
                 overlays.add(CopyrightOverlay(context).apply { setCopyrightNotice(attribution(style)) })
                 addMapListener(DelayedMapListener(object : MapListener {
                     override fun onScroll(event: ScrollEvent?): Boolean = false
@@ -206,12 +232,15 @@ fun NativeMap(
         },
         update = { map ->
             renderer.onSelect = { currentOnSelect(it) }
-            if (renderer.style != style) {
+            if (renderer.style != style || renderer.vworldKey != vworldKey) {
                 renderer.style = style
-                map.setTileSource(tileSource(style))
-                map.overlays.filterIsInstance<CopyrightOverlay>().forEach { it.setCopyrightNotice(attribution(style)) }
+                renderer.vworldKey = vworldKey
+                map.setTileSource(tileSource(style, vworldKey))
+                map.overlays.filterIsInstance<CopyrightOverlay>().forEach { it.setCopyrightNotice(attribution(style, vworldKey)) }
                 map.invalidate()
             }
+            renderer.setCadastral(map, cadastral && vworldKey.isNotBlank(), vworldKey)
+            renderer.setMeasure(map, measurePoints, measureArea)
             renderer.update(map, markers, selectedId, myLocation, pois, cluster)
         },
         onRelease = { map ->
@@ -219,6 +248,7 @@ fun NativeMap(
                 state.view = null
                 state.ready = false
             }
+            renderer.setCadastral(map, false, "")
             map.onDetach()
         },
     )
@@ -234,51 +264,153 @@ private fun configureOsmdroid(context: Context) {
     config.osmdroidTileCache = File(base, "tiles")
 }
 
-private val cartoVoyager = XYTileSource(
-    "CartoVoyager",
+/** Esri 지도는 주소가 z/y/x 순서다. */
+private class EsriTiles(name: String, service: String, attribution: String, maxZoom: Int) : OnlineTileSourceBase(
+    name,
     0,
-    20,
-    256,
-    ".png",
-    arrayOf(
-        "https://a.basemaps.cartocdn.com/rastertiles/voyager/",
-        "https://b.basemaps.cartocdn.com/rastertiles/voyager/",
-        "https://c.basemaps.cartocdn.com/rastertiles/voyager/",
-        "https://d.basemaps.cartocdn.com/rastertiles/voyager/",
-    ),
-    "© OpenStreetMap © CARTO",
-)
-
-/** Esri 위성 사진은 주소가 z/y/x 순서다. */
-private val esriImagery = object : OnlineTileSourceBase(
-    "EsriWorldImagery",
-    0,
-    19,
+    maxZoom,
     256,
     "",
-    arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/"),
-    "© Esri, Maxar, Earthstar Geographics",
+    arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/$service/MapServer/tile/"),
+    attribution,
 ) {
     override fun getTileURLString(pMapTileIndex: Long): String =
         baseUrl + MapTileIndex.getZoom(pMapTileIndex) + "/" + MapTileIndex.getY(pMapTileIndex) + "/" + MapTileIndex.getX(pMapTileIndex)
 }
 
-private fun tileSource(style: MapStyle) = when (style) {
-    MapStyle.STREET -> cartoVoyager
-    MapStyle.OSM -> TileSourceFactory.MAPNIK
-    MapStyle.SATELLITE -> esriImagery
+private val esriStreet = EsriTiles("EsriWorldStreet", "World_Street_Map", "© Esri", 19)
+private val esriImagery = EsriTiles("EsriWorldImagery", "World_Imagery", "© Esri, Maxar, Earthstar Geographics", 19)
+
+/** 브이월드 WMTS: /req/wmts/1.0.0/{키}/{레이어}/{z}/{y}/{x}.{확장자} */
+private class VworldTiles(private val key: String, private val layer: String, private val ext: String) : OnlineTileSourceBase(
+    "Vworld$layer",
+    6,
+    19,
+    256,
+    ".$ext",
+    arrayOf("https://api.vworld.kr/req/wmts/1.0.0/"),
+    "© 국토교통부 브이월드",
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String =
+        baseUrl + key + "/" + layer + "/" + MapTileIndex.getZoom(pMapTileIndex) + "/" + MapTileIndex.getY(pMapTileIndex) + "/" + MapTileIndex.getX(pMapTileIndex) + mImageFilenameEnding
 }
 
-private fun attribution(style: MapStyle) = when (style) {
-    MapStyle.STREET -> "© OpenStreetMap 기여자 © CARTO"
-    MapStyle.OSM -> "© OpenStreetMap 기여자"
-    MapStyle.SATELLITE -> "© Esri, Maxar"
+/** 브이월드 WMS 지적도 (필지 경계·지번). 타일 범위를 웹 메르카토르 좌표로 바꿔 요청한다. */
+private class CadastralTiles(private val key: String) : OnlineTileSourceBase(
+    "VworldCadastral",
+    15,
+    19,
+    256,
+    ".png",
+    arrayOf("https://api.vworld.kr/req/wms"),
+    "© 국토교통부 브이월드",
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String {
+        val z = MapTileIndex.getZoom(pMapTileIndex)
+        val x = MapTileIndex.getX(pMapTileIndex)
+        val y = MapTileIndex.getY(pMapTileIndex)
+        val size = 2 * ORIGIN / (1 shl z)
+        val minX = -ORIGIN + x * size
+        val maxY = ORIGIN - y * size
+        val bbox = listOf(minX, maxY - size, minX + size, maxY).joinToString(",") { String.format(java.util.Locale.US, "%.3f", it) }
+        return baseUrl + "?SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0&LAYERS=lp_pa_cbnd_bubun,lp_pa_cbnd_bonbun" +
+            "&STYLES=lp_pa_cbnd_bubun_line,lp_pa_cbnd_bonbun_line&CRS=EPSG:900913&BBOX=$bbox&WIDTH=256&HEIGHT=256" +
+            "&FORMAT=image/png&TRANSPARENT=true&EXCEPTIONS=blank&KEY=$key&DOMAIN=http://localhost"
+    }
+
+    companion object {
+        const val ORIGIN = 20037508.342789244
+    }
+}
+
+private fun tileSource(style: MapStyle, vworldKey: String): org.osmdroid.tileprovider.tilesource.ITileSource = when {
+    style.needsVworldKey && vworldKey.isBlank() -> TileSourceFactory.MAPNIK
+    style == MapStyle.STREET -> TileSourceFactory.MAPNIK
+    style == MapStyle.ROAD -> esriStreet
+    style == MapStyle.SATELLITE -> esriImagery
+    style == MapStyle.VWORLD -> VworldTiles(vworldKey, "Base", "png")
+    else -> VworldTiles(vworldKey, "Satellite", "jpeg")
+}
+
+private fun attribution(style: MapStyle, vworldKey: String = "") = when {
+    style.needsVworldKey && vworldKey.isBlank() -> "© OpenStreetMap 기여자"
+    style == MapStyle.STREET -> "© OpenStreetMap 기여자"
+    style == MapStyle.ROAD -> "© Esri"
+    style == MapStyle.SATELLITE -> "© Esri, Maxar"
+    else -> "© 국토교통부 브이월드"
+}
+
+/** 거리·면적 재기 선과 점 */
+private class MeasureOverlay : Overlay() {
+    var points: List<LatLng> = emptyList()
+    var area = false
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = 0xFFE53935.toInt()
+        strokeWidth = 6f
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = 0x33E53935
+    }
+    private val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFE53935.toInt() }
+    private val dotRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE }
+
+    override fun draw(pCanvas: Canvas, pProjection: Projection) {
+        if (points.isEmpty()) return
+        val pixels = points.map { pProjection.toPixels(GeoPoint(it.lat, it.lng), null) }
+        val path = Path()
+        pixels.forEachIndexed { i, pt -> if (i == 0) path.moveTo(pt.x.toFloat(), pt.y.toFloat()) else path.lineTo(pt.x.toFloat(), pt.y.toFloat()) }
+        if (area && pixels.size >= 3) {
+            path.close()
+            pCanvas.drawPath(path, fill)
+        }
+        pCanvas.drawPath(path, line)
+        pixels.forEach {
+            pCanvas.drawCircle(it.x.toFloat(), it.y.toFloat(), 11f, dotRing)
+            pCanvas.drawCircle(it.x.toFloat(), it.y.toFloat(), 7f, dot)
+        }
+    }
 }
 
 /** 마커·묶음을 다시 그린다. 같은 입력이면 다시 그리지 않는다. */
 private class MarkerRenderer {
     var style: MapStyle? = null
+    var vworldKey: String = ""
     var onSelect: (String?) -> Unit = {}
+    val measureOverlay = MeasureOverlay()
+    private var cadastralOverlay: TilesOverlay? = null
+    private var cadastralKey = ""
+
+    fun setMeasure(map: MapView, points: List<LatLng>, area: Boolean) {
+        if (measureOverlay.points == points && measureOverlay.area == area) return
+        measureOverlay.points = points
+        measureOverlay.area = area
+        map.invalidate()
+    }
+
+    /** 지적도 겹치기를 켜고 끈다. 마커보다 아래(지도 바로 위)에 둔다. */
+    fun setCadastral(map: MapView, on: Boolean, key: String) {
+        val current = cadastralOverlay
+        if (on && current != null && cadastralKey == key) return
+        if (current != null) {
+            map.overlays.remove(current)
+            current.onDetach(map)
+            cadastralOverlay = null
+        }
+        if (on) {
+            val provider = MapTileProviderBasic(map.context, CadastralTiles(key))
+            val overlay = TilesOverlay(provider, map.context).apply {
+                loadingBackgroundColor = android.graphics.Color.TRANSPARENT
+                loadingLineColor = android.graphics.Color.TRANSPARENT
+            }
+            map.overlays.add(0, overlay)
+            cadastralOverlay = overlay
+            cadastralKey = key
+        }
+        map.invalidate()
+    }
     private var markers: List<MapMarker> = emptyList()
     private var selectedId: String? = null
     private var me: LatLng? = null

@@ -16,7 +16,7 @@ enum class MovableKind(val label: String, val code: String, val category: Catego
  * [keywords] 중 하나라도 물건명이나 용도에 들어 있으면 그 묶음이다.
  */
 enum class GoodsGroup(val label: String, val keywords: List<String>) {
-    CAR("승용·승합차", listOf("승용", "승합", "SUV", "세단", "자동차", "쏘나타", "그랜저", "아반떼", "카니발", "벤츠", "BMW", "아우디", "제네시스")),
+    CAR("승용·승합차", listOf("승용", "승합", "SUV", "세단", "쏘나타", "그랜저", "아반떼", "카니발", "벤츠", "BMW", "아우디", "제네시스")),
     TRUCK("화물·특수차", listOf("화물", "트럭", "덤프", "탑차", "카고", "특수자동차", "버스", "견인")),
     MOTORCYCLE("이륜차", listOf("이륜", "오토바이", "스쿠터", "바이크")),
     MACHINERY("중장비·기계", listOf("중기", "건설기계", "굴착기", "굴삭기", "지게차", "기계", "장비", "설비", "선박", "공구")),
@@ -29,6 +29,8 @@ enum class GoodsGroup(val label: String, val keywords: List<String>) {
     /** 이 묶음이 속하는 물건 종류 */
     val category: Category
         get() = if (this == CAR || this == TRUCK || this == MOTORCYCLE) Category.VEHICLE else Category.MOVABLE
+
+    val group: KindGroup get() = category.group
 
     fun matches(p: Property): Boolean {
         val text = listOf(p.name, p.usageLarge, p.usageMedium, p.usageSmall).joinToString(" ")

@@ -114,6 +114,11 @@ object Links {
         )
     }
 
+    /** 구글 스트리트뷰 (거리뷰) */
+    fun openStreetView(context: Context, position: LatLng) {
+        openUrl(context, "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${position.lat},${position.lng}")
+    }
+
     /** 네이버지도 앱으로 위치를 연다 (앱이 없으면 웹 검색). */
     fun openNaverMap(context: Context, name: String, position: LatLng?, query: String) {
         val web = "https://map.naver.com/p/search/" + Uri.encode(query)
