@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import android.widget.Toast
 import io.github.jgg113.gongmae.core.AiProvider
 import io.github.jgg113.gongmae.core.AiText
+import io.github.jgg113.gongmae.core.AiVerdict
 import io.github.jgg113.gongmae.core.Analysis
 import io.github.jgg113.gongmae.core.ClaudePrompt
 import io.github.jgg113.gongmae.core.BidCalculator
@@ -64,35 +65,41 @@ import io.github.jgg113.gongmae.core.Property
 import kotlin.math.roundToLong
 
 /** 'AI 실시간 분석' 버튼 아래에 붙는 설명 (설정에서 고른 AI 에 따라 다르다) */
-private fun aiNote(provider: AiProvider): String = when (provider) {
-    AiProvider.BUILT_IN -> "앱 내장 분석은 규칙 기반이라 무료이고 바로 나옵니다. 설정 탭에서 Gemini(무료 API 키)나 ChatGPT·Gemini·Claude 앱을 고르면 실시간 AI 분석을 받을 수 있습니다."
-    AiProvider.GEMINI_API -> "내 Gemini 무료 API 키로 앱 안에서 바로 분석합니다. 무료 한도 안에서는 비용이 없습니다."
+private fun aiNote(provider: AiProvider): String = when {
+    provider == AiProvider.BUILT_IN -> "앱 내장 분석은 규칙 기반이라 무료이고 바로 나옵니다. 설정 탭에서 무료 API(Gemini·Groq·OpenRouter)나 ChatGPT·Gemini·Claude 앱을 고를 수 있습니다."
+    provider.isApi -> "내 ${provider.short} 무료 키로 앱 안에서 바로 분석합니다. 한도를 넘으면 멈출 뿐 요금은 나가지 않습니다."
     else -> "질문이 ${provider.label}으로 넘어가고 클립보드에도 복사됩니다. 그 앱의 내 계정(무료 계정 가능)으로 분석되며 이 앱에서 드는 비용은 없습니다."
 }
 
 /**
- * 'AI 실시간 요약/상세' 버튼과 결과. 내장·Gemini 는 결과를 여기 보여 주고, 앱 연결은 해당 앱으로 넘긴다.
+ * 'AI 실시간 요약/상세' 버튼과 결과, 'AI 비교' 버튼.
+ * 내장·API 는 결과를 여기 보여 주고, 앱 연결은 해당 앱으로 넘긴다. AI 비교는 설정에서 고른 AI 들의 답을 나란히 보여 준다.
  * [prompt] 는 AI 에 보낼 질문, [local] 은 앱 내장 분석 글을 만든다.
  */
 @Composable
 fun AiActionBlock(vm: AppViewModel, property: Property, mode: ClaudePrompt.Mode, prompt: () -> String, local: () -> String) {
     val context = LocalContext.current
     val provider = vm.aiProvider
-    val state = vm.aiResults[vm.aiKey(property.id, mode)]
+    val key = vm.aiKey(property.id, mode)
+    val state = vm.aiResults[key]
+    val compare = vm.compareResults[key]
     val title = if (mode == ClaudePrompt.Mode.SUMMARY) "AI 실시간 요약" else "AI 실시간 상세 분석"
-    Button(
-        onClick = {
-            when {
-                provider == AiProvider.BUILT_IN -> vm.showLocalAi(property.id, mode, local())
-                provider == AiProvider.GEMINI_API && vm.geminiKey.isBlank() ->
-                    Toast.makeText(context, "설정 탭에서 Gemini API 키를 먼저 넣으세요.", Toast.LENGTH_LONG).show()
-                provider == AiProvider.GEMINI_API -> vm.runGemini(property.id, mode, prompt())
-                else -> Links.askAiApp(context, provider, prompt())
-            }
-        },
-        enabled = state !is AiState.Loading,
-        modifier = Modifier.fillMaxWidth(),
-    ) { Text("$title · ${provider.short}") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = {
+                when {
+                    provider == AiProvider.BUILT_IN -> vm.showLocalAi(property.id, mode, local())
+                    provider.isApi && vm.keyOf(provider).isBlank() ->
+                        Toast.makeText(context, "설정 탭에서 ${provider.short} API 키를 먼저 넣으세요.", Toast.LENGTH_LONG).show()
+                    provider.isApi -> vm.runApi(provider, property.id, mode, prompt())
+                    else -> Links.askAiApp(context, provider, prompt())
+                }
+            },
+            enabled = state !is AiState.Loading,
+            modifier = Modifier.weight(1f),
+        ) { Text("$title · ${provider.short}", maxLines = 1) }
+        OutlinedButton(onClick = { vm.runCompare(property.id, mode, prompt(), local()) }) { Text("AI 비교") }
+    }
     when (state) {
         AiState.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -100,19 +107,78 @@ fun AiActionBlock(vm: AppViewModel, property: Property, mode: ClaudePrompt.Mode,
             Text("AI가 분석하는 중… (보통 5~20초)", style = MaterialTheme.typography.bodySmall)
         }
         is AiState.Error -> Text(state.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-        is AiState.Done -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(state.source, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                Text(AiText.plain(state.text), style = MaterialTheme.typography.bodySmall)
-                Row {
-                    TextButton(onClick = { Links.copy(context, "AI 분석", AiText.plain(state.text)) }) { Text("복사") }
-                    TextButton(onClick = { vm.clearAi(property.id, mode) }) { Text("닫기") }
-                }
-            }
-        }
+        is AiState.Done -> AiAnswerCard(state, onCopy = { Links.copy(context, "AI 분석", AiText.plain(state.text)) }, onClose = { vm.clearAi(property.id, mode) })
         null -> Unit
     }
+    if (compare != null) AiCompareView(compare, onClose = { vm.clearAi(property.id, mode) }, onCopy = { text -> Links.copy(context, "AI 분석", text) })
     Text(aiNote(provider), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun AiAnswerCard(state: AiState.Done, onCopy: () -> Unit, onClose: (() -> Unit)?) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(state.source, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            Text(AiText.plain(state.text), style = MaterialTheme.typography.bodySmall)
+            Row {
+                TextButton(onClick = onCopy) { Text("복사") }
+                if (onClose != null) TextButton(onClick = onClose) { Text("닫기") }
+            }
+        }
+    }
+}
+
+/** 여러 AI 의 답을 나란히: 맨 위에 AI 별 최종 의견 표, 아래에 고른 AI 의 전체 답 */
+@Composable
+private fun AiCompareView(results: Map<AiProvider, AiState>, onClose: () -> Unit, onCopy: (String) -> Unit) {
+    var shown by rememberSaveable { mutableStateOf(results.keys.firstOrNull()?.name.orEmpty()) }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("AI 비교 (${results.size}개)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onClose) { Text("닫기") }
+            }
+            results.forEach { (provider, state) ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(provider.short, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(90.dp))
+                    when (state) {
+                        AiState.Loading -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                        is AiState.Error -> Text("실패: ${state.message}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, maxLines = 2)
+                        is AiState.Done -> {
+                            val verdict = AiVerdict.of(state.text)
+                            val color = when (verdict) {
+                                AiVerdict.RECOMMEND -> Color(0xFF2E7D32)
+                                AiVerdict.CONDITIONAL -> Color(0xFFEF6C00)
+                                AiVerdict.AVOID -> Color(0xFFC62828)
+                                AiVerdict.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            Text(verdict.label, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = color)
+                        }
+                    }
+                }
+            }
+            val verdicts = results.values.filterIsInstance<AiState.Done>().map { AiVerdict.of(it.text) }.filter { it != AiVerdict.UNKNOWN }
+            if (verdicts.size >= 2) {
+                Text(
+                    if (verdicts.distinct().size == 1) "모든 AI 의견이 '${verdicts.first().label}'(으)로 같습니다." else "AI 마다 의견이 다릅니다. 근거를 비교해 보세요.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                results.keys.forEach { p -> FilterChip(selected = shown == p.name, onClick = { shown = p.name }, label = { Text(p.short) }) }
+            }
+            val selected = results.entries.firstOrNull { it.key.name == shown }?.value
+            if (selected is AiState.Done) AiAnswerCard(selected, onCopy = { onCopy(AiText.plain(selected.text)) }, onClose = null)
+            if (selected is AiState.Loading) Text("이 AI 가 답하는 중…", style = MaterialTheme.typography.bodySmall)
+            if (selected is AiState.Error) Text(selected.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Text(
+                "비교에 넣을 AI 는 설정 탭에서 고릅니다. ChatGPT·Claude 앱은 답을 앱으로 가져올 수 없어 비교에서 빠지고, 대신 Groq 의 OpenAI 공개모델(gpt-oss)로 ChatGPT 계열 의견을 봅니다.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
+    }
 }
 
 /** AI 요약: 등급·점수, 핵심 근거 몇 줄, 적정 입찰가, AI 실시간 요약 버튼. */
@@ -298,7 +364,9 @@ fun MarketCard(vm: AppViewModel, property: Property) {
                     InfoRow("최저가 비율", "시세의 ${Format.percent(s.ratioOf(property.minBidPrice))}")
                     val perPyeong = s.medianPerSqm?.let { (it * Property.SQM_PER_PYEONG).roundToLong() }
                     InfoRow("단가 중간값", "㎡당 ${Format.wonShort(s.medianPerSqm)} · 평당 ${Format.wonShort(perPyeong)}")
-                    InfoRow("비교 기준", "${if (s.sameDong) "같은 동" else "같은 시군구"} · 면적 ±20% · ${s.trades.size}건")
+                    InfoRow("비교 기준", "${s.scope} · 면적 ±20% · ${s.trades.size}건")
+                    s.trendPercent?.let { InfoRow("최근 3개월 추세", (if (it >= 0) "▲ +" else "▼ ") + Format.percent(it)) }
+                    RentRows(vm, property)
                     HorizontalDivider()
                     s.trades.take(8).forEach { t ->
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -314,6 +382,29 @@ fun MarketCard(vm: AppViewModel, property: Property) {
                 Text("출처: 국토교통부 실거래가 공개 (해제된 거래 제외). 층·향·상태에 따라 실제 시세는 다릅니다.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+    }
+}
+
+/** 주변 전월세로 본 전세가율·월세 수익률 */
+@Composable
+private fun RentRows(vm: AppViewModel, property: Property) {
+    val rent = vm.rentOf(property.id)
+    when {
+        rent != null && (rent.jeonseCount > 0 || rent.monthlyCount > 0) -> {
+            HorizontalDivider()
+            Text("주변 전월세 (${rent.scope}, 최근 ${rent.months}개월)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            rent.jeonseEstimate?.let { InfoRow("전세 추정", "${Format.won(it)} · 최저가 대비 ${Format.percent(rent.jeonseRatio(property.minBidPrice))} (${rent.jeonseCount}건)") }
+            rent.monthlyRent?.let {
+                InfoRow("월세 추정", "보증금 ${Format.wonShort(rent.monthlyDeposit)} / 월 ${Format.wonShort(it)} (${rent.monthlyCount}건)")
+                InfoRow("월세 수익률", "연 ${Format.percent(rent.monthlyYield(property.minBidPrice))} (최저가 기준, 대출·세금 제외)")
+            }
+        }
+        vm.rentBlocked(property) -> Text(
+            "전월세 비교는 공공데이터포털 '${io.github.jgg113.gongmae.core.RentKind.of(property.category)?.apiName.orEmpty()}' 활용신청이 필요합니다.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        else -> Unit
     }
 }
 

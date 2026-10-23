@@ -80,4 +80,5 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.core)
     implementation(libs.coil.compose)
     implementation(libs.osmdroid.android)
+    implementation(libs.androidx.work.runtime.ktx)
 }

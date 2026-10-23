@@ -64,6 +64,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import io.github.jgg113.gongmae.core.Analyzer
+import io.github.jgg113.gongmae.core.Category
 import io.github.jgg113.gongmae.core.BidCalculator
 import io.github.jgg113.gongmae.core.ClaudePrompt
 import io.github.jgg113.gongmae.core.Comparison
@@ -114,6 +115,11 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
         } else {
             LaunchedEffect(property.id) {
                 vm.ensurePositions(listOf(property))
+                vm.loadFacts(property)
+                if (!property.isCourt && !property.category.isMovable) {
+                    vm.loadUsageStats(vm.statsTypeOf(property))
+                    vm.loadBidHistory(property)
+                }
                 vm.loadCourtDetail(property)
                 vm.loadCourtCase(property)
             }
@@ -130,7 +136,12 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
             val range = remember(analysis, market) { BidCalculator.suggestedRange(property, analysis, market) }
             val checklist = remember(analysis, loadedDetail, market) { Analyzer.checklist(property, analysis, loadedDetail, market) }
             var registryOpen by rememberSaveable { mutableStateOf(false) }
-            val prompt = { mode: ClaudePrompt.Mode -> ClaudePrompt.build(property, analysis, loadedDetail, market, courtDetail, mode, now, courtCase) }
+            val facts = vm.factsOf(property.id)
+            val rent = vm.rentOf(property.id)
+            val usageStat = vm.usageStatFor(property)
+            val prompt = { mode: ClaudePrompt.Mode ->
+                ClaudePrompt.build(property, analysis, loadedDetail, market, courtDetail, mode, now, courtCase, facts, rent, usageStat)
+            }
             val localReport = { mode: ClaudePrompt.Mode ->
                 if (analysis == null) "분석할 정보가 부족합니다." else LocalReport.build(property, analysis, range, checklist, mode)
             }
@@ -179,11 +190,14 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                     }
                 }
                 item { MarketCard(vm, property) }
+                if (!property.category.isMovable) item { PublicRecordsCard(vm, property) }
+                if (!property.isCourt && !property.category.isMovable) item { OnbidHistoryCard(vm, property) }
                 if (!property.category.isMovable) item { BidCalculatorCard(property, market, range) }
                 item { DocumentsCard(property, onOpenRegistry = { registryOpen = true }) }
                 if (property.isCourt) item { CourtNoticeCard(property, courtDetail, courtCase) }
                 item { LocationCard(vm, property) }
                 item { InfoCard(property, now) }
+                item { MemoCard(vm, property) }
                 if (rounds.isNotEmpty()) {
                     item { RoundsCard(property, rounds, now) }
                 }
@@ -441,6 +455,7 @@ private fun LocationCard(vm: AppViewModel, property: Property) {
     val mapState = rememberNativeMapState()
     var category by rememberSaveable(property.id) { mutableStateOf<NearbyCategory?>(null) }
     var style by rememberSaveable { mutableStateOf(MapStyle.STREET) }
+    var cadastral by rememberSaveable { mutableStateOf(false) }
     val nearbyState = category?.let { vm.nearby[vm.nearbyKey(property, it)] }
     val places = (nearbyState as? NearbyState.Loaded)?.places
 
@@ -468,11 +483,16 @@ private fun LocationCard(vm: AppViewModel, property: Property) {
                     selectedId = property.id,
                     pois = pois,
                     cluster = false,
+                    vworldKey = vm.vworldKey,
+                    cadastral = cadastral,
                     modifier = Modifier.matchParentSize(),
                 )
                 Row(Modifier.align(Alignment.TopEnd).padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    MapStyle.entries.forEach { s ->
+                    MapStyle.entries.filter { !it.needsVworldKey || vm.vworldKey.isNotBlank() }.forEach { s ->
                         FilterChip(selected = style == s, onClick = { style = s }, label = { Text(s.label) })
+                    }
+                    if (vm.vworldKey.isNotBlank()) {
+                        FilterChip(selected = cadastral, onClick = { cadastral = !cadastral }, label = { Text("지적") })
                     }
                 }
             }
@@ -486,7 +506,8 @@ private fun LocationCard(vm: AppViewModel, property: Property) {
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { position?.let { Links.openStreetView(context, it) } }, enabled = position != null) { Text("거리뷰") }
             OutlinedButton(onClick = { position?.let { Links.openRoadview(context, it) } }, enabled = position != null) { Text("로드뷰") }
             OutlinedButton(onClick = { Links.openKakaoMap(context, property.name, position, query) }) { Text("카카오맵") }
             OutlinedButton(onClick = { Links.openNaverMap(context, property.name, position, query) }) { Text("네이버지도") }
@@ -529,6 +550,137 @@ private fun LocationCard(vm: AppViewModel, property: Property) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/** 무료로 자동 조회한 공적 자료: 개별공시지가·개별주택가격(부동산공시가격알리미), 건축물대장 표제부(건축HUB) */
+@Composable
+private fun PublicRecordsCard(vm: AppViewModel, property: Property) {
+    val context = LocalContext.current
+    SectionCard("공적 자료 (무료 자동 조회)") {
+        when (val state = vm.facts[property.id]) {
+            null, Load.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("공시지가·건축물대장을 불러오는 중…", style = MaterialTheme.typography.bodySmall)
+            }
+            is Load.Error -> {
+                Text(state.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                OutlinedButton(onClick = { vm.loadFacts(property, retry = true) }) { Text("다시 시도") }
+            }
+            is Load.Done -> {
+                val f = state.value
+                f.parcel?.let { InfoRow("지번", "${property.dong} ${it.lot}".trim()) }
+                f.latestLandPrice?.let { lp ->
+                    InfoRow("개별공시지가", "${lp.year}년 ㎡당 ${Format.won(lp.pricePerSqm)}")
+                    f.landPriceChange?.let { InfoRow("전년 대비", (if (it >= 0) "+" else "") + Format.percent(it)) }
+                    f.landValue(property)?.let { InfoRow("공시지가 × 토지면적", "${Format.won(it)} (최저가는 그 ${Format.percent(property.minBidPrice?.let { p -> p * 100.0 / it })})") }
+                }
+                f.latestHousePrice?.let { hp -> InfoRow("개별주택가격", "${hp.year}년 ${Format.won(hp.price)}") }
+                f.building?.let { b ->
+                    HorizontalDivider()
+                    Text("건축물대장 (표제부)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    if (b.name.isNotBlank()) InfoRow("건물명", b.name)
+                    InfoRow("주용도", listOf(b.mainPurpose, b.otherPurposes.take(40)).filter { it.isNotBlank() }.joinToString(" · "))
+                    InfoRow("구조·층수", "${b.structure} · 지상 ${b.groundFloors}층 / 지하 ${b.undergroundFloors}층".trimStart(' ', '·'))
+                    if (b.approvalDate.length == 8) InfoRow("사용승인", RightsParser.formatYmd(b.approvalDate) + (b.age()?.let { " (${it}년 경과)" } ?: ""))
+                    if (b.households > 0 || b.units > 0) InfoRow("세대·호수", "${b.households}세대 · ${b.units}호" + if (b.buildingCount > 1) " (${b.buildingCount}개 동)" else "")
+                    if (b.parking > 0 || b.elevators > 0) InfoRow("주차·승강기", "주차 ${b.parking}대 · 승강기 ${b.elevators}대")
+                    b.floorAreaRatio?.let { InfoRow("건폐율·용적률", "${Format.percent(b.buildingCoverage)} · ${Format.percent(it)}") }
+                    if (b.residentialOnCommercial && property.category in setOf(Category.VILLA, Category.HOUSE, Category.APARTMENT)) {
+                        Text("⚠ 공부상 근린생활시설입니다. 주택으로 쓰는 '근생빌라'면 대출·전입이 어렵고 이행강제금이 나올 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                f.notes.forEach { Text("• $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (f.notes.any { it.contains("활용신청") }) {
+                    OutlinedButton(onClick = { Links.openUrl(context, "https://www.data.go.kr/data/15134735/openapi.do") }) { Text("건축물대장 API 활용신청") }
+                }
+                Text(
+                    "출처: 부동산공시가격알리미(공시지가·주택가격), 국토교통부 건축HUB(건축물대장). 위반건축물 표시·토지대장·등기부는 무료 API 가 없어 정부24·인터넷등기소에서 확인하세요. 이 자료는 AI 분석에 반영됩니다.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** 온비드: 회차별 입찰 이력(낙찰가)·입찰 결과·같은 용도 평균 낙찰가율 */
+@Composable
+private fun OnbidHistoryCard(vm: AppViewModel, property: Property) {
+    val stat = vm.usageStatFor(property)
+    SectionCard("온비드 입찰 이력·낙찰 통계") {
+        if (stat != null) {
+            InfoRow("같은 용도 낙찰가율", "${Format.percent(stat.priceRate)} (${stat.usage}, ${io.github.jgg113.gongmae.core.OnbidExtrasClient.defaultPeriod()}년)")
+            InfoRow("낙찰률·경쟁률", "${Format.percent(stat.soldRate)} · ${stat.competition ?: "-"}:1")
+            val appraisal = property.appraisalPrice
+            val rate = stat.priceRate
+            if (appraisal != null && rate != null) {
+                InfoRow("평균 낙찰가로 보면", "약 ${Format.wonShort(Math.round(appraisal * rate / 100))} (감정가 × ${Format.percent(rate)})")
+            }
+            HorizontalDivider()
+        }
+        when (val state = vm.bidHistories[property.id]) {
+            null -> Text("회차 이력은 물건상세 입찰정보 API 로 불러옵니다.", style = MaterialTheme.typography.bodySmall)
+            Load.Loading -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            is Load.Error -> Text(state.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            is Load.Done -> if (state.value.isEmpty()) {
+                Text("지난 회차 이력이 없습니다 (처음 나온 물건).", style = MaterialTheme.typography.bodySmall)
+            } else {
+                state.value.takeLast(10).forEach { r ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${r.round}회", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(36.dp))
+                        Text(Format.dateTime(r.openedAt).take(10), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        Text(r.result, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(44.dp))
+                        Text(
+                            r.winningPrice?.let { "낙찰 ${Format.wonShort(it)}" } ?: Format.wonShort(r.minPrice),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (r.winningPrice != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        }
+        when (val result = vm.bidResults[property.id]) {
+            null -> OutlinedButton(onClick = { vm.loadBidResult(property) }) { Text("입찰 결과 조회") }
+            Load.Loading -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            is Load.Error -> Text(result.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            is Load.Done -> if (result.value.isEmpty()) {
+                Text("아직 개찰 결과가 없습니다.", style = MaterialTheme.typography.bodySmall)
+            } else {
+                result.value.take(3).forEach { r ->
+                    Text(
+                        listOfNotNull(
+                            r.result.ifBlank { null },
+                            r.openedAt.takeIf { it.isNotEmpty() }?.let { Format.dateTime(it) },
+                            r.winningPrice?.let { "낙찰가 ${Format.won(it)}" },
+                            r.winningRatio?.let { "낙찰가율 ${Format.percent(it)}" },
+                            r.bidders?.let { "입찰 ${it}명" },
+                        ).joinToString(" · ").ifBlank { r.fields.take(4).joinToString(" · ") { "${it.first} ${it.second}" } },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 임장 메모 (기기에만 저장) */
+@Composable
+private fun MemoCard(vm: AppViewModel, property: Property) {
+    var text by rememberSaveable(property.id) { mutableStateOf(vm.memoOf(property.id)) }
+    SectionCard("임장 메모") {
+        androidx.compose.material3.OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            placeholder = { Text("현장 확인 내용, 관리사무소 통화, 시세 메모 등") },
+            minLines = 3,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { vm.saveMemo(property.id, text) }, enabled = text != vm.memoOf(property.id)) { Text("저장") }
+            if (vm.memoOf(property.id).isNotBlank()) Text("저장됨 · 이 휴대폰에만 남습니다", style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.CenterVertically))
+        }
     }
 }
 

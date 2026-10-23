@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -31,6 +32,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
+    HOME("home", "홈", Icons.Filled.Home),
     SEARCH("search", "검색", Icons.Filled.Search),
     MAP("map", "지도", Icons.Filled.Place),
     FAVORITES("favorites", "관심", Icons.Filled.Favorite),
@@ -68,13 +70,14 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                                 val badge = when (tab) {
                                     Tab.COMPARE -> vm.compareItems.size
                                     Tab.FAVORITES -> vm.favorites.size
+                                    Tab.HOME -> vm.favoriteChanges.keys.count { id -> vm.favorites.any { it.id == id } }
                                     else -> 0
                                 }
                                 BadgedBox(badge = { if (badge > 0) Badge { Text("$badge") } }) {
                                     Icon(tab.icon, contentDescription = null)
                                 }
                             },
-                            label = { Text(tab.label) },
+                            label = { Text(tab.label, maxLines = 1) },
                         )
                     }
                 }
@@ -83,9 +86,12 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     ) { padding ->
         NavHost(
             navController = nav,
-            startDestination = Tab.SEARCH.route,
+            startDestination = Tab.HOME.route,
             modifier = Modifier.padding(padding),
         ) {
+            composable(Tab.HOME.route) {
+                HomeScreen(vm, onOpenDetail = openDetail, onOpenSearch = { nav.openTab(Tab.SEARCH) })
+            }
             composable(Tab.SEARCH.route) {
                 SearchScreen(
                     vm = vm,

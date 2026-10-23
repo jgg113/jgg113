@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- 새 물건·관심물건 변동 알림 (Android 13+ 는 사용자가 허락해야 한다) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- AI 앱(Claude·ChatGPT·Gemini)이 설치돼 있는지 확인해 분석 질문을 넘긴다 (Android 11+ 패키지 공개 범위). -->
     <queries>

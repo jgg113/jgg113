@@ -4,6 +4,8 @@ package io.github.jgg113.gongmae.ui
 
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
@@ -13,8 +15,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -43,12 +47,13 @@ fun FavoritesScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
             ) {
                 item(key = "note") {
                     Text(
-                        "저장할 때의 정보입니다. 최신 입찰 일정과 가격은 다시 검색해서 확인하세요.",
+                        "다시 검색할 때마다 가격·유찰·일정이 새로 바뀌고, 바뀐 점은 카드 아래와 홈에 표시됩니다. 설정에서 알림을 켜면 하루 두 번 확인해 알려 줍니다.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 items(favorites, key = { it.id }) { p ->
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     PropertyCard(
                         property = p,
                         analysis = vm.analyses[p.id],
@@ -64,6 +69,23 @@ fun FavoritesScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
                             }
                         },
                     )
+                    val changes = vm.favoriteChanges[p.id].orEmpty()
+                    if (changes.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "🔔 " + changes.take(3).joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { vm.clearFavoriteChanges(p.id) }) { Text("확인") }
+                        }
+                    }
+                    val memo = vm.memoOf(p.id)
+                    if (memo.isNotBlank()) {
+                        Text("📝 ${memo.take(60)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    }
                 }
             }
         }

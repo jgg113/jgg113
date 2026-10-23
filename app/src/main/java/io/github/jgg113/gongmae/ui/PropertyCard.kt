@@ -239,6 +239,7 @@ fun PropertyCard(
                     Text(
                         listOfNotNull(
                             "유찰 ${property.failCount}회",
+                            analysis?.marketRatio?.let { "실거래 시세의 ${Format.percent(it)}" },
                             property.assetTypeName.ifBlank { null }.takeIf { !property.isCourt },
                             property.areaSqm?.let { Format.area(it) },
                         ).joinToString(" · "),
