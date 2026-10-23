@@ -53,7 +53,7 @@ class AlertWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                         assetTypes = AssetType.entries.filter { it in settings.assetTypes },
                         includePrivateContract = settings.includePrivateContract,
                     )
-                    OnbidClient(key).search(request, LocalDateTime.now()).properties
+                    OnbidClient(key, maxPagesPerType = if (settings.sido.isBlank()) 2 else 20).search(request, LocalDateTime.now()).properties
                 }
             }.getOrNull()
         } ?: return Result.retry()

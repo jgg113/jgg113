@@ -373,7 +373,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                                 includePrivateContract = s.includePrivateContract,
                             )
                             val label = if (nationwide) "공매 전국" else "공매 ${sigungu.ifBlank { Regions.shortName(s.sido) }}"
-                            val outcome = withContext(Dispatchers.IO) { OnbidClient(key).search(request, LocalDateTime.now(), progress(label)) }
+                            // 전국은 7만 건이 넘어 휴대폰이 버거우므로 재산유형마다 1,000건(2쪽)까지만 받는다.
+                            val client = OnbidClient(key, maxPagesPerType = if (nationwide) 2 else 20)
+                            val outcome = withContext(Dispatchers.IO) { client.search(request, LocalDateTime.now(), progress(label)) }
                             found += outcome.properties
                             notes += outcome.warnings.map { "공매 $it" }
                             localFilter = localFilter || outcome.regionFilteredLocally
@@ -415,6 +417,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 if (nationwide) notes += "경매 전국 검색은 사이트 차단을 피하려고 시도마다 매각기일이 가까운 100건까지만 불러왔습니다."
+            }
+            if (useOnbid && nationwide) {
+                notes += "공매 전국 검색은 재산유형마다 1,000건까지만 불러왔습니다. 지역을 고르면 그 지역 물건을 모두 볼 수 있습니다."
             }
 
             now = LocalDateTime.now()
