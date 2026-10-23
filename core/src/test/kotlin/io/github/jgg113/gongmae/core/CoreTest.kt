@@ -1038,3 +1038,64 @@ class QueryParserTest {
         assertEquals(listOf("c"), PropertyFilter(maxFailCount = 0, specials = setOf(SpecialRight.LIEN), excludeSpecials = true).apply(list, NOW, analyses).map { it.id })
     }
 }
+
+class AiTest {
+    private class FakeWeb(val handler: (String, Map<String, String>, String) -> WebResponse) : WebTransport {
+        val urls = mutableListOf<String>()
+        override fun get(url: String, headers: Map<String, String>) = error("unused")
+        override fun post(url: String, headers: Map<String, String>, body: String): WebResponse {
+            urls += url
+            return handler(url, headers, body)
+        }
+    }
+
+    @Test
+    fun geminiFallsBackToNextModelAndParses() {
+        val web = FakeWeb { url, headers, body ->
+            assertEquals("KEY", headers["x-goog-api-key"])
+            assertTrue(body.contains("\"text\":\"질문\""))
+            if (url.contains("gemini-flash-latest")) WebResponse(404, """{"error":{"code":404,"message":"not found","status":"NOT_FOUND"}}""")
+            else WebResponse(200, """{"candidates":[{"content":{"parts":[{"text":"**결론**: 비추천"},{"text":"\n- 위험"}]},"finishReason":"STOP"}]}""")
+        }
+        val answer = GeminiClient("KEY", web).generate("질문")
+        assertEquals("gemini-2.5-flash", answer.model)
+        assertEquals("결론: 비추천\n• 위험", AiText.plain(answer.text))
+        assertEquals(2, web.urls.size)
+    }
+
+    @Test
+    fun geminiErrorsAreFriendly() {
+        val quota = assertFailsWith<AiException> { GeminiClient.parse(429, """{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}""") }
+        assertTrue(quota.retryable)
+        assertTrue(quota.message!!.contains("한도"))
+        val badKey = assertFailsWith<AiException> { GeminiClient.parse(400, """{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}""") }
+        assertTrue(badKey.message!!.contains("키"))
+        assertFailsWith<AiException> { GeminiClient("", FakeWeb { _, _, _ -> error("x") }).generate("q") }
+    }
+
+    @Test
+    fun providersAndLocalReport() {
+        assertTrue(AiProvider.CHATGPT_APP.webLink("서울 아파트")!!.startsWith("https://chatgpt.com/?q=%EC%84%9C%EC%9A%B8%20"))
+        assertEquals("https://gemini.google.com/app", AiProvider.GEMINI_APP.webLink("x"))
+        assertNull(AiProvider.BUILT_IN.webLink("x"))
+        val p = Property(id = "r", usageSmall = "아파트", notes = "유치권 신고 있음", appraisalPrice = 100_000_000, minBidPrice = 70_000_000)
+        val a = Analyzer.analyze(p)
+        val report = LocalReport.build(p, a, 70_000_000L to 80_000_000L, Analyzer.checklist(p, a, null, null), ClaudePrompt.Mode.SUMMARY)
+        assertTrue(report.startsWith("결론: "))
+        assertTrue(report.contains("유치권"))
+        assertTrue(report.contains("적정 입찰가"))
+    }
+}
+
+class OfficialDocTest {
+    @Test
+    fun costsAndRelevantDocs() {
+        val apt = Property(id = "a", usageSmall = "아파트")
+        assertEquals(listOf(OfficialDoc.REGISTRY, OfficialDoc.RESIDENT_CHECK, OfficialDoc.BUILDING, OfficialDoc.TRADE), OfficialDoc.relevant(apt))
+        assertEquals(1000, OfficialDoc.minimumCost(apt))
+        val land = Property(id = "l", usageSmall = "답")
+        assertTrue(OfficialDoc.LAND_REGISTER in OfficialDoc.relevant(land))
+        assertEquals(700, OfficialDoc.minimumCost(land))
+        assertEquals(0, OfficialDoc.minimumCost(Property(id = "v", movableKind = MovableKind.VEHICLE)))
+    }
+}

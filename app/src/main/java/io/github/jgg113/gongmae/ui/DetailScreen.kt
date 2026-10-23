@@ -71,6 +71,7 @@ import io.github.jgg113.gongmae.core.CourtCase
 import io.github.jgg113.gongmae.core.CourtDetail
 import io.github.jgg113.gongmae.core.Format
 import io.github.jgg113.gongmae.core.LatLng
+import io.github.jgg113.gongmae.core.LocalReport
 import io.github.jgg113.gongmae.core.NearbyCategory
 import io.github.jgg113.gongmae.core.Property
 import io.github.jgg113.gongmae.core.PropertyDetail
@@ -129,8 +130,9 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
             val range = remember(analysis, market) { BidCalculator.suggestedRange(property, analysis, market) }
             val checklist = remember(analysis, loadedDetail, market) { Analyzer.checklist(property, analysis, loadedDetail, market) }
             var registryOpen by rememberSaveable { mutableStateOf(false) }
-            val askClaude = { mode: ClaudePrompt.Mode ->
-                Links.askClaude(context, ClaudePrompt.build(property, analysis, loadedDetail, market, courtDetail, mode, now, courtCase))
+            val prompt = { mode: ClaudePrompt.Mode -> ClaudePrompt.build(property, analysis, loadedDetail, market, courtDetail, mode, now, courtCase) }
+            val localReport = { mode: ClaudePrompt.Mode ->
+                if (analysis == null) "분석할 정보가 부족합니다." else LocalReport.build(property, analysis, range, checklist, mode)
             }
             if (registryOpen) RegistryDialog(property, onDismiss = { registryOpen = false })
             LazyColumn(
@@ -145,7 +147,7 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                         AiSummaryCard(
                             property, analysis, range, detailState,
                             onLoadRights = { vm.loadDetail(id) },
-                            onAskClaude = { askClaude(ClaudePrompt.Mode.SUMMARY) },
+                            ai = { AiActionBlock(vm, property, ClaudePrompt.Mode.SUMMARY, { prompt(ClaudePrompt.Mode.SUMMARY) }, { localReport(ClaudePrompt.Mode.SUMMARY) }) },
                         )
                     }
                 }
@@ -171,8 +173,8 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                     item {
                         AiDetailCard(
                             property, analysis, market, range, checklist,
-                            onAskClaude = { askClaude(ClaudePrompt.Mode.DETAIL) },
                             onOpenRegistry = { registryOpen = true },
+                            ai = { AiActionBlock(vm, property, ClaudePrompt.Mode.DETAIL, { prompt(ClaudePrompt.Mode.DETAIL) }, { localReport(ClaudePrompt.Mode.DETAIL) }) },
                         )
                     }
                 }

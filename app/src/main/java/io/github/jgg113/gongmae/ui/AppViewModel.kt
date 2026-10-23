@@ -9,7 +9,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.jgg113.gongmae.core.AiException
+import io.github.jgg113.gongmae.core.AiProvider
 import io.github.jgg113.gongmae.core.Analysis
+import io.github.jgg113.gongmae.core.ClaudePrompt
+import io.github.jgg113.gongmae.core.GeminiClient
 import io.github.jgg113.gongmae.core.Analyzer
 import io.github.jgg113.gongmae.core.AssetType
 import io.github.jgg113.gongmae.core.Category
@@ -84,6 +88,13 @@ sealed interface NearbyState {
     data class Loaded(val places: List<NearbyPlace>) : NearbyState
 }
 
+sealed interface AiState {
+    data object Loading : AiState
+    data class Error(val message: String) : AiState
+    /** [source] 는 "앱 내장 분석", "Gemini (gemini-2.5-flash)" 처럼 답을 만든 곳 */
+    data class Done(val text: String, val source: String) : AiState
+}
+
 sealed interface MovableState {
     data object Idle : MovableState
     data class Loading(val label: String) : MovableState
@@ -156,6 +167,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var queryNote by mutableStateOf<String?>(null)
         private set
     var keyTest by mutableStateOf<KeyTestState>(KeyTestState.Idle)
+        private set
+    var aiProvider by mutableStateOf(store.aiProvider)
+        private set
+    var geminiKey by mutableStateOf(store.geminiKey)
+        private set
+    var geminiTest by mutableStateOf<AiState?>(null)
+        private set
+    /** 물건·요약/상세별 AI 답 */
+    var aiResults by mutableStateOf<Map<String, AiState>>(emptyMap())
         private set
 
     private val geoCache = HashMap(store.loadGeoCache())
@@ -624,6 +644,68 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun retryNearby(p: Property, center: LatLng, category: NearbyCategory) {
         nearby = nearby - nearbyKey(p, category)
         loadNearby(p, center, category)
+    }
+
+    fun aiKey(id: String, mode: ClaudePrompt.Mode) = "$id|${mode.name}"
+
+    fun updateAiProvider(provider: AiProvider) {
+        aiProvider = provider
+        store.aiProvider = provider
+    }
+
+    fun saveGeminiKey(raw: String) {
+        val key = raw.trim()
+        geminiKey = key
+        store.geminiKey = key
+        geminiTest = null
+    }
+
+    fun testGemini() {
+        val key = geminiKey
+        geminiTest = AiState.Loading
+        viewModelScope.launch {
+            geminiTest = try {
+                val answer = withContext(Dispatchers.IO) { GeminiClient(key).generate("한 문장으로 답해 줘: 경매에서 말소기준권리란?") }
+                AiState.Done(answer.text, "Gemini (${answer.model})")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: AiException) {
+                AiState.Error(e.message.orEmpty())
+            } catch (e: Exception) {
+                AiState.Error(e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }
+
+    /** 앱 내장 분석 글을 결과 칸에 보여 준다. */
+    fun showLocalAi(id: String, mode: ClaudePrompt.Mode, text: String) {
+        aiResults = aiResults + (aiKey(id, mode) to AiState.Done(text, "앱 내장 분석 (규칙 기반)"))
+    }
+
+    fun clearAi(id: String, mode: ClaudePrompt.Mode) {
+        aiResults = aiResults - aiKey(id, mode)
+    }
+
+    /** 내 Gemini 무료 키로 실시간 분석 */
+    fun runGemini(id: String, mode: ClaudePrompt.Mode, prompt: String) {
+        val key = aiKey(id, mode)
+        if (aiResults[key] is AiState.Loading) return
+        aiResults = aiResults + (key to AiState.Loading)
+        val apiKey = geminiKey
+        viewModelScope.launch {
+            val state = try {
+                val answer = withContext(Dispatchers.IO) { GeminiClient(apiKey).generate(prompt) }
+                AiState.Done(answer.text, "Gemini (${answer.model}) · 실시간")
+            } catch (e: CancellationException) {
+                aiResults = aiResults - key
+                throw e
+            } catch (e: AiException) {
+                AiState.Error(e.message.orEmpty())
+            } catch (e: Exception) {
+                AiState.Error("AI 분석 중 오류: ${e.message ?: e.javaClass.simpleName}")
+            }
+            aiResults = aiResults + (key to state)
+        }
     }
 
     fun saveServiceKey(raw: String) {

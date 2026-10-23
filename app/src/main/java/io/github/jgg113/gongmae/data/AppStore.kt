@@ -1,6 +1,7 @@
 package io.github.jgg113.gongmae.data
 
 import android.content.Context
+import io.github.jgg113.gongmae.core.AiProvider
 import io.github.jgg113.gongmae.core.AssetType
 import io.github.jgg113.gongmae.core.LatLng
 import io.github.jgg113.gongmae.core.Property
@@ -33,6 +34,20 @@ class AppStore(context: Context) {
         get() = prefs.getString("service_key", null).orEmpty()
         set(value) {
             prefs.edit().putString("service_key", value).apply()
+        }
+
+    /** 'AI 실시간 분석' 버튼이 쓰는 곳 */
+    var aiProvider: AiProvider
+        get() = prefs.getString("ai_provider", null)?.let { name -> AiProvider.entries.firstOrNull { it.name == name } } ?: AiProvider.BUILT_IN
+        set(value) {
+            prefs.edit().putString("ai_provider", value.name).apply()
+        }
+
+    /** Google AI Studio 무료 API 키 (기기에만 저장) */
+    var geminiKey: String
+        get() = prefs.getString("gemini_key", null).orEmpty()
+        set(value) {
+            prefs.edit().putString("gemini_key", value).apply()
         }
 
     /** 주소 → 좌표 캐시. 같은 주소를 다시 지오코딩하지 않도록 기기에 남겨 둔다. */

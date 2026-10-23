@@ -31,8 +31,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.github.jgg113.gongmae.core.AiProvider
 import io.github.jgg113.gongmae.core.BidWindow
-import io.github.jgg113.gongmae.core.ClaudePrompt
 import io.github.jgg113.gongmae.core.CourtClient
 import io.github.jgg113.gongmae.core.Format
 import io.github.jgg113.gongmae.core.LatLng
@@ -42,7 +42,6 @@ import java.time.LocalDateTime
 
 object Links {
     private const val ONBID_HOME = "https://www.onbid.co.kr"
-    private const val CLAUDE_PACKAGE = "com.anthropic.claude"
 
     fun openUrl(context: Context, url: String) {
         try {
@@ -130,29 +129,34 @@ object Links {
     }
 
     /**
-     * 분석 질문을 Claude 앱 채팅으로 넘긴다. 사용자의 Claude 구독으로 실시간 분석하므로 이 앱은 AI 비용을 쓰지 않는다.
-     * 앱이 공유 글을 입력창에 못 넣는 경우를 대비해 질문은 늘 클립보드에도 복사해 둔다.
+     * 분석 질문을 고른 AI 앱(ChatGPT·Gemini·Claude)으로 넘긴다. 그 앱의 내 계정으로 실시간 분석되고 이 앱은 비용을 쓰지 않는다.
+     * 질문은 클립보드에도 복사해 둔다. 앱이 없으면 웹을 연다.
      */
-    fun askClaude(context: Context, prompt: String) {
-        copy(context, "Claude 분석 요청", prompt)
+    fun askAiApp(context: Context, provider: AiProvider, prompt: String) {
+        val pkg = provider.packageName ?: return
+        copy(context, "AI 분석 요청", prompt)
         val send = Intent(Intent.ACTION_SEND)
             .setType("text/plain")
             .putExtra(Intent.EXTRA_TEXT, prompt)
-            .setPackage(CLAUDE_PACKAGE)
+            .setPackage(pkg)
         try {
             context.startActivity(send)
-            Toast.makeText(context, "Claude 앱으로 보냈습니다. 입력창이 비어 있으면 길게 눌러 붙여넣으세요.", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "${provider.label}으로 보냈습니다. 입력창이 비어 있으면 길게 눌러 붙여넣으세요.", Toast.LENGTH_LONG).show()
             return
         } catch (e: ActivityNotFoundException) {
             // 공유 받기를 지원하지 않거나 설치되지 않았다.
         }
-        val launch = context.packageManager.getLaunchIntentForPackage(CLAUDE_PACKAGE)
-        if (launch != null) {
-            context.startActivity(launch)
-            Toast.makeText(context, "질문을 복사했습니다. Claude 새 채팅 입력창에 붙여넣으세요.", Toast.LENGTH_LONG).show()
-        } else {
-            openUrl(context, ClaudePrompt.webUrl(prompt))
-            Toast.makeText(context, "Claude 웹을 엽니다. 전체 질문은 복사해 두었습니다.", Toast.LENGTH_LONG).show()
+        val launch = context.packageManager.getLaunchIntentForPackage(pkg)
+        val web = provider.webLink(prompt)
+        when {
+            launch != null -> {
+                context.startActivity(launch)
+                Toast.makeText(context, "질문을 복사했습니다. ${provider.label} 새 채팅에 붙여넣으세요.", Toast.LENGTH_LONG).show()
+            }
+            web != null -> {
+                openUrl(context, web)
+                Toast.makeText(context, "${provider.label}이 없어 웹을 엽니다. 전체 질문은 복사해 두었습니다.", Toast.LENGTH_LONG).show()
+            }
         }
     }
 

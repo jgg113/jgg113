@@ -153,13 +153,34 @@ object ClaudePrompt {
 }
 
 /** 입찰 전에 떼어 보는 공적 서류. 로그인·결제는 각 사이트에서 사용자가 직접 한다. */
-enum class OfficialDoc(val title: String, val site: String, val url: String, val fee: String, val note: String) {
+enum class OfficialDoc(
+    val title: String,
+    val site: String,
+    val url: String,
+    val fee: String,
+    val note: String,
+    /** 꼭 필요한 최소 비용 (원). 무료면 0 */
+    val costWon: Int = 0,
+    /** 떼는 순서 */
+    val how: String = "",
+) {
     REGISTRY(
         "등기사항증명서 (등기부등본)",
         "대법원 인터넷등기소",
         "https://www.iros.go.kr/",
         "열람 700원 · 발급 1,000원",
-        "소유권·근저당·압류 등 권리 순서를 확인하는 서류입니다. 부동산 등기 → 열람/발급에서 주소로 찾아 결제합니다.",
+        "소유권·근저당·압류 등 권리 순서를 확인하는 서류입니다. 권리 확인에는 열람용이면 충분합니다.",
+        costWon = 700,
+        how = "인터넷등기소 → 부동산 등기 → 열람/발급 → 주소 붙여넣기 → 등기 종류 선택 → 결제(카드·계좌이체·휴대폰·간편결제)",
+    ),
+    RESIDENT_CHECK(
+        "전입세대 열람",
+        "주민센터 방문",
+        "https://www.gov.kr/",
+        "건당 300원 안팎 (방문)",
+        "그 집에 누가 언제 전입했는지 보여 줍니다. 말소기준권리보다 먼저 전입한 임차인(대항력)을 찾는 데 씁니다.",
+        costWon = 300,
+        how = "가까운 주민센터 방문 → 신분증과 경매 사건번호(또는 공매 공고) 제시 → 전입세대 열람 신청",
     ),
     LAND_USE(
         "토지이용계획확인서",
@@ -167,20 +188,31 @@ enum class OfficialDoc(val title: String, val site: String, val url: String, val
         "https://www.eum.go.kr/",
         "열람 무료",
         "용도지역·건축 제한·개발 계획을 확인합니다.",
+        how = "토지이음 → 토지이용계획 → 주소 입력",
+    ),
+    LAND_REGISTER(
+        "토지대장·임야대장·지적도",
+        "정부24",
+        "https://www.gov.kr/",
+        "열람·인터넷 발급 무료",
+        "지목·면적·소유자 변동과 땅 모양(지적도)을 확인합니다. 도로에 붙어 있는지(맹지 여부)도 지적도로 봅니다.",
+        how = "정부24 → '토지대장' 또는 '지적도' 검색 → 주소 입력",
     ),
     BUILDING(
         "건축물대장",
         "정부24",
         "https://www.gov.kr/",
         "열람·발급 무료",
-        "위반건축물 여부와 실제 용도·면적을 확인합니다. 정부24에서 '건축물대장'을 검색하세요.",
+        "위반건축물 여부와 실제 용도·면적을 확인합니다.",
+        how = "정부24 → '건축물대장' 검색 → 주소 입력 (집합건물은 동·호까지)",
     ),
     VEHICLE_REGISTER(
         "자동차등록원부",
         "정부24",
         "https://www.gov.kr/",
         "열람 무료",
-        "압류·저당권이 남아 있는지, 차대번호·연식이 맞는지 확인합니다. 정부24에서 '자동차등록원부'를 검색하세요 (차량번호 필요).",
+        "압류·저당권이 남아 있는지, 차대번호·연식이 맞는지 확인합니다.",
+        how = "정부24 → '자동차등록원부' 검색 → 차량번호 입력 (공고문에 있음)",
     ),
     TRADE(
         "실거래가",
@@ -201,9 +233,16 @@ enum class OfficialDoc(val title: String, val site: String, val url: String, val
             else -> realEstate(p)
         }
 
+        /** 이 물건 확인에 꼭 드는 서류 비용 합계 (원) */
+        fun minimumCost(p: Property): Int = relevant(p).sumOf { it.costWon }
+
         private fun realEstate(p: Property): List<OfficialDoc> = buildList {
             add(REGISTRY)
-            if (p.category in setOf(Category.LAND, Category.FOREST, Category.HOUSE, Category.FACTORY)) add(LAND_USE)
+            if (p.category in setOf(Category.APARTMENT, Category.VILLA, Category.HOUSE, Category.OFFICETEL)) add(RESIDENT_CHECK)
+            if (p.category in setOf(Category.LAND, Category.FOREST, Category.HOUSE, Category.FACTORY)) {
+                add(LAND_USE)
+                add(LAND_REGISTER)
+            }
             if (p.category !in setOf(Category.LAND, Category.FOREST)) add(BUILDING)
             add(TRADE)
         }

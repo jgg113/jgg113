@@ -7,9 +7,11 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
-    <!-- Claude 앱이 설치돼 있는지 확인해 분석 질문을 넘긴다 (Android 11+ 패키지 공개 범위). -->
+    <!-- AI 앱(Claude·ChatGPT·Gemini)이 설치돼 있는지 확인해 분석 질문을 넘긴다 (Android 11+ 패키지 공개 범위). -->
     <queries>
         <package android:name="com.anthropic.claude" />
+        <package android:name="com.openai.chatgpt" />
+        <package android:name="com.google.android.apps.bard" />
     </queries>
 
     <application

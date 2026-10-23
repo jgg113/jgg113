@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -21,6 +22,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -28,6 +30,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,6 +41,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.jgg113.gongmae.BuildConfig
+import io.github.jgg113.gongmae.core.AiProvider
+import io.github.jgg113.gongmae.core.AiText
+import io.github.jgg113.gongmae.core.GeminiClient
 
 private val guideSteps = listOf(
     "공공데이터포털(data.go.kr)에 회원가입하고 로그인합니다.",
@@ -123,6 +129,8 @@ fun SettingsScreen(vm: AppViewModel) {
                 }
             }
 
+            AiSettingsCard(vm)
+
             SectionCard("공공데이터포털 인증키 받는 방법") {
                 guideSteps.forEachIndexed { index, step ->
                     Row {
@@ -142,7 +150,7 @@ fun SettingsScreen(vm: AppViewModel) {
                 InfoRow("버전", BuildConfig.VERSION_NAME)
                 InfoRow("공매", "한국자산관리공사 온비드 (공공데이터포털 오픈API)")
                 InfoRow("경매", "대법원 법원경매정보 (공개 화면)")
-                InfoRow("지도", "OpenStreetMap · CARTO · Esri")
+                InfoRow("지도", "OpenStreetMap · CARTO · Esri (osmdroid)")
                 Text(
                     "이 앱은 공매·경매 정보를 조회하고 비교만 합니다. 입찰은 온비드·법원에서 직접 하세요. AI 분석(위험도·투자매력·종합점수)은 공개 정보를 정해진 기준으로 점수화한 참고 자료입니다.",
                     style = MaterialTheme.typography.bodySmall,
@@ -151,5 +159,82 @@ fun SettingsScreen(vm: AppViewModel) {
             }
             Spacer(Modifier.fillMaxWidth())
         }
+    }
+}
+
+/** 'AI 실시간 분석' 버튼이 쓸 AI 고르기. Gemini 는 무료 API 키를 넣고, 나머지 앱은 설치·로그인만 돼 있으면 된다. */
+@Composable
+private fun AiSettingsCard(vm: AppViewModel) {
+    val context = LocalContext.current
+    var key by rememberSaveable { mutableStateOf(vm.geminiKey) }
+    var reveal by rememberSaveable { mutableStateOf(false) }
+    SectionCard("AI 분석 연결") {
+        Text(
+            "물건 상세 화면의 'AI 실시간 요약·상세 분석' 버튼이 어떤 AI 를 쓸지 고릅니다. 모두 무료로 쓸 수 있습니다.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        AiProvider.entries.forEach { provider ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .selectable(selected = vm.aiProvider == provider, onClick = { vm.updateAiProvider(provider) }),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = vm.aiProvider == provider, onClick = { vm.updateAiProvider(provider) })
+                Column(Modifier.weight(1f)) {
+                    Text(provider.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text(provider.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val pkg = provider.packageName
+                    if (pkg != null) {
+                        val installed = remember(pkg) { context.packageManager.getLaunchIntentForPackage(pkg) != null }
+                        Text(
+                            if (installed) "설치됨" else "설치 안 됨 — 웹으로 열립니다",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (installed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        }
+        if (vm.aiProvider == AiProvider.GEMINI_API) {
+            OutlinedTextField(
+                value = key,
+                onValueChange = { key = it.trim() },
+                label = { Text("Gemini API 키") },
+                singleLine = true,
+                visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { vm.saveGeminiKey(key) }) { Text("저장") }
+                OutlinedButton(onClick = {
+                    vm.saveGeminiKey(key)
+                    vm.testGemini()
+                }, enabled = key.isNotBlank()) { Text("연결 테스트") }
+                TextButton(onClick = { reveal = !reveal }) { Text(if (reveal) "숨기기" else "보기") }
+            }
+            when (val test = vm.geminiTest) {
+                AiState.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("확인하는 중…", style = MaterialTheme.typography.bodySmall)
+                }
+                is AiState.Done -> Text("연결 성공 (${test.source}): ${AiText.plain(test.text).take(120)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                is AiState.Error -> Text(test.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                null -> Unit
+            }
+            Text(
+                "키 받는 법: ① 아래 버튼으로 Google AI Studio 를 열고 Google 계정으로 로그인 ② 'API 키 만들기' ③ 만든 키를 복사해 위에 붙여넣기. " +
+                    "결제 정보를 넣지 않으면 무료 한도(분당·하루 요청 수 제한) 안에서만 쓰이고 요금이 나가지 않습니다. 키는 이 휴대폰에만 저장됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = { Links.openUrl(context, GeminiClient.KEY_PAGE) }) { Text("Google AI Studio 열기") }
+        }
+        Text(
+            "참고: Claude·ChatGPT·Gemini 앱으로 넘기면 그 앱의 내 계정으로 분석됩니다. 무료 계정은 하루에 쓸 수 있는 양이 정해져 있고, 이 앱은 따로 요금을 내지 않습니다.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

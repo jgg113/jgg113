@@ -19,6 +19,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -45,7 +47,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import android.widget.Toast
+import io.github.jgg113.gongmae.core.AiProvider
+import io.github.jgg113.gongmae.core.AiText
 import io.github.jgg113.gongmae.core.Analysis
+import io.github.jgg113.gongmae.core.ClaudePrompt
 import io.github.jgg113.gongmae.core.BidCalculator
 import io.github.jgg113.gongmae.core.Category
 import io.github.jgg113.gongmae.core.CheckItem
@@ -57,9 +63,59 @@ import io.github.jgg113.gongmae.core.OfficialDoc
 import io.github.jgg113.gongmae.core.Property
 import kotlin.math.roundToLong
 
-private const val CLAUDE_NOTE = "버튼을 누르면 이 물건 정보로 만든 질문이 Claude 앱 채팅으로 넘어가 실시간으로 분석됩니다. 내 Claude 구독으로 돌리므로 이 앱에서 따로 드는 비용은 없습니다."
+/** 'AI 실시간 분석' 버튼 아래에 붙는 설명 (설정에서 고른 AI 에 따라 다르다) */
+private fun aiNote(provider: AiProvider): String = when (provider) {
+    AiProvider.BUILT_IN -> "앱 내장 분석은 규칙 기반이라 무료이고 바로 나옵니다. 설정 탭에서 Gemini(무료 API 키)나 ChatGPT·Gemini·Claude 앱을 고르면 실시간 AI 분석을 받을 수 있습니다."
+    AiProvider.GEMINI_API -> "내 Gemini 무료 API 키로 앱 안에서 바로 분석합니다. 무료 한도 안에서는 비용이 없습니다."
+    else -> "질문이 ${provider.label}으로 넘어가고 클립보드에도 복사됩니다. 그 앱의 내 계정(무료 계정 가능)으로 분석되며 이 앱에서 드는 비용은 없습니다."
+}
 
-/** AI 요약: 등급·점수, 핵심 근거 몇 줄, 적정 입찰가, Claude 실시간 요약 버튼. */
+/**
+ * 'AI 실시간 요약/상세' 버튼과 결과. 내장·Gemini 는 결과를 여기 보여 주고, 앱 연결은 해당 앱으로 넘긴다.
+ * [prompt] 는 AI 에 보낼 질문, [local] 은 앱 내장 분석 글을 만든다.
+ */
+@Composable
+fun AiActionBlock(vm: AppViewModel, property: Property, mode: ClaudePrompt.Mode, prompt: () -> String, local: () -> String) {
+    val context = LocalContext.current
+    val provider = vm.aiProvider
+    val state = vm.aiResults[vm.aiKey(property.id, mode)]
+    val title = if (mode == ClaudePrompt.Mode.SUMMARY) "AI 실시간 요약" else "AI 실시간 상세 분석"
+    Button(
+        onClick = {
+            when {
+                provider == AiProvider.BUILT_IN -> vm.showLocalAi(property.id, mode, local())
+                provider == AiProvider.GEMINI_API && vm.geminiKey.isBlank() ->
+                    Toast.makeText(context, "설정 탭에서 Gemini API 키를 먼저 넣으세요.", Toast.LENGTH_LONG).show()
+                provider == AiProvider.GEMINI_API -> vm.runGemini(property.id, mode, prompt())
+                else -> Links.askAiApp(context, provider, prompt())
+            }
+        },
+        enabled = state !is AiState.Loading,
+        modifier = Modifier.fillMaxWidth(),
+    ) { Text("$title · ${provider.short}") }
+    when (state) {
+        AiState.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+            Text("AI가 분석하는 중… (보통 5~20초)", style = MaterialTheme.typography.bodySmall)
+        }
+        is AiState.Error -> Text(state.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        is AiState.Done -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(state.source, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                Text(AiText.plain(state.text), style = MaterialTheme.typography.bodySmall)
+                Row {
+                    TextButton(onClick = { Links.copy(context, "AI 분석", AiText.plain(state.text)) }) { Text("복사") }
+                    TextButton(onClick = { vm.clearAi(property.id, mode) }) { Text("닫기") }
+                }
+            }
+        }
+        null -> Unit
+    }
+    Text(aiNote(provider), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** AI 요약: 등급·점수, 핵심 근거 몇 줄, 적정 입찰가, AI 실시간 요약 버튼. */
 @Composable
 fun AiSummaryCard(
     property: Property,
@@ -67,7 +123,7 @@ fun AiSummaryCard(
     range: Pair<Long, Long>?,
     rights: DetailState?,
     onLoadRights: () -> Unit,
-    onAskClaude: () -> Unit,
+    ai: @Composable () -> Unit,
 ) {
     val risk = riskColors(analysis.riskLevel)
     SectionCard("AI 요약") {
@@ -102,12 +158,11 @@ fun AiSummaryCard(
                 else -> OutlinedButton(onClick = onLoadRights) { Text("권리·임대차 정보로 정밀 분석") }
             }
         }
-        Button(onClick = onAskClaude, modifier = Modifier.fillMaxWidth()) { Text("Claude로 실시간 요약 받기") }
-        Text(CLAUDE_NOTE, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ai()
     }
 }
 
-/** AI 상세 분석: 근거 전체, 가격 분석, 입찰 전 체크리스트, Claude 실시간 상세 분석. 처음엔 접혀 있다. */
+/** AI 상세 분석: 근거 전체, 가격 분석, 입찰 전 체크리스트, AI 실시간 상세 분석. 처음엔 접혀 있다. */
 @Composable
 fun AiDetailCard(
     property: Property,
@@ -115,8 +170,8 @@ fun AiDetailCard(
     market: MarketSummary?,
     range: Pair<Long, Long>?,
     checklist: List<CheckItem>,
-    onAskClaude: () -> Unit,
     onOpenRegistry: () -> Unit,
+    ai: @Composable () -> Unit,
 ) {
     var expanded by rememberSaveable(property.id) { mutableStateOf(false) }
     var checked by remember(property.id) { mutableStateOf(setOf<String>()) }
@@ -129,7 +184,7 @@ fun AiDetailCard(
             )
             OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) { Text("상세 분석 펼치기") }
         } else {
-            DetailContent(property, analysis, market, range, checklist, checked, { checked = checked.toggle(it) }, onAskClaude, onOpenRegistry)
+            DetailContent(property, analysis, market, range, checklist, checked, { checked = checked.toggle(it) }, onOpenRegistry, ai)
             TextButton(onClick = { expanded = false }) { Text("접기") }
         }
     }
@@ -144,8 +199,8 @@ private fun DetailContent(
     checklist: List<CheckItem>,
     checked: Set<String>,
     onCheck: (String) -> Unit,
-    onAskClaude: () -> Unit,
     onOpenRegistry: () -> Unit,
+    ai: @Composable () -> Unit,
 ) {
     val risk = riskColors(analysis.riskLevel)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -195,16 +250,19 @@ private fun DetailContent(
             }
         }
 
-        Heading("4. Claude 실시간 상세 분석")
+        Heading("4. AI 실시간 상세 분석")
         Text(
-            "권리분석·배당·수익률·입찰가를 Claude 가 실시간으로 자세히 풀어 줍니다. 등기부등본 PDF 를 그 채팅에 함께 첨부하면 훨씬 정확해집니다.",
+            if (property.category.isMovable) {
+                "시세 대비 적정가, 상태·인도 위험, 비용과 예상 수익을 AI 가 자세히 풀어 줍니다."
+            } else {
+                "권리분석·배당·수익률·입찰가를 AI 가 자세히 풀어 줍니다. 앱 연결(ChatGPT·Claude 등)을 쓰면 등기부등본 PDF 를 그 채팅에 첨부해 더 정확하게 받을 수 있습니다."
+            },
             style = MaterialTheme.typography.bodySmall,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onAskClaude, modifier = Modifier.weight(1f)) { Text("Claude로 상세 분석") }
-            OutlinedButton(onClick = onOpenRegistry, modifier = Modifier.weight(1f)) { Text("등기부등본 떼기") }
+        ai()
+        if (!property.category.isMovable) {
+            OutlinedButton(onClick = onOpenRegistry, modifier = Modifier.fillMaxWidth()) { Text("등기부등본 떼기") }
         }
-        Text(CLAUDE_NOTE, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -336,12 +394,22 @@ fun DocumentsCard(property: Property, onOpenRegistry: () -> Unit) {
     val docs = OfficialDoc.relevant(property)
     if (docs.isEmpty() && !property.isCourt) return
     val context = LocalContext.current
-    SectionCard("서류 떼기·확인") {
+    SectionCard("서류 떼기·확인 (비용 안내)") {
+        val cost = OfficialDoc.minimumCost(property)
+        Text(
+            if (cost > 0) "이 물건을 확인하는 데 꼭 드는 비용은 약 ${"%,d".format(cost)}원입니다. 나머지 서류는 무료입니다." else "아래 서류는 모두 무료로 볼 수 있습니다.",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
         if (property.isCourt) {
-            DocRow("매각물건명세서·현황조사서·감정평가서", "법원경매정보 · 무료", "사건번호를 복사해 두고 법원경매정보를 엽니다.") { Links.openCourt(context, property) }
+            DocRow("매각물건명세서·현황조사서·감정평가서", "법원경매정보 · 무료", "임차인·인수 권리·점유 상황이 적힌 핵심 서류입니다.", "법원경매정보 → 경매사건검색 → 법원·사건번호 입력 (사건번호는 자동 복사)") {
+                Links.openCourt(context, property)
+            }
+        } else {
+            DocRow("공고문·감정평가서", "온비드 · 무료", "명도 책임·특약·감정 근거가 적혀 있습니다.", "온비드 물건 화면 → 첨부파일") { Links.openOnbid(context, property) }
         }
         docs.forEach { doc ->
-            DocRow(doc.title, "${doc.site} · ${doc.fee}", doc.note) {
+            DocRow(doc.title, "${doc.site} · ${doc.fee}", doc.note, doc.how) {
                 if (doc == OfficialDoc.REGISTRY) onOpenRegistry() else Links.openOfficialDoc(context, doc, property)
             }
         }
@@ -349,12 +417,13 @@ fun DocumentsCard(property: Property, onOpenRegistry: () -> Unit) {
 }
 
 @Composable
-private fun DocRow(title: String, sub: String, note: String, onOpen: () -> Unit) {
+private fun DocRow(title: String, sub: String, note: String, how: String, onOpen: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
             Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
             Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (how.isNotBlank()) Text("떼는 법: $how", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.width(8.dp))
         OutlinedButton(onClick = onOpen) { Text("열기") }
@@ -383,8 +452,8 @@ fun RegistryDialog(property: Property, onDismiss: () -> Unit) {
                 Text(
                     "1. 아래 버튼을 누르면 주소가 복사되고 인터넷등기소가 열립니다.\n" +
                         "2. 로그인 후 '부동산 등기 → 열람/발급'에서 주소를 붙여넣어 찾습니다.\n" +
-                        "3. 등기 종류를 고르고 카드·계좌이체 등으로 결제합니다.\n" +
-                        "4. 받은 PDF 를 'Claude로 상세 분석' 채팅에 첨부하면 권리분석을 더 정확하게 받을 수 있습니다.",
+                        "3. 등기 종류를 고르고 결제합니다. 카카오페이·네이버페이 같은 간편결제를 등록해 두면 지문·비밀번호만으로 끝납니다.\n" +
+                        "4. 받은 PDF 를 'AI 실시간 상세 분석'(ChatGPT·Claude 앱 연결) 채팅에 첨부하면 권리분석을 더 정확하게 받을 수 있습니다.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text("권리 확인에는 열람용(700원)이면 충분합니다. 제출할 곳이 있을 때만 발급용을 받으세요.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
