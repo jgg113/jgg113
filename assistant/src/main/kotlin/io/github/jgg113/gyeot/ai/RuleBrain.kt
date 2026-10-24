@@ -32,7 +32,7 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
                 val found = KoreanTime.parse(clause, spokenAt)
                 extractEvent(clause, found, spokenAt)?.let { e -> if (events.none { it.start == e.start && similar(it.title, e.title) }) events += e }
                 extractTodo(clause, found)?.let { t -> if (todos.none { it.text == t.text }) todos += t }
-                if (isKeyPoint(clause)) points += clause
+                if (isKeyPoint(clause)) KoreanText.tidy(clause).takeIf { it.length >= 4 }?.let { points += it }
             }
         }
         val polished = runCatching { polisher?.summarize(fresh.joinToString("\n") { u -> "[${clock(u.at)}] ${u.text}" }) }.getOrNull()
@@ -129,7 +129,22 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
             f.time == null -> f.date.toString()
             else -> f.date.atTime(f.time).format(MINUTE)
         }
-        return Todo(strip(clause, f.spans).ifBlank { clause }, due)
+        val text = focus(strip(clause, f.spans).ifBlank { clause }) ?: return null
+        return Todo(text, due)
+    }
+
+    /**
+     * 긴 말에서 할 일 부분만 골라낸다: "왜 또 거기까지 갔어 어 토 아니 토닉워터 사와야 돼 그럼" → "토닉워터 사와야 돼".
+     * 할 일 말(…야 돼, …해 줘, …할게)이 든 낱말 앞 세 낱말 + 뒤 한 낱말만 남기고 말버릇을 뺀다.
+     */
+    private fun focus(clause: String): String? {
+        val words = clause.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val i = words.indexOfFirst { STRONG_TODO.containsMatchIn(it) }.takeIf { it >= 0 }
+            ?: words.indexOfFirst { w -> TODO_CUES.any { w.contains(it.trim()) } }.takeIf { it >= 0 } ?: return null
+        val end = if (i + 1 < words.size && AUX.matches(words[i + 1])) i + 1 else i
+        val picked = KoreanText.tidy(words.subList((i - 3).coerceAtLeast(0), end + 1).joinToString(" "))
+        val meaningful = picked.split(' ').count { !AUX.matches(it) && !STRONG_TODO.containsMatchIn(it) }
+        return picked.takeIf { meaningful >= 1 && it.length >= 4 }
     }
 
     private fun isKeyPoint(clause: String) =
@@ -160,11 +175,14 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
 
     private fun ruleSummary(fresh: List<Utterance>, events: List<ExtractedEvent>, todos: List<Todo>, points: List<String>): String {
         val parts = mutableListOf<String>()
-        if (events.isNotEmpty()) parts += "일정 " + events.joinToString(", ") { it.title }
-        if (todos.isNotEmpty()) parts += "할 일 " + todos.joinToString(", ") { it.text.take(20) }
-        if (parts.isEmpty() && points.isNotEmpty()) parts += points.first().take(60)
-        if (parts.isEmpty()) parts += fresh.maxByOrNull { it.text.length }?.text?.take(60).orEmpty()
-        return "${clock(fresh.first().at)}~${clock(fresh.last().at)} 대화 ${fresh.size}마디 · " + parts.joinToString(" · ")
+        if (events.isNotEmpty()) parts += "일정: " + events.joinToString(", ") { it.title }
+        if (todos.isNotEmpty()) parts += "할 일: " + todos.joinToString(", ") { it.text.take(24) }
+        if (points.isNotEmpty()) parts += "기억할 말: " + points.first().take(40)
+        if (parts.isEmpty()) {
+            val gist = fresh.map { KoreanText.tidy(it.text) }.maxByOrNull { it.length }.orEmpty().take(40)
+            parts += if (gist.isBlank()) "짧은 대화" else "일상 대화 — \"$gist\""
+        }
+        return parts.joinToString(" · ")
     }
 
     companion object {
@@ -195,6 +213,8 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
         private val ACCOUNT = Regex("계좌|번호|주소|비밀번호|비번|전화번호|이메일|아이디|코드")
         private val DECISION = Regex("결정|확정|정했|하기로|바뀌|변경|취소|미뤄|당겨|합의|계약")
         private val LONG_NUMBER = Regex("\\d{4,}|\\d+-\\d+")
+        private val STRONG_TODO = Regex("(야|야지|줘|줘요|주세요|줄래|할게|할께|드릴게|보낼게|챙겨|잊지)$")
+        private val AUX = Regex("돼|돼요|해|해요|된다|되지|합니다|돼야|겠다|겠어|마|마세요|말고")
         private val NEED = Regex("(가야|가 봐야|가봐야|해야|예약해야|챙겨야|사야|내야|보내야|받아야|신청해야|갱신해야|들러야|전화해야|연락해야|알아봐야|준비해야|잊지 말아야|잊으면 안)")
         private val NEED_END = Regex("(야|야지|야겠|야 돼|야 되|야 해|안 돼|안돼)")
         private val NEED_WORD = Regex("(가야|가 봐야|해야|봐야|돼|되는데|하는데|해|겠다|겠네|지|돼요|되는데요|할|것|같아)")

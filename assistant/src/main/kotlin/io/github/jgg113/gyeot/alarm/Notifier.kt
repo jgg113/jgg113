@@ -54,7 +54,7 @@ object Notifier {
             NotificationChannel(CH_BRIEF, "일정 브리핑", NotificationManager.IMPORTANCE_DEFAULT).apply {
                 description = "아침마다 오늘 일정 요약"
             },
-            NotificationChannel(CH_CALL, "곁비서 전화", NotificationManager.IMPORTANCE_HIGH).apply {
+            NotificationChannel(CH_CALL, "수빈이 전화", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "일정·브리핑을 전화처럼 걸어 목소리로 알려 주기"
                 setSound(null, null) // 벨소리는 전화 화면이 직접 울린다
                 enableVibration(false)
@@ -104,7 +104,7 @@ object Notifier {
         )
         return Notification.Builder(context, CH_LISTEN)
             .setSmallIcon(R.drawable.ic_ear)
-            .setContentTitle(if (paused) "곁비서 잠시 멈춤" else "곁비서가 듣는 중")
+            .setContentTitle(if (paused) "수빈이 잠시 멈춤" else "수빈이가 듣는 중")
             .setContentText(status)
             .setOngoing(true)
             .setContentIntent(openApp(context))
@@ -122,7 +122,7 @@ object Notifier {
             .setStyle(Notification.BigTextStyle().bigText(buildString {
                 append(describe(e))
                 if (e.location.isNotBlank()) append("\n장소: ${e.location}")
-                if (e.evidence.isNotBlank()) append("\n들은 말: \"${e.evidence}\"")
+                if (e.evidence.isNotBlank() && detailed(context)) append("\n들은 말: \"${e.evidence}\"")
                 if (calendarName != null) append("\n→ $calendarName 에 넣었어요")
             }))
             .setContentIntent(openApp(context))
@@ -202,6 +202,8 @@ object Notifier {
             .build()
         nm(context).notify(ID_BRIEFING, n)
     }
+
+    private fun detailed(context: Context) = io.github.jgg113.gyeot.Graph.get(context).settings.detailed
 
     fun reminder(context: Context, e: SavedEvent, atStart: Boolean) {
         if (!canPost(context)) return

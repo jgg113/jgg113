@@ -1,4 +1,4 @@
-name: 곁비서 APK
+name: 클로드비서 APK
 
 on:
   push:
@@ -92,7 +92,7 @@ jobs:
         with:
           tag_name: gyeot-build-${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          name: 곁비서 1.0.${{ github.run_number }}
+          name: 클로드비서 1.0.${{ github.run_number }}
           make_latest: "false"
           files: out/gyeot-1.0.${{ github.run_number }}.apk
           body: |
@@ -108,7 +108,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: gyeot-latest
-          name: 곁비서 (최신)
+          name: 클로드비서 (최신)
           make_latest: "false"
           files: out/gyeot.apk
           body: |

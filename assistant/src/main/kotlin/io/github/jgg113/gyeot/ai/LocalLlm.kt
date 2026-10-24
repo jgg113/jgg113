@@ -18,19 +18,22 @@ class LocalLlm private constructor(private val engine: LlmInference) : AutoClose
             "아래 대화를 읽고 첫 줄에 한두 문장으로 요약해라. 그 다음 줄부터 나중에 꼭 기억해야 할 사실(숫자, 금액, 날짜, 약속, 부탁, 결정)만 '- '로 시작해 최대 5줄 적어라. 없으면 요약만 써라.\n\n대화:\n${dialogue.takeLast(3_000)}",
         )
         val lines = out.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        val points = lines.filter { it.startsWith("-") || it.startsWith("•") }.map { it.trimStart('-', '•', ' ') }.filter { it.length > 2 }
-        val summary = lines.firstOrNull { !it.startsWith("-") && !it.startsWith("•") }?.removePrefix("요약:")?.trim().orEmpty()
+        // 깨진 글자·한자가 섞인 줄은 버린다 (작은 모델이 가끔 그런다).
+        val points = lines.filter { it.startsWith("-") || it.startsWith("•") }.map { it.trimStart('-', '•', ' ') }.filter { it.length > 2 && KoreanText.isCleanKorean(it) }
+        val summary = lines.firstOrNull { !it.startsWith("-") && !it.startsWith("•") }?.removePrefix("요약:")?.trim()?.takeIf { KoreanText.isCleanKorean(it) }.orEmpty()
         return Summary(summary, points.take(5))
     }
 
-    fun answer(question: String, lines: String): String = generate(
+    fun answer(question: String, lines: String): String? = generate(
         "너는 한국어 비서다. 주어진 기록만 근거로 짧게 답하고, 기록에 없으면 모른다고 말해라. 언제 나온 말인지 함께 말해라.",
         "기록:\n${lines.takeLast(3_000)}\n\n질문: $question",
-    )
+    ).takeIf { KoreanText.isCleanKorean(it) }
 
     private fun generate(system: String, user: String): String =
-        engine.generateResponse("<|im_start|>system\n$system<|im_end|>\n<|im_start|>user\n$user<|im_end|>\n<|im_start|>assistant\n")
-            .substringBefore("<|im_end|>").trim()
+        KoreanText.fixByteLevel(
+            engine.generateResponse("<|im_start|>system\n$system<|im_end|>\n<|im_start|>user\n$user<|im_end|>\n<|im_start|>assistant\n")
+                .substringBefore("<|im_end|>"),
+        ).trim()
 
     override fun close() = engine.close()
 

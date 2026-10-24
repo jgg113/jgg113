@@ -26,11 +26,11 @@ class EventRegistrar(
 
     /** @return 저장한(등록했거나 물어본) 일정 id 들 */
     @Synchronized
-    fun handle(found: List<ExtractedEvent>, now: ZonedDateTime = ZonedDateTime.now(EventRules.SEOUL)): List<Long> {
+    fun handle(found: List<ExtractedEvent>, now: ZonedDateTime = ZonedDateTime.now(EventRules.SEOUL), mode: String = settings.addMode): List<Long> {
         val saved = mutableListOf<Long>()
         for (e in found) {
             val timing = EventRules.timing(e) ?: continue
-            val decision = EventRules.decide(e, timing, now, settings.addMode)
+            val decision = EventRules.decide(e, timing, now, mode)
             if (decision == EventRules.Decision.DROP) continue
             val startMillis = timing.start.toInstant().toEpochMilli()
             // 이미 넣었거나, 물어봤거나, "아니요"라고 한 일정은 다시 묻지 않는다.

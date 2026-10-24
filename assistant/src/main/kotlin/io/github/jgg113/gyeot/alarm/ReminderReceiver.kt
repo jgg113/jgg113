@@ -20,8 +20,8 @@ class ReminderReceiver : BroadcastReceiver() {
                 // 미리 알림(또는 종일 일정 아침 알림)은 전화처럼 걸어 목소리로 알려 준다. 정각 알림은 보통 알림.
                 val callNow = g.settings.callForReminders && (!atStart || e.allDay || e.reminderMinutes <= 0)
                 if (callNow) {
-                    val speech = io.github.jgg113.gyeot.voice.VoiceScript.event(e.title, e.startMillis, e.allDay, e.location, e.evidence, System.currentTimeMillis())
-                    io.github.jgg113.gyeot.voice.VoiceCall.ring(context, "${Notifier.describe(e)} ${e.title}", speech, e.id)
+                    val speech = io.github.jgg113.gyeot.voice.VoiceScript.event(e.title, e.startMillis, e.allDay, e.location, e.evidence, System.currentTimeMillis(), g.settings.detailed)
+                    io.github.jgg113.gyeot.voice.VoiceCall.ring(context, io.github.jgg113.gyeot.voice.VoiceCall.KIND_EVENT, "${Notifier.describe(e)} ${e.title}", speech, e.id)
                 }
                 Notifier.reminder(context, e, atStart = atStart)
             }
@@ -43,14 +43,20 @@ class ReminderReceiver : BroadcastReceiver() {
                 val asking = g.store.suggestions().size
                 if (asking > 0) lines += "❓ 추가할지 대답을 기다리는 일정 ${asking}개 — 눌러서 확인"
                 if (lines.isNotEmpty()) Notifier.briefing(context, io.github.jgg113.gyeot.ai.ScheduleSummary.headline(items, today), lines)
-                if (g.settings.callForBriefing) {
-                    val todos = g.store.notes().flatMap { it.todos }.filter { it.due.startsWith(today.toString()) }.map { it.text }.distinct()
-                    val speech = io.github.jgg113.gyeot.voice.VoiceScript.briefing(items, todos, asking, today)
-                    io.github.jgg113.gyeot.voice.VoiceCall.ring(context, io.github.jgg113.gyeot.ai.ScheduleSummary.headline(items, today), speech)
-                }
+                if (g.settings.callForBriefing) ringBriefing(context, g)
                 g.alarms.scheduleBriefing(g.settings.briefingHour)
             }
+            KIND_BRIEFING_CALL -> ringBriefing(context, g)
         }
+    }
+
+    /** 브리핑 전화: 할 말은 전화를 받을 때 그 순간 일정으로 만든다 (여기 글은 받지 못했을 때 남길 알림용). */
+    private fun ringBriefing(context: Context, g: Graph) {
+        val today = LocalDate.now(io.github.jgg113.gyeot.ai.EventRules.SEOUL)
+        val items = g.scheduleItems(today, today)
+        val todos = g.store.notes().flatMap { it.todos }.filter { it.due.startsWith(today.toString()) }.map { it.text }.distinct()
+        val fallback = io.github.jgg113.gyeot.voice.VoiceScript.briefing(items, todos, g.store.suggestions().size, today, detailed = g.settings.detailed)
+        io.github.jgg113.gyeot.voice.VoiceCall.ring(context, io.github.jgg113.gyeot.voice.VoiceCall.KIND_BRIEFING, io.github.jgg113.gyeot.ai.ScheduleSummary.headline(items, today), fallback)
     }
 
     companion object {
@@ -60,5 +66,6 @@ class ReminderReceiver : BroadcastReceiver() {
         const val KIND_START = "start"
         const val KIND_DIGEST = "digest"
         const val KIND_BRIEFING = "briefing"
+        const val KIND_BRIEFING_CALL = "briefing_call"
     }
 }

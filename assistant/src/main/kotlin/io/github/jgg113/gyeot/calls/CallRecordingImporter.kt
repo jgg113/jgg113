@@ -74,7 +74,7 @@ class CallRecordingImporter(private val context: Context) {
                 val id = c.getLong(0)
                 val name = c.getString(1).orEmpty()
                 val path = c.getString(4)
-                if (!RecordingName.isCallFolder(path) && !name.startsWith("통화 녹음") && !name.startsWith("Call recording", ignoreCase = true)) continue
+                if (!RecordingName.isCallFolder(path) && !name.startsWith("통화") && !name.startsWith("Call recording", ignoreCase = true)) continue
                 if (done(id)) continue
                 out += Recording(id, name, c.getLong(2) * 1000, c.getLong(3))
             }

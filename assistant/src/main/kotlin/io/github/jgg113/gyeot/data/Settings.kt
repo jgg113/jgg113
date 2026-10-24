@@ -22,9 +22,10 @@ class Settings(context: Context) {
         get() = str("brain_engine", ENGINE_LOCAL)
         set(v) = put("brain_engine", v)
     /** 휴대폰 안 AI 모델(Qwen2.5 1.5B)로 요약 다듬기. 모델을 받아 둔 경우에만 쓴다. */
+    // 실험 기능이라 기본은 끔 (예전 버전에서 켜져 있던 값은 무시하고 새 키로 시작).
     var useLocalLlm: Boolean
-        get() = bool("local_llm", true)
-        set(v) = putBool("local_llm", v)
+        get() = bool("local_llm_v2", false)
+        set(v) = putBool("local_llm_v2", v)
 
     /** 음성 인식(받아쓰기) — OpenAI 호환 /audio/transcriptions 주소. 기본은 Groq(무료 한도) Whisper. */
     var sttBaseUrl: String
@@ -98,6 +99,24 @@ class Settings(context: Context) {
         get() = bool("call_briefing", true)
         set(v) = putBool("call_briefing", v)
 
+    /** 알림·브리핑·전화 말 길이: brief(간단히) · detailed(자세히). */
+    var detailLevel: String
+        get() = str("detail_level", DETAIL_BRIEF)
+        set(v) = put("detail_level", v)
+    val detailed get() = detailLevel == DETAIL_FULL
+    /** 수빈이 목소리 (휴대폰 음성 엔진의 목소리 이름, 빈 값이면 가장 좋은 한국어 목소리를 자동으로). */
+    var ttsVoice: String
+        get() = str("tts_voice", "")
+        set(v) = put("tts_voice", v)
+    /** 목소리 높이 — 1.0 이 보통, 높을수록 밝게. */
+    var ttsPitch: Float
+        get() = p.getFloat("tts_pitch", 1.15f)
+        set(v) = p.edit().putFloat("tts_pitch", v.coerceIn(0.7f, 1.6f)).apply()
+    /** 말 빠르기 — 1.0 이 보통. */
+    var ttsRate: Float
+        get() = p.getFloat("tts_rate", 1.05f)
+        set(v) = p.edit().putFloat("tts_rate", v.coerceIn(0.6f, 1.6f)).apply()
+
     /** 사용자가 듣기를 켜 두었는지 (재부팅·앱 업데이트 뒤 다시 켜는 데 쓴다). */
     var listeningWanted: Boolean
         get() = bool("listening", false)
@@ -107,6 +126,8 @@ class Settings(context: Context) {
     val localBrain get() = brainEngine == ENGINE_LOCAL
 
     companion object {
+        const val DETAIL_BRIEF = "brief"
+        const val DETAIL_FULL = "detailed"
         const val ENGINE_LOCAL = "local"
         const val ENGINE_CLOUD = "cloud"
         const val ENGINE_CLAUDE = "claude"

@@ -35,7 +35,7 @@ class Graph private constructor(private val context: Context) {
         private fun <T> llm(block: (LocalLlm) -> T): T? =
             if (settings.useLocalLlm && models.installed(models.llm)) LocalLlm.with(context, models.llmFile, block) else null
         override fun summarize(dialogue: String) = llm { it.summarize(dialogue) }
-        override fun answer(question: String, lines: String) = llm { it.answer(question, lines) }
+        override fun answer(question: String, lines: String) = llm { it.answer(question, lines) }?.takeIf { it.isNotBlank() }
     }
     val ruleBrain = RuleBrain(polisher)
 
@@ -74,6 +74,27 @@ class Graph private constructor(private val context: Context) {
         if (schedule != null && settings.localBrain) return schedule
         val week = ScheduleSummary.text(scheduleItems(now.toLocalDate().minusDays(1), now.toLocalDate().plusDays(13)), now.toLocalDate().minusDays(1), now.toLocalDate().plusDays(13), now.toLocalDate())
         return brain.ask(question, "## 캘린더 일정 (어제~2주 뒤)\n$week\n\n$material", now)
+    }
+
+    /** 최근 며칠의 정리 노트 + 받아쓴 말 원문 (날짜·시각 붙임) — 묻기 탭·수빈이 통화가 근거로 쓴다. */
+    fun recentMaterial(days: Int): String {
+        val today = java.time.LocalDate.now(EventRules.SEOUL)
+        val hm = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
+        fun clock(at: Long) = java.time.Instant.ofEpochMilli(at).atZone(EventRules.SEOUL).format(hm)
+        return buildString {
+            generateSequence(today.minusDays((days - 1).toLong())) { it.plusDays(1) }.takeWhile { !it.isAfter(today) }.forEach { d ->
+                val notes = store.notes().filter { io.github.jgg113.gyeot.data.Store.dayOf(it.at) == d }
+                val lines = store.utterances(d)
+                if (notes.isEmpty() && lines.isEmpty()) return@forEach
+                appendLine("## $d")
+                notes.forEach { n ->
+                    appendLine("[정리 ${clock(n.from)}~${clock(n.at)}] ${n.summary}")
+                    n.keyPoints.forEach { appendLine("  - $it") }
+                    n.todos.forEach { appendLine("  - 할 일: ${it.text} ${it.due}") }
+                }
+                lines.forEach { u -> appendLine("[${clock(u.at)}] ${u.callWith?.let { "(📞 $it) " }.orEmpty()}${u.text}") }
+            }
+        }.ifBlank { "(기록 없음)" }
     }
 
     /** 듣기를 시작해도 되는지, 안 되면 이유. */

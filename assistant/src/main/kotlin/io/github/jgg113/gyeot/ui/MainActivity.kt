@@ -204,7 +204,7 @@ private fun clock(at: Long) = Instant.ofEpochMilli(at).atZone(EventRules.SEOUL).
 private fun App(tab: Int, onTab: (Int) -> Unit) {
     val titles = listOf("오늘", "기록", "묻기", "설정")
     Scaffold(
-        topBar = { TopAppBar(title = { Text("곁비서 · ${titles[tab]}") }) },
+        topBar = { TopAppBar(title = { Text("클로드비서 · ${titles[tab]}") }) },
         bottomBar = {
             NavigationBar {
                 titles.forEachIndexed { i, t ->
@@ -278,6 +278,7 @@ private fun TodayScreen() {
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { io.github.jgg113.gyeot.voice.VoiceCall.chat(activity) }) { Text("📞 수빈이와 통화") }
                         if (!state.running) Button(onClick = { activity.startListening() }) { Text("듣기 시작") }
                         else {
                             Button(onClick = { ListeningService.pause(activity, !state.paused) }) { Text(if (state.paused) "다시 듣기" else "잠시 멈춤") }
@@ -435,7 +436,7 @@ private fun AskScreen() {
             scope.launch {
                 answer = withContext(Dispatchers.IO) {
                     try {
-                        g.ask(question, material(g, days))
+                        g.ask(question, g.recentMaterial(days))
                     } catch (e: Exception) {
                         "⚠ ${e.message}"
                     }
@@ -448,26 +449,6 @@ private fun AskScreen() {
             Card(Modifier.fillMaxWidth()) { Text(answer, Modifier.padding(12.dp)) }
         }
     }
-}
-
-/** 최근 며칠의 정리 노트 + 받아쓴 말 원문을 날짜·시각과 함께 이어 붙인다. */
-private fun material(g: Graph, days: Int): String {
-    val today = LocalDate.now(EventRules.SEOUL)
-    val from = today.minusDays((days - 1).toLong())
-    return buildString {
-        generateSequence(from) { it.plusDays(1) }.takeWhile { !it.isAfter(today) }.forEach { d ->
-            val notes = g.store.notes().filter { Store.dayOf(it.at) == d }
-            val lines = g.store.utterances(d)
-            if (notes.isEmpty() && lines.isEmpty()) return@forEach
-            appendLine("## $d")
-            notes.forEach { n ->
-                appendLine("[정리 ${clock(n.from)}~${clock(n.at)}] ${n.summary}")
-                n.keyPoints.forEach { appendLine("  - $it") }
-                n.todos.forEach { appendLine("  - 할 일: ${it.text} ${it.due}") }
-            }
-            lines.forEach { appendLine("[${clock(it.at)}] ${it.text}") }
-        }
-    }.ifBlank { "(기록 없음)" }
 }
 
 @Composable
@@ -492,6 +473,7 @@ private fun SettingsScreen() {
     var callRemind by remember { mutableStateOf(s.callForReminders) }
     var callBrief by remember { mutableStateOf(s.callForBriefing) }
     var callScan by remember { mutableStateOf("") }
+    var detail by remember { mutableStateOf(s.detailLevel) }
     var fullScreenOk by remember { mutableStateOf(io.github.jgg113.gyeot.voice.VoiceCall.canFullScreen(activity)) }
     var own by remember { mutableStateOf(s.ownReminders) }
     var calendars by remember { mutableStateOf(emptyList<CalendarWriter.CalendarInfo>()) }
@@ -543,7 +525,7 @@ private fun SettingsScreen() {
         if (brainEngine == AppSettings.ENGINE_LOCAL) {
             Text("일정·할 일·중요한 숫자는 한국어 규칙으로 바로 찾습니다 (\"내일 오후 세 시\", \"다음 주 화요일\", \"삼십 분 뒤\" 등). 아래 요약 AI 를 받아 두면 요약 문장도 휴대폰 안에서 다듬습니다 (최신 갤럭시 S 권장).", style = MaterialTheme.typography.bodySmall)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("휴대폰 안 요약 AI 쓰기", Modifier.weight(1f))
+                Text("휴대폰 안 요약 AI 쓰기 (실험 기능 — 작은 모델이라 문장이 어색하거나 틀릴 수 있어요)", Modifier.weight(1f))
                 Switch(useLlm, { useLlm = it; s.useLocalLlm = it })
             }
             if (useLlm) ModelRow(g.models.installed(g.models.llm) && !llmProgress.running, llmProgress, g.models.llm.label, onGet = { g.models.download(g.models.llm) }, onDelete = { g.models.delete(g.models.llm) })
@@ -597,7 +579,7 @@ private fun SettingsScreen() {
         SectionTitle("4. 24시간 듣기 (삼성 갤럭시)")
         Text(
             "갤럭시는 배터리 절약을 위해 오래 켜진 앱을 재웁니다. 아래 '배터리 최적화 제외'를 허용하고, " +
-                "설정 → 배터리 → 백그라운드 사용 제한 → '절전 예외 앱'에 곁비서를 넣어 주세요. 듣기 중에는 상단에 알림이 늘 떠 있어요.",
+                "설정 → 배터리 → 백그라운드 사용 제한 → '절전 예외 앱'에 클로드비서를 넣어 주세요. 듣기 중에는 상단에 알림이 늘 떠 있어요.",
             style = MaterialTheme.typography.bodySmall,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -609,8 +591,8 @@ private fun SettingsScreen() {
 
         SectionTitle("5. 통화 녹음도 정리하기")
         Text(
-            "통화 중에는 안드로이드가 다른 앱의 마이크를 막아서 곁비서가 직접 못 들어요. 삼성 전화 앱의 '통화 자동 녹음'을 켜 두면, 통화가 끝나 녹음 파일이 저장될 때 " +
-                "곁비서가 그 파일을 받아써서 일정·할 일·중요한 말을 함께 정리해요 (녹음 파일은 읽기만 해요).",
+            "통화 중에는 안드로이드가 다른 앱의 마이크를 막아서 수빈이가 직접 못 들어요. 삼성 전화 앱의 '통화 자동 녹음'을 켜 두면, 통화가 끝나 녹음 파일이 저장될 때 " +
+                "수빈이가 그 파일을 받아써서 일정·할 일·중요한 말을 함께 정리해요 (녹음 파일은 읽기만 해요).",
             style = MaterialTheme.typography.bodySmall,
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -631,7 +613,7 @@ private fun SettingsScreen() {
         if (callScan.isNotBlank()) Text(callScan, style = MaterialTheme.typography.bodySmall)
 
         SectionTitle("6. 전화로 알려 주기")
-        Text("곁비서가 수신 전화처럼 벨을 울리고, 받으면 할 일을 한국어 음성으로 읽어 줘요. 진짜 통화 중일 때는 방해하지 않고 보통 알림으로 대신해요.", style = MaterialTheme.typography.bodySmall)
+        Text("수빈이가 수신 전화처럼 벨을 울리고, 받으면 할 일을 한국어 음성으로 읽어 줘요. 진짜 통화 중일 때는 방해하지 않고 보통 알림으로 대신해요.", style = MaterialTheme.typography.bodySmall)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("일정 미리 알림을 전화로", Modifier.weight(1f))
             Switch(callRemind, { callRemind = it; s.callForReminders = it })
@@ -644,15 +626,20 @@ private fun SettingsScreen() {
             Text("화면이 꺼져 있을 때 전화 화면을 띄우려면 '전체 화면 알림'을 허용해 주세요.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = { activity.openFullScreenSettings(); fullScreenOk = io.github.jgg113.gyeot.voice.VoiceCall.canFullScreen(activity) }) { Text("전체 화면 알림 허용") }
         }
+        Text("말 길이 (알림·브리핑·전화)", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = detail == AppSettings.DETAIL_BRIEF, onClick = { detail = AppSettings.DETAIL_BRIEF; s.detailLevel = detail }, label = { Text("간단히") })
+            FilterChip(selected = detail == AppSettings.DETAIL_FULL, onClick = { detail = AppSettings.DETAIL_FULL; s.detailLevel = detail }, label = { Text("자세히") })
+        }
+        Text(
+            if (detail == AppSettings.DETAIL_BRIEF) "예) \"수빈이에요! 30분 뒤 오후 3시, 민수 약속이에요.\""
+            else "예) \"안녕하세요, 수빈이에요! 30분 뒤 오후 3시에 강남역에서 민수 약속 일정이 있어요. 전에 '…'라고 하셨거든요. 지금 준비하시면 딱 좋아요!\" (브리핑은 내일 일정까지)",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text("통화 중에도 \"자세히 말해 줘\" / \"짧게\" 라고 하면 그때만 바꿔 읽어요.", style = MaterialTheme.typography.bodySmall)
+        VoiceSettings(g)
         OutlinedButton(onClick = {
-            scope.launch {
-                val speech = withContext(Dispatchers.IO) {
-                    val today = LocalDate.now(EventRules.SEOUL)
-                    val todos = g.store.notes().flatMap { it.todos }.filter { it.due.startsWith(today.toString()) }.map { it.text }.distinct()
-                    io.github.jgg113.gyeot.voice.VoiceScript.briefing(g.scheduleItems(today, today), todos, g.store.suggestions().size, today, morning = false)
-                }
-                io.github.jgg113.gyeot.voice.VoiceCall.ring(activity, "시험 전화 · 오늘 일정", speech)
-            }
+            io.github.jgg113.gyeot.voice.VoiceCall.ring(activity, io.github.jgg113.gyeot.voice.VoiceCall.KIND_BRIEFING, "시험 전화 · 오늘 일정", "")
         }) { Text("지금 시험 전화 받아 보기") }
 
         SectionTitle("7. 개인정보")
@@ -676,6 +663,36 @@ private fun SettingsScreen() {
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("그만두기") } },
         )
     }
+}
+
+/** 수빈이 목소리 고르기: 휴대폰에 있는 한국어 목소리 목록 + 높이·빠르기 + 미리 듣기. */
+@Composable
+private fun VoiceSettings(g: Graph) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val s = g.settings
+    var ready by remember { mutableStateOf(false) }
+    val speaker = remember { io.github.jgg113.gyeot.voice.Speaker(ctx, s) { ok -> ready = ok } }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { speaker.shutdown() } }
+    var voice by remember { mutableStateOf(s.ttsVoice) }
+    var pitch by remember { mutableStateOf(s.ttsPitch) }
+    var rate by remember { mutableStateOf(s.ttsRate) }
+    val voices = remember(ready) { if (ready) speaker.voices() else emptyList() }
+    fun preview() { speaker.reload(); speaker.speak("안녕하세요! 수빈이에요. 오늘 오후 3시에 민수 약속이 있어요. 오늘도 화이팅이에요!") }
+
+    Text("수빈이 목소리", style = MaterialTheme.typography.bodyMedium)
+    if (!ready) Text("한국어 음성 엔진을 불러오는 중이거나 없어요. 휴대폰 설정 → 일반 → 텍스트 음성 변환에서 삼성 또는 Google 엔진의 한국어 음성을 받아 주세요.", style = MaterialTheme.typography.bodySmall)
+    else {
+        Text("밝고 자연스러운 목소리를 고르세요. '아주 좋음'이 가장 사람 같아요. 더 많은 목소리는 Google 음성 서비스(텍스트 음성 변환) 앱에서 받을 수 있어요.", style = MaterialTheme.typography.bodySmall)
+        FilterChip(selected = voice.isEmpty(), onClick = { voice = ""; s.ttsVoice = ""; preview() }, label = { Text("자동 (가장 좋은 목소리)") })
+        voices.take(8).forEachIndexed { i, v ->
+            FilterChip(selected = voice == v.name, onClick = { voice = v.name; s.ttsVoice = v.name; preview() }, label = { Text(io.github.jgg113.gyeot.voice.Speaker.label(v, i)) })
+        }
+    }
+    Text("목소리 높이 ${"%.2f".format(pitch)} (높을수록 밝고 명랑하게)", style = MaterialTheme.typography.bodySmall)
+    androidx.compose.material3.Slider(value = pitch, onValueChange = { pitch = it }, valueRange = 0.8f..1.5f, onValueChangeFinished = { s.ttsPitch = pitch; preview() })
+    Text("말 빠르기 ${"%.2f".format(rate)}", style = MaterialTheme.typography.bodySmall)
+    androidx.compose.material3.Slider(value = rate, onValueChange = { rate = it }, valueRange = 0.7f..1.4f, onValueChangeFinished = { s.ttsRate = rate; preview() })
+    OutlinedButton(enabled = ready, onClick = { preview() }) { Text("목소리 미리 듣기") }
 }
 
 @Composable

@@ -33,6 +33,13 @@ class AlarmScheduler(private val context: Context) {
     fun snooze(eventId: Long, minutes: Int) =
         set(System.currentTimeMillis() + minutes * 60_000L, pending(eventId, ReminderReceiver.KIND_EARLY))
 
+    /** 브리핑 전화 [N분 뒤 다시]. */
+    fun callBriefingAt(at: Long) = set(at, PendingIntent.getBroadcast(
+        context, BRIEFING_CALL_CODE,
+        Intent(context, ReminderReceiver::class.java).setAction("gyeot.briefing.call").putExtra(ReminderReceiver.EXTRA_KIND, ReminderReceiver.KIND_BRIEFING_CALL),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    ))
+
     fun cancel(eventId: Long) {
         am.cancel(pending(eventId, ReminderReceiver.KIND_EARLY))
         am.cancel(pending(eventId, ReminderReceiver.KIND_START))
@@ -80,5 +87,6 @@ class AlarmScheduler(private val context: Context) {
     companion object {
         private const val DIGEST_CODE = 42
         private const val BRIEFING_CODE = 43
+        private const val BRIEFING_CALL_CODE = 44
     }
 }

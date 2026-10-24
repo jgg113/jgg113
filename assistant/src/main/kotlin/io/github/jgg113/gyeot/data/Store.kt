@@ -133,6 +133,12 @@ class Store(context: Context) {
         changed()
     }
 
+    /** 저장된 노트를 한 번에 고친다 (예: 예전 버전이 남긴 깨진 글자 고치기). */
+    fun rewriteNotes(transform: (Note) -> Note?) {
+        synchronized(lock) { writeNotes(readNotes().mapNotNull(transform)) }
+        changed()
+    }
+
     private fun readNotes(): List<Note> =
         if (!notesFile.exists()) emptyList()
         else runCatching { json.decodeFromString<List<Note>>(notesFile.readText()) }.getOrDefault(emptyList())

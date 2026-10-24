@@ -11,14 +11,15 @@ import java.time.format.DateTimeFormatter
 object RecordingName {
     data class Info(val who: String, val startMillis: Long?)
 
-    private val PATTERN = Regex("""^(?:통화\s*녹음|Call\s*recording)?\s*(.*?)[_ ](\d{6})[_ ](\d{6})(?:\(\d+\))?$""", RegexOption.IGNORE_CASE)
+    // 삼성 버전마다 "통화 녹음 엄마_…", "통화 엄마_…", "Call recording 엄마_…" 처럼 앞말이 다르다.
+    private val PATTERN = Regex("""^(?:통화\s*녹음|통화|Call\s*recording|Call)?[\s_]*(.*?)[_ ](\d{6})[_ ](\d{6})(?:\(\d+\))?$""", RegexOption.IGNORE_CASE)
     private val STAMP = DateTimeFormatter.ofPattern("yyMMddHHmmss")
 
     fun parse(fileName: String): Info {
         val base = fileName.substringBeforeLast('.').trim()
         val m = PATTERN.find(base)
-            ?: return Info(base.removePrefix("통화 녹음").removePrefix("Call recording").trim().ifBlank { "알 수 없음" }, null)
-        val who = m.groupValues[1].trim().ifBlank { "알 수 없음" }
+            ?: return Info(base.removePrefix("통화 녹음").removePrefix("통화").removePrefix("Call recording").trim().ifBlank { "알 수 없음" }, null)
+        val who = io.github.jgg113.gyeot.ai.KoreanText.phone(m.groupValues[1].trim()).ifBlank { "알 수 없음" }
         val at = runCatching { LocalDateTime.parse(m.groupValues[2] + m.groupValues[3], STAMP).atZone(EventRules.SEOUL).toInstant().toEpochMilli() }.getOrNull()
         return Info(who, at)
     }

@@ -62,7 +62,7 @@ class CalendarWriter(private val context: Context) {
             put(CalendarContract.Events.TITLE, event.title)
             put(CalendarContract.Events.DESCRIPTION, buildString {
                 if (event.evidence.isNotBlank()) append("들은 말: \"${event.evidence}\"\n")
-                append("곁비서가 대화에서 찾아 넣은 일정입니다.")
+                append("클로드비서 수빈이가 대화에서 찾아 넣은 일정입니다.")
             })
             if (event.location.isNotBlank()) put(CalendarContract.Events.EVENT_LOCATION, event.location)
             put(CalendarContract.Events.DTSTART, event.startMillis)
