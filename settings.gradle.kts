@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "GongmaeCompare"
-include(":core", ":app")
+include(":core", ":app", ":assistant")

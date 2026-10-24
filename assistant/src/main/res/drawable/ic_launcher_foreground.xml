@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 108dp 적응형 아이콘: 안전영역(가운데 66dp) 안에 말풍선과 달력 점 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 말풍선 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M34,34 L74,34 Q80,34 80,40 L80,62 Q80,68 74,68 L52,68 L42,77 L43,68 L34,68 Q28,68 28,62 L28,40 Q28,34 34,34 Z" />
+    <!-- 소리 막대 -->
+    <path android:fillColor="#FF2E7D6B" android:pathData="M39,47 L43,47 L43,55 L39,55 Z" />
+    <path android:fillColor="#FF2E7D6B" android:pathData="M47,42 L51,42 L51,60 L47,60 Z" />
+    <path android:fillColor="#FF2E7D6B" android:pathData="M55,45 L59,45 L59,57 L55,57 Z" />
+    <!-- 일정 점 -->
+    <path
+        android:fillColor="#FFFFC83D"
+        android:pathData="M68,46 A5,5 0 1,1 67.99,46 Z" />
+</vector>

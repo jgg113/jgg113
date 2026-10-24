@@ -3,7 +3,7 @@ name: 공매비교 APK
 on:
   push:
     branches: ["**"]
-    paths-ignore: ["**.md"]
+    paths-ignore: ["**.md", "assistant/**", ".github/workflows/assistant.yml"]
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,209 @@
+package io.github.jgg113.gyeot.alarm
+
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.provider.AlarmClock
+import io.github.jgg113.gyeot.R
+import io.github.jgg113.gyeot.data.Note
+import io.github.jgg113.gyeot.data.SavedEvent
+import io.github.jgg113.gyeot.ui.MainActivity
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
+import java.util.Locale
+
+/** 알림 채널과 알림 모양을 한곳에 모은다. */
+object Notifier {
+    const val CH_LISTEN = "listen"
+    const val CH_EVENT = "event"
+    const val CH_REMIND = "remind"
+    const val CH_NOTE = "note"
+
+    const val ID_LISTEN = 1
+
+    fun createChannels(context: Context) {
+        val nm = context.getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannels(listOf(
+            NotificationChannel(CH_LISTEN, "듣는 중 표시", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "듣기가 켜져 있는 동안 늘 떠 있는 알림"
+                setShowBadge(false)
+            },
+            NotificationChannel(CH_EVENT, "일정 등록", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "대화에서 일정을 찾아 캘린더에 넣었을 때"
+            },
+            NotificationChannel(CH_REMIND, "일정 알림", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "일정 시각이 다가왔을 때"
+                enableVibration(true)
+            },
+            NotificationChannel(CH_NOTE, "중요한 말·하루 요약", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "놓치면 안 되는 이야기, 하루 정리"
+            },
+        ))
+    }
+
+    fun canPost(context: Context) =
+        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+    private fun nm(context: Context) = context.getSystemService(NotificationManager::class.java)
+
+    fun openApp(context: Context, tab: Int = 0): PendingIntent = PendingIntent.getActivity(
+        context, 100 + tab,
+        Intent(context, MainActivity::class.java).putExtra(MainActivity.EXTRA_TAB, tab).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun action(context: Context, action: String, eventId: Long, code: Int): PendingIntent = PendingIntent.getBroadcast(
+        context, code,
+        Intent(context, ActionReceiver::class.java).setAction(action).putExtra(ActionReceiver.EXTRA_EVENT, eventId),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    /** 삼성 시계 앱에 알람을 넣는 화면 (알림 버튼에서 바로 연다 — 앱이 뒤에 있을 때는 직접 못 띄운다). */
+    private fun clockAlarm(context: Context, e: SavedEvent, code: Int): PendingIntent {
+        val t = Instant.ofEpochMilli(e.startMillis - e.reminderMinutes * 60_000L).atZone(ZoneId.of("Asia/Seoul"))
+        val intent = Intent(AlarmClock.ACTION_SET_ALARM)
+            .putExtra(AlarmClock.EXTRA_HOUR, t.hour)
+            .putExtra(AlarmClock.EXTRA_MINUTES, t.minute)
+            .putExtra(AlarmClock.EXTRA_MESSAGE, e.title)
+            .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+        return PendingIntent.getActivity(context, code, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }
+
+    fun listening(context: Context, status: String, paused: Boolean): Notification {
+        val toggle = PendingIntent.getBroadcast(
+            context, 2,
+            Intent(context, ActionReceiver::class.java).setAction(if (paused) ActionReceiver.RESUME else ActionReceiver.PAUSE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stop = PendingIntent.getBroadcast(
+            context, 3,
+            Intent(context, ActionReceiver::class.java).setAction(ActionReceiver.STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return Notification.Builder(context, CH_LISTEN)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle(if (paused) "곁비서 잠시 멈춤" else "곁비서가 듣는 중")
+            .setContentText(status)
+            .setOngoing(true)
+            .setContentIntent(openApp(context))
+            .addAction(Notification.Action.Builder(null, if (paused) "다시 듣기" else "잠시 멈춤", toggle).build())
+            .addAction(Notification.Action.Builder(null, "끄기", stop).build())
+            .build()
+    }
+
+    fun eventRegistered(context: Context, e: SavedEvent, calendarName: String?) {
+        if (!canPost(context)) return
+        val pending = e.status == "pending"
+        val b = Notification.Builder(context, CH_EVENT)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle(if (pending) "일정을 찾았어요: ${e.title}" else "일정 등록: ${e.title}")
+            .setContentText(describe(e))
+            .setStyle(Notification.BigTextStyle().bigText(buildString {
+                append(describe(e))
+                if (e.location.isNotBlank()) append("\n장소: ${e.location}")
+                if (e.evidence.isNotBlank()) append("\n들은 말: \"${e.evidence}\"")
+                if (!pending && calendarName != null) append("\n→ $calendarName 에 넣었어요")
+            }))
+            .setContentIntent(openApp(context))
+            .setAutoCancel(true)
+        val code = (e.id % 100_000).toInt() * 10
+        if (pending) b.addAction(Notification.Action.Builder(null, "캘린더에 등록", action(context, ActionReceiver.REGISTER, e.id, code + 1)).build())
+        else b.addAction(Notification.Action.Builder(null, "취소", action(context, ActionReceiver.CANCEL, e.id, code + 2)).build())
+        if (e.startMillis - System.currentTimeMillis() in 0..CLOCK_ALARM_WINDOW_MS && !e.allDay) {
+            b.addAction(Notification.Action.Builder(null, "시계 알람도", clockAlarm(context, e, code + 3)).build())
+        }
+        nm(context).notify(eventNotificationId(e.id), b.build())
+    }
+
+    fun reminder(context: Context, e: SavedEvent, atStart: Boolean) {
+        if (!canPost(context)) return
+        val left = ((e.startMillis - System.currentTimeMillis()) / 60_000).coerceAtLeast(0)
+        val title = if (atStart || left <= 1) "지금: ${e.title}" else "${left}분 뒤: ${e.title}"
+        val n = Notification.Builder(context, CH_REMIND)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle(title)
+            .setContentText(listOf(describe(e), e.location).filter { it.isNotBlank() }.joinToString(" · "))
+            .setStyle(Notification.BigTextStyle().bigText(buildString {
+                append(describe(e))
+                if (e.location.isNotBlank()) append("\n장소: ${e.location}")
+                if (e.evidence.isNotBlank()) append("\n들은 말: \"${e.evidence}\"")
+            }))
+            .setCategory(Notification.CATEGORY_REMINDER)
+            .setContentIntent(openApp(context))
+            .setAutoCancel(true)
+            .build()
+        nm(context).notify(eventNotificationId(e.id) + if (atStart) 2 else 1, n)
+    }
+
+    fun important(context: Context, note: Note) {
+        if (!canPost(context)) return
+        val lines = note.keyPoints + note.todos.map { "할 일: ${it.text}" + if (it.due.isNotBlank()) " (${it.due.replace('T', ' ')})" else "" }
+        val n = Notification.Builder(context, CH_NOTE)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle("놓치면 안 될 이야기")
+            .setContentText(note.summary)
+            .setStyle(Notification.BigTextStyle().bigText(note.summary + if (lines.isEmpty()) "" else "\n• " + lines.joinToString("\n• ")))
+            .setContentIntent(openApp(context))
+            .setAutoCancel(true)
+            .build()
+        nm(context).notify((note.id % 1_000_000).toInt() + 3_000_000, n)
+    }
+
+    fun digest(context: Context, notes: List<Note>, events: List<SavedEvent>) {
+        if (!canPost(context)) return
+        val points = notes.flatMap { it.keyPoints }.distinct()
+        val todos = notes.flatMap { it.todos }.map { it.text }.distinct()
+        if (points.isEmpty() && todos.isEmpty() && events.isEmpty()) return
+        val style = Notification.InboxStyle()
+        events.take(4).forEach { style.addLine("📅 ${it.title} · ${describe(it)}") }
+        todos.take(4).forEach { style.addLine("✔ $it") }
+        points.take(6).forEach { style.addLine("• $it") }
+        val n = Notification.Builder(context, CH_NOTE)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle("오늘 정리: 일정 ${events.size} · 할 일 ${todos.size} · 핵심 ${points.size}")
+            .setContentText(points.firstOrNull() ?: todos.firstOrNull() ?: events.first().title)
+            .setStyle(style)
+            .setContentIntent(openApp(context))
+            .setAutoCancel(true)
+            .build()
+        nm(context).notify(ID_DIGEST, n)
+    }
+
+    fun simple(context: Context, title: String, text: String, id: Int) {
+        if (!canPost(context)) return
+        val n = Notification.Builder(context, CH_NOTE)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(openApp(context))
+            .setAutoCancel(true)
+            .build()
+        nm(context).notify(id, n)
+    }
+
+    fun cancelEvent(context: Context, eventId: Long) = nm(context).cancel(eventNotificationId(eventId))
+
+    fun describe(e: SavedEvent): String {
+        val t = Instant.ofEpochMilli(e.startMillis).atZone(ZoneId.of("Asia/Seoul"))
+        val day = t.format(DateTimeFormatter.ofPattern("M월 d일")) + "(" + t.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.KOREAN) + ")"
+        if (e.allDay) return "$day 종일"
+        val h = t.hour
+        val ampm = if (h < 12) "오전" else "오후"
+        val h12 = if (h % 12 == 0) 12 else h % 12
+        return "$day $ampm $h12:${"%02d".format(t.minute)}"
+    }
+
+    private fun eventNotificationId(eventId: Long) = (eventId % 1_000_000).toInt() * 4 + 10_000_000
+    const val ID_DIGEST = 9
+    const val ID_RESUME = 8
+    const val ID_ERROR = 7
+    private const val CLOCK_ALARM_WINDOW_MS = 23L * 60 * 60 * 1000
+}

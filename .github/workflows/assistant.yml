@@ -1,0 +1,116 @@
+name: 곁비서 APK
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "assistant/**"
+      - "gradle/**"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - ".github/workflows/assistant.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gyeot-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # 공매비교와 같은 서명 키를 쓴다 (같은 키여야 휴대폰에서 덮어쓰기 설치가 된다).
+      - name: Restore signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.gongmae-signing
+          key: gongmae-signing-key-v1
+
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            store="$RUNNER_TEMP/release.jks"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$store"
+            pass="$KEYSTORE_PASSWORD"
+            alias="${KEY_ALIAS:-gongmae}"
+          else
+            mkdir -p "$HOME/.gongmae-signing"
+            store="$HOME/.gongmae-signing/release.jks"
+            pass="gongmae-ci-key"
+            alias="gongmae"
+            if [ ! -f "$store" ]; then
+              keytool -genkeypair -keystore "$store" -alias "$alias" -keyalg RSA -keysize 2048 -validity 10000 \
+                -storepass "$pass" -keypass "$pass" -dname "CN=Gongmae Compare, C=KR"
+            fi
+          fi
+          {
+            echo "SIGNING_STORE_FILE=$store"
+            echo "SIGNING_STORE_PASSWORD=$pass"
+            echo "SIGNING_KEY_ALIAS=$alias"
+            echo "SIGNING_KEY_PASSWORD=$pass"
+          } >> "$GITHUB_ENV"
+
+      - name: Unit tests
+        run: ./gradlew :assistant:testDebugUnitTest --stacktrace
+
+      - name: Build APK
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+        run: ./gradlew :assistant:assembleRelease --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp assistant/build/outputs/apk/release/assistant-release.apk "out/gyeot-1.0.${{ github.run_number }}.apk"
+          cp assistant/build/outputs/apk/release/assistant-release.apk out/gyeot.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gyeot-apk
+          path: out/*.apk
+
+      # 공매비교의 releases/latest 링크를 빼앗지 않게 make_latest 는 끈다.
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: gyeot-build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: 곁비서 1.0.${{ github.run_number }}
+          make_latest: "false"
+          files: out/gyeot-1.0.${{ github.run_number }}.apk
+          body: |
+            늘 최신 버전 바로 받기: https://github.com/${{ github.repository }}/releases/download/gyeot-latest/gyeot.apk
+            휴대폰에서 아래 Assets 의 .apk 파일을 눌러 내려받은 뒤 설치하세요.
+            처음 설치할 때는 "출처를 알 수 없는 앱 설치"를 허용해야 합니다.
+
+            브랜치: ${{ github.ref_name }}
+            커밋: ${{ github.sha }}
+
+      # 이름이 바뀌지 않는 링크: releases/download/gyeot-latest/gyeot.apk 가 늘 마지막 빌드를 가리킨다.
+      - name: Update fixed latest link
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: gyeot-latest
+          name: 곁비서 (최신)
+          make_latest: "false"
+          files: out/gyeot.apk
+          body: |
+            마지막 빌드: 1.0.${{ github.run_number }} (${{ github.ref_name }} · ${{ github.sha }})
+            바로 받기: https://github.com/${{ github.repository }}/releases/download/gyeot-latest/gyeot.apk

@@ -1,0 +1,80 @@
+package io.github.jgg113.gyeot.data
+
+import android.content.Context
+
+/** 사용자 설정. 키는 휴대폰 안(SharedPreferences)에만 저장한다. */
+class Settings(context: Context) {
+    private val p = context.getSharedPreferences("gyeot", Context.MODE_PRIVATE)
+
+    private fun str(key: String, def: String) = p.getString(key, def) ?: def
+    private fun put(key: String, v: String) = p.edit().putString(key, v).apply()
+    private fun bool(key: String, def: Boolean) = p.getBoolean(key, def)
+    private fun putBool(key: String, v: Boolean) = p.edit().putBoolean(key, v).apply()
+    private fun int(key: String, def: Int) = p.getInt(key, def)
+    private fun putInt(key: String, v: Int) = p.edit().putInt(key, v).apply()
+
+    /** 음성 인식(받아쓰기) — OpenAI 호환 /audio/transcriptions 주소. 기본은 Groq(무료 한도) Whisper. */
+    var sttBaseUrl: String
+        get() = str("stt_base", DEFAULT_STT_BASE)
+        set(v) = put("stt_base", v.trim().trimEnd('/'))
+    var sttApiKey: String
+        get() = str("stt_key", "")
+        set(v) = put("stt_key", v.trim())
+    var sttModel: String
+        get() = str("stt_model", DEFAULT_STT_MODEL)
+        set(v) = put("stt_model", v.trim())
+
+    /** 정리·일정 추출 — Claude API 키 (console.anthropic.com). */
+    var anthropicApiKey: String
+        get() = str("anthropic_key", "")
+        set(v) = put("anthropic_key", v.trim())
+    var claudeModel: String
+        get() = str("claude_model", DEFAULT_CLAUDE_MODEL)
+        set(v) = put("claude_model", v.trim().ifEmpty { DEFAULT_CLAUDE_MODEL })
+
+    /** 내 이름·호칭 — 누가 한 약속인지 가리는 데 쓴다. */
+    var myName: String
+        get() = str("my_name", "")
+        set(v) = put("my_name", v.trim())
+    /** 자주 나오는 사람·장소·회사 이름 (쉼표로) — 받아쓰기 정확도를 높인다. */
+    var vocabulary: String
+        get() = str("vocab", "")
+        set(v) = put("vocab", v.trim())
+
+    /** 일정을 넣을 캘린더 id. -1 이면 삼성 계정 캘린더를 자동으로 고른다. */
+    var calendarId: Long
+        get() = p.getLong("calendar_id", -1L)
+        set(v) = p.edit().putLong("calendar_id", v).apply()
+    /** 확인 없이 바로 캘린더에 넣기 (끄면 알림의 [등록]을 눌러야 넣는다). */
+    var autoRegister: Boolean
+        get() = bool("auto_register", true)
+        set(v) = putBool("auto_register", v)
+    var reminderMinutes: Int
+        get() = int("reminder_min", 30)
+        set(v) = putInt("reminder_min", v.coerceIn(0, 24 * 60))
+    /** 캘린더 알림과 별도로 이 앱이 일정 시각에 직접 알리기. */
+    var ownReminders: Boolean
+        get() = bool("own_reminders", true)
+        set(v) = putBool("own_reminders", v)
+    /** 하루 요약 알림 시각 (0~23시, -1 끔). */
+    var digestHour: Int
+        get() = int("digest_hour", 21)
+        set(v) = putInt("digest_hour", v.coerceIn(-1, 23))
+    /** 받아쓴 글 보관 일수. */
+    var retentionDays: Int
+        get() = int("retention_days", 30)
+        set(v) = putInt("retention_days", v.coerceIn(1, 365))
+
+    /** 사용자가 듣기를 켜 두었는지 (재부팅·앱 업데이트 뒤 다시 켜는 데 쓴다). */
+    var listeningWanted: Boolean
+        get() = bool("listening", false)
+        set(v) = putBool("listening", v)
+
+    val ready: Boolean get() = sttApiKey.isNotBlank() && anthropicApiKey.isNotBlank()
+
+    companion object {
+        const val DEFAULT_STT_BASE = "https://api.groq.com/openai/v1"
+        const val DEFAULT_STT_MODEL = "whisper-large-v3"
+        const val DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
+    }
+}
