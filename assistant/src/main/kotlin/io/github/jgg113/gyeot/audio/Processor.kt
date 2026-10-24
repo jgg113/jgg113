@@ -3,7 +3,7 @@ package io.github.jgg113.gyeot.audio
 import android.content.Context
 import android.util.Log
 import io.github.jgg113.gyeot.Graph
-import io.github.jgg113.gyeot.ai.Analyzer
+import io.github.jgg113.gyeot.ai.AnalyzeException
 import io.github.jgg113.gyeot.ai.EventRules
 import io.github.jgg113.gyeot.ai.ScheduleHints
 import io.github.jgg113.gyeot.alarm.Notifier
@@ -67,9 +67,9 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
                 batchEnd = next.first
             }
             val count = batch.size
-            val wav = Wav.encode(Wav.join(batch))
+            val pcm = Wav.join(batch)
             batch.clear()
-            val text = transcribeWithRetry(wav)
+            val text = transcribeWithRetry(pcm)
             ListenState.update { it.copy(queued = (it.queued - count).coerceAtLeast(0)) }
             val clean = text?.let { TranscriptFilter.clean(it) } ?: continue
             val u = Utterance(batchEnd, clean)
@@ -83,16 +83,16 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
         }
     }
 
-    private suspend fun transcribeWithRetry(wav: ByteArray): String? {
+    private suspend fun transcribeWithRetry(pcm: ShortArray): String? {
         var wait = 2_000L
         repeat(4) {
             try {
-                return g.transcriber.transcribe(wav)
+                return g.transcribe(pcm)
             } catch (e: Transcriber.SttException) {
                 ListenState.update { s -> s.copy(error = e.message.orEmpty()) }
                 if (!e.retryable) return null
             } catch (e: Exception) {
-                ListenState.update { s -> s.copy(error = "받아쓰기 연결 실패: ${e.message}") }
+                ListenState.update { s -> s.copy(error = "받아쓰기 실패: ${e.message}") }
             }
             delay(wait)
             wait *= 3
@@ -128,7 +128,7 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
         val context = g.store.utterancesSince(from - CONTEXT_MS).filter { it.at < from }.takeLast(40)
         val now = ZonedDateTime.now(EventRules.SEOUL)
         try {
-            val result = g.analyzer.analyze(context, fresh, g.store.upcomingEvents().filter { it.status != "cancelled" }, now)
+            val result = g.brain.analyze(context, fresh, g.store.upcomingEvents().filter { it.status != "cancelled" }, now)
             synchronized(pending) { pending.removeAll(fresh); hinted = false }
             failures = 0
             val eventIds = g.events.handle(result.events, now)
@@ -149,11 +149,12 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
                 }
             }
             ListenState.update { it.copy(lastAnalysisAt = System.currentTimeMillis(), error = "") }
-        } catch (e: Analyzer.AnalyzeException) {
+        } catch (e: Exception) {
+            val retryable = (e as? AnalyzeException)?.retryable ?: false
             failures++
             ListenState.update { it.copy(error = e.message.orEmpty()) }
             // 다시 해도 안 될 오류(키 없음 등)이거나 여러 번 실패하면 이번 묶음은 저장만 해 두고 넘어간다 (기록 탭에는 남아 있다).
-            if (!e.retryable || failures >= 5) synchronized(pending) { pending.removeAll(fresh); hinted = false }
+            if (!retryable || failures >= 5) synchronized(pending) { pending.removeAll(fresh); hinted = false }
             else delay(30_000L * failures)
         }
     }

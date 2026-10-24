@@ -63,7 +63,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.jgg113.gyeot.Graph
-import io.github.jgg113.gyeot.ai.Analyzer
+import io.github.jgg113.gyeot.data.Settings as AppSettings
 import io.github.jgg113.gyeot.ai.EventRules
 import io.github.jgg113.gyeot.alarm.Notifier
 import io.github.jgg113.gyeot.audio.ListenState
@@ -124,7 +124,9 @@ class MainActivity : ComponentActivity() {
     }
 
     fun startListening() = requestAll {
-        if (hasMic()) ListeningService.start(this)
+        val why = Graph.get(this).notReadyReason()
+        if (why != null) android.widget.Toast.makeText(this, why, android.widget.Toast.LENGTH_LONG).show()
+        else if (hasMic()) ListeningService.start(this)
     }
 
     fun ignoringBattery(): Boolean = getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
@@ -204,7 +206,13 @@ private fun TodayScreen() {
                     if (state.lastHeardAt > 0) Text("마지막 ${clock(state.lastHeardAt)}: ${state.lastText}", maxLines = 2)
                     if (state.queued > 0) Text("받아쓰기 대기 ${state.queued}개")
                     if (state.error.isNotBlank()) Text("⚠ ${state.error}", color = MaterialTheme.colorScheme.error)
-                    if (!g.settings.ready) Text("설정 탭에서 음성 인식 키와 Claude 키를 먼저 넣어 주세요.", color = MaterialTheme.colorScheme.error)
+                    val why = remember(state.running, version) { g.notReadyReason() }
+                    if (why != null) Text(why, color = MaterialTheme.colorScheme.error)
+                    else Text(
+                        (if (g.settings.localStt) "받아쓰기: 휴대폰 안 (무료·무제한)" else "받아쓰기: 클라우드") + " · " +
+                            (if (g.settings.localBrain) "정리: 휴대폰 안" else "정리: Claude"),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (!state.running) Button(onClick = { activity.startListening() }) { Text("듣기 시작") }
@@ -324,8 +332,8 @@ private fun AskScreen() {
             scope.launch {
                 answer = withContext(Dispatchers.IO) {
                     try {
-                        g.analyzer.ask(question, material(g, days), ZonedDateTime.now(EventRules.SEOUL))
-                    } catch (e: Analyzer.AnalyzeException) {
+                        g.brain.ask(question, material(g, days), ZonedDateTime.now(EventRules.SEOUL))
+                    } catch (e: Exception) {
                         "⚠ ${e.message}"
                     }
                 }
@@ -382,6 +390,11 @@ private fun SettingsScreen() {
     var test by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
     var battery by remember { mutableStateOf(activity.ignoringBattery()) }
+    var sttEngine by remember { mutableStateOf(s.sttEngine) }
+    var brainEngine by remember { mutableStateOf(s.brainEngine) }
+    var useLlm by remember { mutableStateOf(s.useLocalLlm) }
+    val asrProgress by g.models.progress(g.models.asr).collectAsState()
+    val llmProgress by g.models.progress(g.models.llm).collectAsState()
 
     LaunchedEffect(Unit) { calendars = withContext(Dispatchers.IO) { g.calendar.writableCalendars() } }
 
@@ -393,19 +406,42 @@ private fun SettingsScreen() {
         digest.toIntOrNull()?.let { s.digestHour = it; g.alarms.scheduleDigest(s.digestHour) }
         keep.toIntOrNull()?.let { s.retentionDays = it }
         s.autoRegister = auto; s.ownReminders = own; s.calendarId = calId
+        s.sttEngine = sttEngine; s.brainEngine = brainEngine; s.useLocalLlm = useLlm
     }
 
     Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionTitle("1. 받아쓰기 (음성 인식)")
-        Text("기본은 Groq 의 Whisper(무료 한도). console.groq.com → API Keys 에서 키를 받아 넣으세요. OpenAI 를 쓰려면 주소 https://api.openai.com/v1, 모델 gpt-4o-transcribe.", style = MaterialTheme.typography.bodySmall)
-        OutlinedTextField(sttKey, { sttKey = it }, Modifier.fillMaxWidth(), label = { Text("음성 인식 API 키") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
-        OutlinedTextField(sttBase, { sttBase = it }, Modifier.fillMaxWidth(), label = { Text("주소") }, singleLine = true)
-        OutlinedTextField(sttModel, { sttModel = it }, Modifier.fillMaxWidth(), label = { Text("모델") }, singleLine = true)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = sttEngine == AppSettings.ENGINE_LOCAL, onClick = { sttEngine = AppSettings.ENGINE_LOCAL; s.sttEngine = sttEngine }, label = { Text("휴대폰 안 (무료·무제한)") })
+            FilterChip(selected = sttEngine == AppSettings.ENGINE_CLOUD, onClick = { sttEngine = AppSettings.ENGINE_CLOUD; s.sttEngine = sttEngine }, label = { Text("클라우드 API") })
+        }
+        if (sttEngine == AppSettings.ENGINE_LOCAL) {
+            Text("인터넷 없이 휴대폰 안에서 한국어를 받아씁니다 (sherpa-onnx, 한국어 일상 대화로 학습한 모델). 처음 한 번 85MB 를 받습니다.", style = MaterialTheme.typography.bodySmall)
+            ModelRow(g.models.installed(g.models.asr) && !asrProgress.running, asrProgress, g.models.asr.label, onGet = { g.models.download(g.models.asr) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.asr) })
+        } else {
+            Text("OpenAI 호환 받아쓰기 API. Groq(무료 한도): console.groq.com 에서 키. OpenAI: 주소 https://api.openai.com/v1, 모델 gpt-4o-transcribe.", style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(sttKey, { sttKey = it }, Modifier.fillMaxWidth(), label = { Text("음성 인식 API 키") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+            OutlinedTextField(sttBase, { sttBase = it }, Modifier.fillMaxWidth(), label = { Text("주소") }, singleLine = true)
+            OutlinedTextField(sttModel, { sttModel = it }, Modifier.fillMaxWidth(), label = { Text("모델") }, singleLine = true)
+        }
 
-        SectionTitle("2. 정리·일정 찾기 (Claude)")
-        Text("console.anthropic.com → API Keys 에서 키를 받아 넣으세요. 모델 기본값은 claude-opus-5-5. 비용을 줄이려면 claude-haiku-5-5 로 바꿀 수 있어요.", style = MaterialTheme.typography.bodySmall)
-        OutlinedTextField(claudeKey, { claudeKey = it }, Modifier.fillMaxWidth(), label = { Text("Claude API 키") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
-        OutlinedTextField(claudeModel, { claudeModel = it }, Modifier.fillMaxWidth(), label = { Text("Claude 모델") }, singleLine = true)
+        SectionTitle("2. 정리·일정 찾기")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = brainEngine == AppSettings.ENGINE_LOCAL, onClick = { brainEngine = AppSettings.ENGINE_LOCAL; s.brainEngine = brainEngine }, label = { Text("휴대폰 안 (무료·무제한)") })
+            FilterChip(selected = brainEngine == AppSettings.ENGINE_CLAUDE, onClick = { brainEngine = AppSettings.ENGINE_CLAUDE; s.brainEngine = brainEngine }, label = { Text("Claude (유료, 더 똑똑함)") })
+        }
+        if (brainEngine == AppSettings.ENGINE_LOCAL) {
+            Text("일정·할 일·중요한 숫자는 한국어 규칙으로 바로 찾습니다 (\"내일 오후 세 시\", \"다음 주 화요일\", \"삼십 분 뒤\" 등). 아래 요약 AI 를 받아 두면 요약 문장도 휴대폰 안에서 다듬습니다 (최신 갤럭시 S 권장).", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("휴대폰 안 요약 AI 쓰기", Modifier.weight(1f))
+                Switch(useLlm, { useLlm = it; s.useLocalLlm = it })
+            }
+            if (useLlm) ModelRow(g.models.installed(g.models.llm) && !llmProgress.running, llmProgress, g.models.llm.label, onGet = { g.models.download(g.models.llm) }, onDelete = { g.models.delete(g.models.llm) })
+        } else {
+            Text("console.anthropic.com → API Keys 에서 키를 받아 넣으세요. 기본 모델 claude-opus-5-5, 싸게 쓰려면 claude-haiku-5-5.", style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(claudeKey, { claudeKey = it }, Modifier.fillMaxWidth(), label = { Text("Claude API 키") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+            OutlinedTextField(claudeModel, { claudeModel = it }, Modifier.fillMaxWidth(), label = { Text("Claude 모델") }, singleLine = true)
+        }
         OutlinedTextField(myName, { myName = it }, Modifier.fillMaxWidth(), label = { Text("내 이름·호칭 (예: 김지훈, 지훈 씨, 과장님)") }, singleLine = true)
         OutlinedTextField(vocab, { vocab = it }, Modifier.fillMaxWidth(), label = { Text("자주 나오는 이름 (쉼표로: 사람, 회사, 장소)") })
 
@@ -417,7 +453,7 @@ private fun SettingsScreen() {
                 scope.launch {
                     test = withContext(Dispatchers.IO) { connectionTest(g) }
                 }
-            }) { Text("연결 확인") }
+            }) { Text("작동 확인") }
         }
         if (test.isNotBlank()) Text(test)
 
@@ -479,21 +515,37 @@ private fun SettingsScreen() {
     }
 }
 
-/** 받아쓰기(무음 1초)와 Claude(짧은 정리)를 한 번씩 불러 본다. */
+@Composable
+private fun ModelRow(installed: Boolean, p: io.github.jgg113.gyeot.data.ModelManager.Progress, label: String, onGet: () -> Unit, onDelete: () -> Unit) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(label, Modifier.weight(1f))
+            when {
+                p.running -> Text("${p.percent}% 받는 중")
+                installed -> { Text("✓ 받음"); TextButton(onClick = onDelete) { Text("지우기") } }
+                else -> Button(onClick = onGet) { Text("받기") }
+            }
+        }
+        if (p.running) androidx.compose.material3.LinearProgressIndicator(progress = { p.percent / 100f }, modifier = Modifier.fillMaxWidth())
+        if (p.error.isNotBlank()) Text(p.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/** 받아쓰기(무음 1초)와 정리(시험 문장)를 한 번씩 돌려 본다. */
 private fun connectionTest(g: Graph): String {
     val stt = runCatching {
-        g.transcriber.transcribe(io.github.jgg113.gyeot.audio.Wav.encode(ShortArray(16_000)))
+        g.transcribe(ShortArray(16_000))
         "받아쓰기 ✓"
     }.getOrElse { "받아쓰기 ✗ ${it.message}" }
     val claude = runCatching {
         val now = ZonedDateTime.now(EventRules.SEOUL)
-        val a = g.analyzer.analyze(
+        val a = g.brain.analyze(
             emptyList(),
             listOf(io.github.jgg113.gyeot.data.Utterance(System.currentTimeMillis(), "내일 오후 세 시에 강남역에서 민수랑 만나기로 했어")),
             emptyList(), now,
         )
         val e = a.events.firstOrNull()
-        "Claude ✓" + if (e != null) " — 시험 문장에서 찾은 일정: ${e.title} ${e.start.replace('T', ' ')} (캘린더에는 넣지 않았어요)" else ""
-    }.getOrElse { "Claude ✗ ${it.message}" }
+        (if (g.settings.localBrain) "정리 ✓" else "Claude ✓") + if (e != null) " — 시험 문장에서 찾은 일정: ${e.title} ${e.start.replace('T', ' ')} (캘린더에는 넣지 않았어요)" else ""
+    }.getOrElse { "정리 ✗ ${it.message}" }
     return "$stt\n$claude"
 }

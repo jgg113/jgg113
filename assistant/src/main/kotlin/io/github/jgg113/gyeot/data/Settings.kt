@@ -13,6 +13,19 @@ class Settings(context: Context) {
     private fun int(key: String, def: Int) = p.getInt(key, def)
     private fun putInt(key: String, v: Int) = p.edit().putInt(key, v).apply()
 
+    /** 받아쓰기 엔진: "local"(휴대폰 안, 무료·무제한) 또는 "cloud"(OpenAI 호환 API). */
+    var sttEngine: String
+        get() = str("stt_engine", ENGINE_LOCAL)
+        set(v) = put("stt_engine", v)
+    /** 정리 엔진: "local"(휴대폰 안 규칙 + 선택적 작은 AI) 또는 "claude". */
+    var brainEngine: String
+        get() = str("brain_engine", ENGINE_LOCAL)
+        set(v) = put("brain_engine", v)
+    /** 휴대폰 안 AI 모델(Qwen2.5 1.5B)로 요약 다듬기. 모델을 받아 둔 경우에만 쓴다. */
+    var useLocalLlm: Boolean
+        get() = bool("local_llm", true)
+        set(v) = putBool("local_llm", v)
+
     /** 음성 인식(받아쓰기) — OpenAI 호환 /audio/transcriptions 주소. 기본은 Groq(무료 한도) Whisper. */
     var sttBaseUrl: String
         get() = str("stt_base", DEFAULT_STT_BASE)
@@ -70,9 +83,13 @@ class Settings(context: Context) {
         get() = bool("listening", false)
         set(v) = putBool("listening", v)
 
-    val ready: Boolean get() = sttApiKey.isNotBlank() && anthropicApiKey.isNotBlank()
+    val localStt get() = sttEngine == ENGINE_LOCAL
+    val localBrain get() = brainEngine == ENGINE_LOCAL
 
     companion object {
+        const val ENGINE_LOCAL = "local"
+        const val ENGINE_CLOUD = "cloud"
+        const val ENGINE_CLAUDE = "claude"
         const val DEFAULT_STT_BASE = "https://api.groq.com/openai/v1"
         const val DEFAULT_STT_MODEL = "whisper-large-v3"
         const val DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"

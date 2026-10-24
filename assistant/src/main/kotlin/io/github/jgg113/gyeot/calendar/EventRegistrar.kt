@@ -29,6 +29,13 @@ class EventRegistrar(
             val timing = EventRules.timing(e) ?: continue
             if (!EventRules.shouldRegister(e, timing, now)) continue
             val startMillis = timing.start.toInstant().toEpochMilli()
+            // "회의 4시로 미뤄졌어": 며칠 안쪽의 비슷한 제목 일정을 지우고 새 시각으로 넣는다.
+            if (e.isChange) {
+                store.upcomingEvents().filter {
+                    it.startMillis != startMillis && Math.abs(it.startMillis - startMillis) <= CHANGE_WINDOW_MS &&
+                        EventRules.isDuplicate(e.title, it.startMillis, listOf(it.title to it.startMillis))
+                }.forEach { cancel(it.id) }
+            }
             val existing = store.upcomingEvents().map { it.title to it.startMillis }
             if (EventRules.isDuplicate(e.title, startMillis, existing)) continue
             val event = SavedEvent(
@@ -62,6 +69,10 @@ class EventRegistrar(
         alarms.cancel(e.id)
         store.upsertEvent(e.copy(status = "cancelled"))
         Notifier.cancelEvent(context, e.id)
+    }
+
+    private companion object {
+        const val CHANGE_WINDOW_MS = 7L * 24 * 60 * 60 * 1000
     }
 
     private fun register(event: SavedEvent): Long {

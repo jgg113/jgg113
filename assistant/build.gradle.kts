@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.net.URI
 
 plugins {
     alias(libs.plugins.android.application)
@@ -11,6 +12,18 @@ plugins {
 val buildNumber = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1
 val signingStore: String? = System.getenv("SIGNING_STORE_FILE")?.takeIf { it.isNotBlank() }
 
+// 휴대폰 안 한국어 음성 인식 엔진 sherpa-onnx (Apache-2.0). 50MB 라 저장소에 넣지 않고 처음 빌드할 때 공식 릴리스에서 받는다.
+val sherpaVersion = "1.13.8"
+val sherpaAar = file("libs/sherpa-onnx-$sherpaVersion.aar")
+if (!sherpaAar.exists() || sherpaAar.length() < 1_000_000) {
+    sherpaAar.parentFile.mkdirs()
+    val tmp = File(sherpaAar.path + ".part")
+    URI("https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaVersion/sherpa-onnx-$sherpaVersion.aar")
+        .toURL().openStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
+    check(tmp.length() > 1_000_000) { "sherpa-onnx AAR 을 받지 못했습니다" }
+    tmp.renameTo(sherpaAar)
+}
+
 android {
     namespace = "io.github.jgg113.gyeot"
     compileSdk = 35
@@ -21,6 +34,8 @@ android {
         targetSdk = 35
         versionCode = buildNumber
         versionName = "1.0.$buildNumber"
+        // 갤럭시는 모두 64비트 ARM. 다른 CPU 용 라이브러리를 빼서 APK 를 줄인다.
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     signingConfigs {
@@ -58,6 +73,8 @@ android {
             "/META-INF/*.kotlin_module",
             "/META-INF/versions/**",
         )
+        // 음성 인식·AI 엔진 라이브러리를 압축해 APK 를 줄인다 (설치할 때 풀린다).
+        jniLibs.useLegacyPackaging = true
     }
 
     lint {
@@ -84,6 +101,8 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.core)
     implementation(libs.anthropic.java)
     implementation(libs.okhttp)
+    implementation(files(sherpaAar))
+    implementation(libs.mediapipe.tasks.genai)
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test.junit)
 }

@@ -26,12 +26,10 @@ import java.util.Locale
  * Claude 로 받아쓴 대화를 정리한다: 요약·핵심·할 일, 그리고 캘린더에 넣을 일정.
  * 응답은 구조화 출력(JSON 스키마)으로 받아 그대로 [Analysis] 로 읽는다.
  */
-class Analyzer(private val settings: Settings) {
+class Analyzer(private val settings: Settings) : Brain {
     private var cachedKey: String? = null
     private var cachedClient: AnthropicClient? = null
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
-    class AnalyzeException(message: String, val retryable: Boolean) : Exception(message)
 
     private fun client(): AnthropicClient {
         val key = settings.anthropicApiKey
@@ -48,7 +46,7 @@ class Analyzer(private val settings: Settings) {
      * @param fresh 이번에 새로 정리할 말
      * @param known 이미 등록된 앞으로의 일정 (같은 일정을 또 뽑지 않게)
      */
-    fun analyze(context: List<Utterance>, fresh: List<Utterance>, known: List<SavedEvent>, now: ZonedDateTime): Analysis {
+    override fun analyze(context: List<Utterance>, fresh: List<Utterance>, known: List<SavedEvent>, now: ZonedDateTime): Analysis {
         val user = buildString {
             appendLine("지금: ${describeNow(now)}")
             if (settings.myName.isNotBlank()) appendLine("휴대폰 주인(나): ${settings.myName}")
@@ -89,7 +87,7 @@ class Analyzer(private val settings: Settings) {
     }
 
     /** '묻기' 탭: 저장된 대화·정리 노트를 근거로 질문에 답한다. */
-    fun ask(question: String, material: String, now: ZonedDateTime): String {
+    override fun ask(question: String, material: String, now: ZonedDateTime): String {
         return textOf(call {
             it.maxTokens(16000L)
                 .system(ASK_SYSTEM)
@@ -145,7 +143,7 @@ class Analyzer(private val settings: Settings) {
         val event = mapOf(
             "type" to "object",
             "additionalProperties" to false,
-            "required" to listOf("title", "start", "end", "allDay", "location", "reminderMinutesBefore", "confidence", "evidence"),
+            "required" to listOf("title", "start", "end", "allDay", "location", "reminderMinutesBefore", "confidence", "evidence", "isChange"),
             "properties" to mapOf(
                 "title" to str("캘린더 제목. 짧게, 누구와·무엇 (예: '민수와 점심', '치과 예약')"),
                 "start" to str("한국 시간 YYYY-MM-DDTHH:mm, 종일이면 YYYY-MM-DD"),
@@ -155,6 +153,7 @@ class Analyzer(private val settings: Settings) {
                 "reminderMinutesBefore" to mapOf("type" to "integer", "description" to "미리 알림(분 전). 특별히 말한 게 없으면 0"),
                 "confidence" to mapOf("type" to "number", "description" to "0~1, 실제로 정해진 약속일 가능성"),
                 "evidence" to str("근거가 된 말 그대로 한 줄"),
+                "isChange" to mapOf("type" to "boolean", "description" to "이미 등록된 일정의 시각·날짜가 바뀌었다는 말이면 true"),
             ),
         )
         val todo = mapOf(
@@ -194,7 +193,7 @@ class Analyzer(private val settings: Settings) {
             - 시각 없이 "저녁"은 19:00, "점심"은 12:00, "아침"은 09:00, "오후"만 있으면 15:00 으로 잡되 confidence 를 낮춘다. 날짜만 있고 시각이 없으면 종일(allDay) 일정이다.
             - "3시"처럼 오전·오후가 없으면 상식(업무·약속은 대개 낮)으로 정한다.
             - 지나가는 말("언제 밥 한번 먹자"), 남의 일정(주인과 상관없는 제3자 이야기), 이미 지난 일은 넣지 않는다. 확정되지 않은 제안은 confidence 0.5 아래로.
-            - <이미_등록된_일정> 에 있는 것과 같은 일정은 다시 넣지 않는다. 시각이 바뀌었다는 말이 있으면 새 시각으로 넣고 evidence 에 '변경'이라고 적는다.
+            - <이미_등록된_일정> 에 있는 것과 같은 일정은 다시 넣지 않는다. 시각이 바뀌었다는 말이 있으면 같은 제목으로 새 시각을 넣고 isChange 를 true 로 한다.
             - <앞선_대화> 는 맥락 참고용이다. 일정·할 일·핵심은 <새_대화> 에서 나온 것만 뽑는다.
 
             todos — 주인이 하기로 한 일, 남이 주인에게 부탁한 일 (예: "자료 금요일까지 보내 주세요").
