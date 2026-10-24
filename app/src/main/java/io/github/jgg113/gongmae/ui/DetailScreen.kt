@@ -116,10 +116,18 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
             LaunchedEffect(property.id) {
                 vm.ensurePositions(listOf(property))
                 vm.loadFacts(property)
-                if (!property.isCourt && !property.category.isMovable) {
-                    vm.loadUsageStats(vm.statsTypeOf(property))
+                if (!property.isCourt) {
+                    // 사진·감정평가서·유의사항은 물건상세에만 있어 열 때 바로 불러온다.
+                    if (property.movableKind != null) {
+                        vm.loadMovableDocs(property)
+                    } else if (vm.details[property.id] == null && vm.serviceKey.isNotBlank()) {
+                        vm.loadDetail(property.id)
+                    }
+                    if (!property.category.isMovable) vm.loadUsageStats(vm.statsTypeOf(property))
                     vm.loadBidHistory(property)
+                    vm.loadSecurity(property)
                 }
+                vm.loadSold(property)
                 vm.loadCourtDetail(property)
                 vm.loadCourtCase(property)
             }
@@ -139,8 +147,12 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
             val facts = vm.factsOf(property.id)
             val rent = vm.rentOf(property.id)
             val usageStat = vm.usageStatFor(property)
+            val docs = vm.docsOf(property)
+            val sold = vm.soldOf(property.id)
+            val bidInfo = (vm.bidInfos[property.id] as? Load.Done<io.github.jgg113.gongmae.core.BidInfo>)?.value
+            val spec = docs?.spec ?: property.spec
             val prompt = { mode: ClaudePrompt.Mode ->
-                ClaudePrompt.build(property, analysis, loadedDetail, market, courtDetail, mode, now, courtCase, facts, rent, usageStat)
+                ClaudePrompt.build(property, analysis, loadedDetail, market, courtDetail, mode, now, courtCase, facts, rent, usageStat, sold, docs, bidInfo)
             }
             val localReport = { mode: ClaudePrompt.Mode ->
                 if (analysis == null) "분석할 정보가 부족합니다." else LocalReport.build(property, analysis, range, checklist, mode)
@@ -151,7 +163,7 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                item { Gallery(property, vm.courtPhotos(property.id), courtState) }
+                item { Gallery(property, vm.courtPhotos(property.id), courtState, docs?.photos.orEmpty()) }
                 item { Header(property, now) }
                 if (analysis != null) {
                     item {
@@ -163,6 +175,7 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                     }
                 }
                 item { PriceCard(property) }
+                if (spec != null) item { SpecCard(spec, property.category == Category.VEHICLE) }
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
@@ -190,9 +203,13 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
                     }
                 }
                 item { MarketCard(vm, property) }
+                item { SoldCasesCard(vm, property) }
                 if (!property.category.isMovable) item { PublicRecordsCard(vm, property) }
-                if (!property.isCourt && !property.category.isMovable) item { OnbidHistoryCard(vm, property) }
+                if (!property.isCourt) item { OnbidHistoryCard(vm, property) }
+                if (vm.isSecurity(property)) item { SecurityCard(vm, property) }
                 if (!property.category.isMovable) item { BidCalculatorCard(property, market, range) }
+                if (!property.isCourt) item { OnbidDocsCard(vm, property) }
+                if (!property.isCourt) item { NoticeCard(vm, property) }
                 item { DocumentsCard(property, onOpenRegistry = { registryOpen = true }) }
                 if (property.isCourt) item { CourtNoticeCard(property, courtDetail, courtCase) }
                 item { LocationCard(vm, property) }
@@ -220,10 +237,13 @@ fun DetailScreen(vm: AppViewModel, id: String, onBack: () -> Unit) {
 
 /** 사진 여러 장을 옆으로 넘겨 본다. 누르면 크게 본다. */
 @Composable
-private fun Gallery(property: Property, courtPhotos: List<ByteArray>, courtState: CourtDetailState?) {
+private fun Gallery(property: Property, courtPhotos: List<ByteArray>, courtState: CourtDetailState?, detailPhotos: List<String> = emptyList()) {
     val context = LocalContext.current
     var opened by remember { mutableStateOf<Any?>(null) }
-    val urls = remember(property.id) { (listOf(property.thumbnailUrl).filter { it.isNotBlank() } + property.photoUrls).distinct() }
+    // 물건상세의 실제 사진 목록이 오면 그것을 먼저 쓴다 (목록 썸네일로 짐작한 주소는 안 열리기도 한다).
+    val urls = remember(property.id, detailPhotos) {
+        (detailPhotos + listOf(property.thumbnailUrl).filter { it.isNotBlank() } + if (detailPhotos.isEmpty()) property.photoUrls else emptyList()).distinct()
+    }
     var failed by remember(property.id) { mutableStateOf(setOf<String>()) }
     val visibleUrls = urls.filterNot { it in failed }
 

@@ -238,6 +238,7 @@ fun PropertyCard(
                     }
                     Text(
                         listOfNotNull(
+                            property.spec?.summary?.ifBlank { null },
                             "유찰 ${property.failCount}회",
                             analysis?.marketRatio?.let { "실거래 시세의 ${Format.percent(it)}" },
                             property.assetTypeName.ifBlank { null }.takeIf { !property.isCourt },

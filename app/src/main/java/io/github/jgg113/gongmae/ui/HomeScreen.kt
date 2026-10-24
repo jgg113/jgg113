@@ -69,6 +69,8 @@ import io.github.jgg113.gongmae.core.Category
 import io.github.jgg113.gongmae.core.Format
 import io.github.jgg113.gongmae.core.KindGroup
 import io.github.jgg113.gongmae.core.OnbidExtrasClient
+import io.github.jgg113.gongmae.core.OnbidMoreClient
+import io.github.jgg113.gongmae.core.ResultType
 import io.github.jgg113.gongmae.core.Property
 import io.github.jgg113.gongmae.core.RankDivision
 import io.github.jgg113.gongmae.core.RankKind
@@ -112,7 +114,7 @@ private val usefulLinks = listOf(
 )
 
 @Composable
-fun HomeScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit, onOpenSearch: () -> Unit) {
+fun HomeScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit, onOpenSearch: () -> Unit, onOpenExplore: () -> Unit = {}) {
     val context = LocalContext.current
     var query by rememberSaveable { mutableStateOf("") }
     var showRegion by rememberSaveable { mutableStateOf(false) }
@@ -252,7 +254,13 @@ fun HomeScreen(vm: AppViewModel, onOpenDetail: (String) -> Unit, onOpenSearch: (
             }
 
             item(key = "ranking") { RankingSection(vm, onOpenDetail) }
+            item(key = "sold") { RecentSoldSection(vm) }
             item(key = "stats") { StatsSection(vm) }
+            item(key = "explore") {
+                HomeSection("🗂 온비드 데이터 더보기", subtitle = "정부재산(국유·공유·귀속) · 불용품 · 개찰 끝난 공고 결과") {
+                    OutlinedButton(onClick = onOpenExplore, modifier = Modifier.fillMaxWidth()) { Text("열기") }
+                }
+            }
             item(key = "news") { NewsSection(vm) }
             item(key = "links") {
                 HomeSection("🔗 고시·공고와 공식 사이트") {
@@ -489,16 +497,60 @@ private fun RankingSection(vm: AppViewModel, onOpenDetail: (String) -> Unit) {
     }
 }
 
-/** 온비드 용도별 낙찰 통계 */
+/** 지역 최근 30일 공매 낙찰 (온비드 물건 입찰결과목록) */
+@Composable
+private fun RecentSoldSection(vm: AppViewModel) {
+    var type by rememberSaveable { mutableStateOf(ResultType.REAL_ESTATE) }
+    val sido = if (type == ResultType.REAL_ESTATE) vm.settings.sido else ""
+    val sigungu = if (type == ResultType.REAL_ESTATE) vm.settings.sigungu else ""
+    LaunchedEffect(type, sido, sigungu) { vm.loadRecentSold(type, sido, sigungu) }
+    val where = if (sido.isBlank()) "전국" else Regions.label(sido, sigungu)
+    HomeSection("🔨 최근 30일 공매 낙찰 ($where)", subtitle = "얼마에 팔렸나 — 감정가 대비 낙찰가율", action = "새로고침" to { vm.loadRecentSold(type, sido, sigungu, force = true) }) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            ResultType.entries.forEach { t -> FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t.label) }) }
+        }
+        LoadView(vm.recentSold[vm.recentSoldKey(type, sido, sigungu)]) { cases ->
+            val sold = cases.filter { it.sold }
+            if (sold.isEmpty()) {
+                Text("최근 30일 낙찰 결과가 없습니다.", style = MaterialTheme.typography.bodySmall)
+            } else {
+                val ratios = sold.mapNotNull { it.ratio }.sorted()
+                if (ratios.isNotEmpty()) {
+                    Text(
+                        "낙찰 ${sold.size}건 · 낙찰가율 중간값 ${Format.percent(ratios[ratios.size / 2])}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                sold.take(8).forEach { SoldRow(it, showRegion = type != ResultType.REAL_ESTATE || Regions.splitSigungu(sigungu).size != 1) }
+            }
+        }
+    }
+}
+
+/** 온비드 용도별·지역별 낙찰 통계 */
 @Composable
 private fun StatsSection(vm: AppViewModel) {
+    var byRegion by rememberSaveable { mutableStateOf(false) }
     var type by rememberSaveable { mutableStateOf(OnbidExtrasClient.STATS_TYPES.first().first) }
-    LaunchedEffect(type) { vm.loadUsageStats(type) }
-    HomeSection("📊 공매 낙찰가율 통계 (${OnbidExtrasClient.defaultPeriod()}년)", subtitle = "온비드 용도별 입찰 통계 API · 낙찰가율 = 낙찰가 ÷ 감정가") {
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            OnbidExtrasClient.STATS_TYPES.forEach { (code, label) -> FilterChip(selected = type == code, onClick = { type = code }, label = { Text(label) }) }
+    var regionType by rememberSaveable { mutableStateOf(OnbidMoreClient.REGION_STATS_TYPES.first().first) }
+    LaunchedEffect(type, regionType, byRegion) { if (byRegion) vm.loadRegionStats(regionType) else vm.loadUsageStats(type) }
+    HomeSection(
+        "📊 공매 낙찰가율 통계 (${OnbidExtrasClient.defaultPeriod()}년)",
+        subtitle = "온비드 ${if (byRegion) "지역별" else "용도별"} 입찰 통계 API · 낙찰가율 = 낙찰가 ÷ 감정가",
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(selected = !byRegion, onClick = { byRegion = false }, label = { Text("용도별") })
+            FilterChip(selected = byRegion, onClick = { byRegion = true }, label = { Text("지역별") })
         }
-        when (val state = vm.usageStats[type]) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (byRegion) {
+                OnbidMoreClient.REGION_STATS_TYPES.forEach { (code, label) -> FilterChip(selected = regionType == code, onClick = { regionType = code }, label = { Text(label) }) }
+            } else {
+                OnbidExtrasClient.STATS_TYPES.forEach { (code, label) -> FilterChip(selected = type == code, onClick = { type = code }, label = { Text(label) }) }
+            }
+        }
+        when (val state = if (byRegion) vm.regionStats[regionType] else vm.usageStats[type]) {
             null, Load.Loading -> CircularProgressIndicator(Modifier.padding(8.dp))
             is Load.Error -> Text(state.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             is Load.Done -> {
@@ -507,7 +559,7 @@ private fun StatsSection(vm: AppViewModel) {
                     Text("통계가 없습니다.", style = MaterialTheme.typography.bodySmall)
                 } else {
                     Row(Modifier.padding(vertical = 4.dp)) {
-                        listOf("용도" to 2f, "낙찰가율" to 1f, "낙찰률" to 1f, "경쟁률" to 1f).forEach { (h, w) ->
+                        listOf((if (byRegion) "지역" else "용도") to 2f, "낙찰가율" to 1f, "낙찰률" to 1f, "경쟁률" to 1f).forEach { (h, w) ->
                             Text(h, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(w))
                         }
                     }

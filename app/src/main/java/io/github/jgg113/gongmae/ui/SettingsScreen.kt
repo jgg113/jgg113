@@ -53,6 +53,7 @@ import androidx.core.content.ContextCompat
 import io.github.jgg113.gongmae.BuildConfig
 import io.github.jgg113.gongmae.core.AiProvider
 import io.github.jgg113.gongmae.core.AiText
+import io.github.jgg113.gongmae.core.ApiDoctor
 import io.github.jgg113.gongmae.core.ApiHealth
 
 private val guideSteps = listOf(
@@ -204,9 +205,9 @@ fun SettingsScreen(vm: AppViewModel) {
 @Composable
 private fun ApiCheckCard(vm: AppViewModel) {
     val context = LocalContext.current
-    SectionCard("API 연결 점검") {
+    SectionCard("API 연결 점검 (${ApiDoctor.TOTAL}개)") {
         Text(
-            "온비드·실거래가·전월세·건축물대장 API 를 1건씩만 불러 활용신청 상태를 확인합니다 (하루 한도를 거의 쓰지 않습니다).",
+            "앱이 쓰는 공공데이터포털 API ${ApiDoctor.TOTAL}개(온비드 26 · 국토부 실거래 11 · 건축HUB 1)를 1건씩만 불러 활용신청 상태를 확인합니다 (하루 한도를 거의 쓰지 않습니다).",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -222,7 +223,18 @@ private fun ApiCheckCard(vm: AppViewModel) {
             is Load.Done -> {
                 val ok = state.value.count { it.health == ApiHealth.OK }
                 Text("정상 $ok / ${state.value.size}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                var lastGroup = ""
                 state.value.forEach { check ->
+                    if (check.group != lastGroup) {
+                        lastGroup = check.group
+                        val inGroup = state.value.filter { it.group == check.group }
+                        Text(
+                            "${check.group} (${inGroup.count { it.health == ApiHealth.OK }}/${inGroup.size})",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
                     val color = when (check.health) {
                         ApiHealth.OK -> Color(0xFF2E7D32)
                         ApiHealth.NEEDS_APPROVAL -> Color(0xFFEF6C00)
@@ -234,8 +246,8 @@ private fun ApiCheckCard(vm: AppViewModel) {
                             Text(check.health.label, style = MaterialTheme.typography.labelMedium, color = color, fontWeight = FontWeight.Bold)
                         }
                         Text(check.detail.take(140), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (check.health == ApiHealth.NEEDS_APPROVAL) {
-                            TextButton(onClick = { Links.openUrl(context, check.pageUrl) }) { Text("활용신청 페이지 열기") }
+                        if (check.health == ApiHealth.NEEDS_APPROVAL || check.health == ApiHealth.ERROR) {
+                            TextButton(onClick = { Links.openUrl(context, check.pageUrl) }) { Text("공공데이터포털 페이지 열기") }
                         }
                     }
                     HorizontalDivider()

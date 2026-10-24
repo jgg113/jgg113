@@ -363,8 +363,9 @@ class ApiDoctorTest {
         assertEquals(ApiHealth.NEEDS_APPROVAL, byName.getValue("아파트 전월세").health)
         // 차량 목록이 비어 있으면 차량 상세는 건너뛴다.
         assertEquals(ApiHealth.SKIPPED, byName.getValue("차량 물건상세").health)
-        assertEquals(ApiDoctor.TOTAL, results.size)
+        assertEquals(ApiDoctor.TOTAL, results.count { it.group != ApiDoctor.RECOMMENDED_GROUP })
         assertEquals(26, results.count { it.group == "온비드" })
+        assertEquals(ApiHealth.NEEDS_APPROVAL, byName.getValue("공장·창고 매매 실거래").health)
         assertEquals(results.size, results.map { it.pageUrl }.distinct().size)
     }
 }

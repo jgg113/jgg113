@@ -41,6 +41,7 @@ private enum class Tab(val route: String, val label: String, val icon: ImageVect
 }
 
 private const val DETAIL_ROUTE = "detail/{id}"
+private const val EXPLORE_ROUTE = "explore"
 
 private fun NavHostController.openTab(tab: Tab) {
     navigate(tab.route) {
@@ -90,7 +91,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
             modifier = Modifier.padding(padding),
         ) {
             composable(Tab.HOME.route) {
-                HomeScreen(vm, onOpenDetail = openDetail, onOpenSearch = { nav.openTab(Tab.SEARCH) })
+                HomeScreen(vm, onOpenDetail = openDetail, onOpenSearch = { nav.openTab(Tab.SEARCH) }, onOpenExplore = { nav.navigate(EXPLORE_ROUTE) })
             }
             composable(Tab.SEARCH.route) {
                 SearchScreen(
@@ -108,6 +109,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 CompareScreen(vm, onOpenDetail = openDetail, onOpenSearch = { nav.openTab(Tab.SEARCH) })
             }
             composable(Tab.SETTINGS.route) { SettingsScreen(vm) }
+            composable(EXPLORE_ROUTE) { ExploreScreen(vm, onBack = { nav.popBackStack() }) }
             composable(DETAIL_ROUTE) { entry ->
                 DetailScreen(vm, id = entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() })
             }

@@ -204,7 +204,7 @@ class ApiDoctor(
         add(m, "아파트 매매 상세", "15126468") {
             "강남구 지난달 ${molit.tradesAt(MolitClient.APT_DETAIL_PATH, MarketKind.APT, "11680", ym).size}건"
         }
-        MarketKind.entries.forEach { kind ->
+        MarketKind.entries.filter { !it.recommended }.forEach { kind ->
             add(m, "${kind.label} 매매", kind.datasetId) { "강남구 지난달 ${molit.tradesAt(kind.path, kind, "11680", ym).size}건" }
         }
         RentKind.entries.forEach { kind ->
@@ -215,6 +215,11 @@ class ApiDoctor(
             val info = records.building(Parcel("1168010600109360031"))
             if (info == null) "응답 확인 (건물 없음)" else "응답 확인 (${info.mainPurpose})"
         }
+        MarketKind.entries.filter { it.recommended }.forEach { kind ->
+            add(RECOMMENDED_GROUP, "${kind.label} 매매 실거래", kind.datasetId) {
+                "화성시 지난달 ${molit.tradesAt(kind.path, kind, "41590", ym).size}건 — 공장·창고 시세 비교에 씁니다"
+            }
+        }
         return list
     }
 
@@ -222,8 +227,9 @@ class ApiDoctor(
         const val ONBID_PAGE = "https://www.data.go.kr/tcs/dss/selectDataSetList.do?keyword=%EC%B0%A8%EC%84%B8%EB%8C%80%20%EC%98%A8%EB%B9%84%EB%93%9C"
         const val BUILDING_PAGE = "https://www.data.go.kr/data/15134735/openapi.do"
 
-        /** 점검하는 API 수 */
+        /** 점검하는 승인 API 수 (추천 API 는 따로) */
         const val TOTAL = 38
+        const val RECOMMENDED_GROUP = "추천 API (신청하면 바로 사용)"
 
         fun page(datasetId: String) = "https://www.data.go.kr/data/$datasetId/openapi.do"
 

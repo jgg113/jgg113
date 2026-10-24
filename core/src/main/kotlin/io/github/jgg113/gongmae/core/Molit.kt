@@ -14,9 +14,18 @@ enum class MarketKind(val label: String, val path: String, val nameTag: String, 
     OFFI("오피스텔", "RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade", "offiNm", "excluUseAr", "국토교통부_오피스텔 매매 신고 자료", "15126464"),
     SH("단독·다가구", "RTMSDataSvcSHTrade/getRTMSDataSvcSHTrade", "umdNm", "totalFloorAr", "국토교통부_단독/다가구 매매 실거래가 자료", "15126465"),
     LAND("토지", "RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade", "umdNm", "dealArea", "국토교통부_토지 매매 신고 자료", "15126466"),
-    COMMERCIAL("상업·업무용", "RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade", "umdNm", "buildingAr", "국토교통부_상업업무용 부동산 매매 신고 자료", "15126463");
+    COMMERCIAL("상업·업무용", "RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade", "umdNm", "buildingAr", "국토교통부_상업업무용 부동산 매매 신고 자료", "15126463"),
+
+    /** 추천 API (아직 활용신청 전일 수 있다) — 안 되면 [fallback] 으로 비교한다. */
+    INDUSTRIAL("공장·창고", "RTMSDataSvcInduTrade/getRTMSDataSvcInduTrade", "umdNm", "buildingAr", "국토교통부_공장 및 창고 등 부동산 매매 실거래가 자료", "15126470");
 
     val pageUrl: String get() = "https://www.data.go.kr/data/$datasetId/openapi.do"
+
+    /** 활용신청을 아직 안 했을 수 있는 추천 API */
+    val recommended: Boolean get() = this == INDUSTRIAL
+
+    /** 이 API 가 안 될 때 대신 쓸 자료 */
+    val fallback: MarketKind? get() = if (this == INDUSTRIAL) COMMERCIAL else null
 
     companion object {
         fun of(category: Category): MarketKind? = when (category) {
@@ -25,7 +34,8 @@ enum class MarketKind(val label: String, val path: String, val nameTag: String, 
             Category.OFFICETEL -> OFFI
             Category.HOUSE -> SH
             Category.LAND, Category.FOREST -> LAND
-            Category.COMMERCIAL, Category.FACTORY -> COMMERCIAL
+            Category.COMMERCIAL -> COMMERCIAL
+            Category.FACTORY -> INDUSTRIAL
             Category.VEHICLE, Category.MOVABLE, Category.ETC -> null
         }
     }

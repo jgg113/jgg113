@@ -338,7 +338,8 @@ fun MarketCard(vm: AppViewModel, property: Property) {
     val kind = MarketKind.of(property.category) ?: return
     val context = LocalContext.current
     LaunchedEffect(property.id, vm.serviceKey) { vm.loadMarket(property) }
-    SectionCard("주변 실거래가 (${kind.label})") {
+    val shown = (vm.markets[property.id] as? MarketState.Loaded)?.summary?.kind ?: kind
+    SectionCard("주변 실거래가 (${shown.label})") {
         when (val state = vm.markets[property.id]) {
             null, MarketState.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)

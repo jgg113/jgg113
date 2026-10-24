@@ -18,6 +18,18 @@ import io.github.jgg113.gongmae.core.ApiCheck
 import io.github.jgg113.gongmae.core.ApiDoctor
 import io.github.jgg113.gongmae.core.AssetType
 import io.github.jgg113.gongmae.core.BidHistoryRound
+import io.github.jgg113.gongmae.core.BidInfo
+import io.github.jgg113.gongmae.core.DisusedGoods
+import io.github.jgg113.gongmae.core.GovProperty
+import io.github.jgg113.gongmae.core.GovPropertyKind
+import io.github.jgg113.gongmae.core.NoticeInfo
+import io.github.jgg113.gongmae.core.NoticeResult
+import io.github.jgg113.gongmae.core.OnbidDocs
+import io.github.jgg113.gongmae.core.OnbidMoreClient
+import io.github.jgg113.gongmae.core.ResultType
+import io.github.jgg113.gongmae.core.SecurityInfo
+import io.github.jgg113.gongmae.core.SoldCase
+import io.github.jgg113.gongmae.core.SoldStats
 import io.github.jgg113.gongmae.core.BidResultInfo
 import io.github.jgg113.gongmae.core.Category
 import io.github.jgg113.gongmae.core.Changes
@@ -244,6 +256,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var bidResults by mutableStateOf<Map<String, Load<List<BidResultInfo>>>>(emptyMap())
         private set
+    /** 물건상세 입찰정보: 입찰 조건·공고관리번호 */
+    var bidInfos by mutableStateOf<Map<String, Load<BidInfo>>>(emptyMap())
+        private set
+    /** 차량·동산 물건상세 (실제 사진·감정평가서·제원·유의사항) */
+    var movableDocs by mutableStateOf<Map<String, Load<OnbidDocs>>>(emptyMap())
+        private set
+    /** 공고상세 + 공고 입찰정보 (공고관리번호 → 내용) */
+    var notices by mutableStateOf<Map<String, Load<NoticeInfo>>>(emptyMap())
+        private set
+    /** 공고 입찰결과상세 (공고관리번호 → 물건별 결과) */
+    var noticeResults by mutableStateOf<Map<String, Load<List<SoldCase>>>>(emptyMap())
+        private set
+    /** 비슷한 물건 낙찰 사례 (물건 → 사례 묶음) */
+    var solds by mutableStateOf<Map<String, Load<SoldStats?>>>(emptyMap())
+        private set
+    /** 지역 최근 낙찰 (지역·종류 → 사례) */
+    var recentSold by mutableStateOf<Map<String, Load<List<SoldCase>>>>(emptyMap())
+        private set
+    /** 개찰 완료 공고 (종류 → 공고) */
+    var closedNotices by mutableStateOf<Map<String, Load<List<NoticeResult>>>>(emptyMap())
+        private set
+    /** 지역별 입찰 통계 (통계 종류 → 지역별) */
+    var regionStats by mutableStateOf<Map<String, Load<List<UsageStat>>>>(emptyMap())
+        private set
+    /** 정부재산 목록 (종류|시도|시군구 → 목록, 전체 건수) */
+    var govProperties by mutableStateOf<Map<String, Load<Pair<List<GovProperty>, Int?>>>>(emptyMap())
+        private set
+    var disusedGoods by mutableStateOf<Load<Pair<List<DisusedGoods>, Int?>>?>(null)
+        private set
+    var securities by mutableStateOf<Map<String, Load<SecurityInfo?>>>(emptyMap())
+        private set
     var apiChecks by mutableStateOf<Load<List<ApiCheck>>?>(null)
         private set
     var apiCheckProgress by mutableStateOf("")
@@ -275,7 +318,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val rights = details.mapNotNull { (id, state) -> (state as? DetailState.Loaded)?.let { id to it.detail } }.toMap()
         val market = markets.mapNotNull { (id, state) -> (state as? MarketState.Loaded)?.let { id to it.summary } }.toMap()
         val records = facts.mapNotNull { (id, state) -> (state as? Load.Done<PublicFacts>)?.let { id to it.value } }.toMap()
-        Analyzer.analyzeAll(all, rights, market, courtCases, records, rents)
+        val sold = solds.mapNotNull { (id, state) -> (state as? Load.Done<SoldStats?>)?.value?.let { id to it } }.toMap()
+        Analyzer.analyzeAll(all, rights, market, courtCases, records, rents, sold)
     }
 
     fun rightsOf(id: String): PropertyDetail? = (details[id] as? DetailState.Loaded)?.detail
@@ -523,11 +567,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             movableState = MovableState.Error("차량·동산 공매는 설정 탭에 공공데이터포털 인증키가 있어야 합니다.")
             return
         }
-        movableState = MovableState.Loading("차량·동산 공고 확인 중")
+        movableState = MovableState.Loading("차량·동산 물건 불러오는 중")
         viewModelScope.launch {
             movableState = try {
                 val outcome = withContext(Dispatchers.IO) {
-                    MovablesClient(OnbidClient(key)).search(MovableSearchRequest(kinds = wanted), LocalDateTime.now()) { done, total, label ->
+                    MovablesClient(OnbidClient(key)).search(MovableSearchRequest(kinds = wanted, includePrivateContract = settings.includePrivateContract), LocalDateTime.now()) { done, total, label ->
                         viewModelScope.launch { if (movableState is MovableState.Loading) movableState = MovableState.Loading("$label ($done/$total)") }
                     }
                 }
@@ -540,7 +584,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val approval = e.code in APPROVAL_CODES
                 MovableState.Error(
                     if (approval) {
-                        "차량·동산은 공공데이터포털의 '차세대 온비드 공고목록 조회서비스'와 '공고상세 물건정보 조회서비스' 활용신청이 필요합니다. (${e.message})"
+                        "차량·동산은 공공데이터포털의 '차세대 온비드 차량·동산 물건목록 조회서비스'(또는 공고목록·공고상세 물건정보) 활용신청이 필요합니다. (${e.message})"
                     } else {
                         "차량·동산 공매를 불러오지 못했습니다: ${e.message}"
                     },
@@ -840,11 +884,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun marketState(p: Property, kind: MarketKind): MarketState = try {
-        MarketState.Loaded(MolitClient.summarize(p, kind, trades(kind, p.lawdCode, MARKET_MONTHS), MARKET_MONTHS))
+        val fallback = kind.fallback
+        if (fallback != null && kind.name in blockedApis) {
+            MarketState.Loaded(MolitClient.summarize(p, fallback, trades(fallback, p.lawdCode, MARKET_MONTHS), MARKET_MONTHS))
+        } else {
+            MarketState.Loaded(MolitClient.summarize(p, kind, trades(kind, p.lawdCode, MARKET_MONTHS), MARKET_MONTHS))
+        }
     } catch (e: CancellationException) {
         throw e
     } catch (e: OnbidApiException) {
         val approval = e.code in APPROVAL_CODES
+        val fallback = kind.fallback
+        if (approval && fallback != null && kind.name !in blockedApis) {
+            // 추천 API (공장·창고) 를 아직 신청 안 했으면 상업·업무용 거래로 대신 비교한다.
+            blockedApis += kind.name
+            return marketState(p, kind)
+        }
         if (approval) blockedApis += kind.name
         MarketState.Error(
             if (approval) "공공데이터포털에서 '${kind.apiName}' 활용신청이 필요합니다. (승인 후 1~2시간 뒤 반영)" else e.message.orEmpty(),
@@ -870,6 +925,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun rentOf(id: String): RentSummary? = rents[id]
 
+    /** 추천 API (공장·창고 실거래) 가 막혀 있으면 대신 쓸 자료 */
+    private fun effectiveKind(kind: MarketKind): MarketKind = if (kind.name in blockedApis) kind.fallback ?: kind else kind
+
     /** 전월세 API 가 활용신청이 안 돼 막혀 있는지 */
     fun rentBlocked(p: Property): Boolean = RentKind.of(p.category)?.let { "RENT_${it.name}" in blockedApis } ?: false
 
@@ -886,7 +944,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             delay(1_000)
             if (serviceKey.isNotBlank()) {
                 val groups = targets.filter { markets[it.id] == null && it.lawdCode.length == 5 }
-                    .mapNotNull { p -> MarketKind.of(p.category)?.let { (it to p.lawdCode) to p } }
+                    .mapNotNull { p -> MarketKind.of(p.category)?.let { (effectiveKind(it) to p.lawdCode) to p } }
                     .groupBy({ it.first }, { it.second })
                 for ((group, props) in groups.entries.take(10)) {
                     val kind = group.first
@@ -898,6 +956,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         markets = markets - props.map { it.id }.toSet()
                         throw e
                     } catch (e: Exception) {
+                        if (e is OnbidApiException && e.code in APPROVAL_CODES && kind.fallback != null) {
+                            // 추천 API 를 아직 신청 안 했다 → 다음 조회부터 대신 쓸 자료로 비교한다.
+                            blockedApis += kind.name
+                            markets = markets - props.map { it.id }.toSet()
+                            continue
+                        }
                         val state = if (e is OnbidApiException && e.code in APPROVAL_CODES) {
                             blockedApis += kind.name
                             MarketState.Error("공공데이터포털에서 '${kind.apiName}' 활용신청이 필요합니다.", needsApiApproval = true)
@@ -1026,26 +1090,128 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return OnbidExtrasClient.statFor(p, stats)
     }
 
+    /** 물건상세 입찰정보: 회차 이력·입찰 조건. 공고관리번호가 나오면 공고문도 이어서 불러온다. */
     fun loadBidHistory(p: Property) {
         if (p.isCourt || p.conditionNo.isBlank()) return
-        val current = bidHistories[p.id]
+        val current = bidInfos[p.id]
         if (current is Load.Loading || current is Load.Done) return
         val key = serviceKey.ifBlank { return }
+        bidInfos = bidInfos + (p.id to Load.Loading)
         bidHistories = bidHistories + (p.id to Load.Loading)
         viewModelScope.launch {
-            bidHistories = bidHistories + (p.id to onbidLoad("물건상세 입찰정보") { OnbidExtrasClient(OnbidClient(key)).bidHistory(p.id, p.conditionNo) })
+            val state = onbidLoad("물건상세 입찰정보") { OnbidExtrasClient(OnbidClient(key)).bidInfo(p.id, p.conditionNo) }
+            bidInfos = bidInfos + (p.id to state)
+            bidHistories = bidHistories + (p.id to when (state) {
+                is Load.Done -> Load.Done(state.value.history)
+                is Load.Error -> state
+                Load.Loading -> Load.Loading
+            })
+            (state as? Load.Done<BidInfo>)?.value?.noticeNo?.takeIf { it.isNotBlank() }?.let { loadNotice(it) }
         }
     }
 
     fun loadBidResult(p: Property) {
         if (p.isCourt) return
-        val current = bidResults[p.id]
-        if (current is Load.Loading || current is Load.Done) return
-        val key = serviceKey.ifBlank { return }
-        bidResults = bidResults + (p.id to Load.Loading)
-        viewModelScope.launch {
-            bidResults = bidResults + (p.id to onbidLoad("물건 입찰결과상세") { OnbidExtrasClient(OnbidClient(key)).bidResult(p.id) })
+        onbidFetch(bidResults[p.id], false, "물건 입찰결과상세", { bidResults = bidResults + (p.id to it) }) {
+            OnbidExtrasClient(it).bidResult(p.id, p.conditionNo).ifEmpty { OnbidExtrasClient(it).bidResult(p.id) }
         }
+    }
+
+    /** [current] 가 아직 없거나 [force] 면 [block] 을 IO 에서 불러 [save] 한다. */
+    private fun <T> onbidFetch(current: Load<T>?, force: Boolean, apiName: String, save: (Load<T>) -> Unit, block: (OnbidClient) -> T) {
+        if (current is Load.Loading || current is Load.Done && !force) return
+        val key = serviceKey
+        if (key.isBlank()) {
+            save(Load.Error("설정 탭에 공공데이터포털 인증키를 넣으세요."))
+            return
+        }
+        save(Load.Loading)
+        viewModelScope.launch { save(onbidLoad(apiName) { block(OnbidClient(key)) }) }
+    }
+
+    fun movableDocsOf(id: String): OnbidDocs? = (movableDocs[id] as? Load.Done<OnbidDocs>)?.value
+
+    /** 사진·감정평가서 등 상세 자료 (부동산은 권리 상세에, 차량·동산은 물건상세에 들어 있다) */
+    fun docsOf(p: Property): OnbidDocs? = rightsOf(p.id)?.docs ?: movableDocsOf(p.id)
+
+    fun loadMovableDocs(p: Property, force: Boolean = false) {
+        val kind = p.movableKind ?: return
+        if (p.isCourt) return
+        onbidFetch(movableDocs[p.id], force, "${kind.label} 물건상세", { movableDocs = movableDocs + (p.id to it) }) {
+            MovablesClient(it).detail(kind, p.id, p.conditionNo)
+        }
+    }
+
+    fun loadNotice(noticeNo: String, force: Boolean = false) {
+        if (noticeNo.isBlank()) return
+        onbidFetch(notices[noticeNo], force, "공고상세", { notices = notices + (noticeNo to it) }) { OnbidMoreClient(it).notice(noticeNo) }
+    }
+
+    fun loadNoticeResults(noticeNo: String, force: Boolean = false) {
+        if (noticeNo.isBlank()) return
+        onbidFetch(noticeResults[noticeNo], force, "공고 입찰결과상세", { noticeResults = noticeResults + (noticeNo to it) }) {
+            OnbidMoreClient(it).noticeResultDetail(noticeNo)
+        }
+    }
+
+    fun soldOf(id: String): SoldStats? = (solds[id] as? Load.Done<SoldStats?>)?.value
+
+    /** 비슷한 물건 최근 1년 낙찰 사례 (온비드 물건 입찰결과목록) */
+    fun loadSold(p: Property, force: Boolean = false) {
+        onbidFetch(solds[p.id], force, "물건 입찰결과목록", { solds = solds + (p.id to it) }) { OnbidMoreClient(it).comparables(p) }
+    }
+
+    fun recentSoldKey(type: ResultType, sido: String, sigungu: String) = "${type.name}|$sido|$sigungu"
+
+    /** 지역의 최근 30일 낙찰 (차량·동산은 전국) */
+    fun loadRecentSold(type: ResultType, sido: String, sigungu: String, force: Boolean = false) {
+        val id = recentSoldKey(type, sido, sigungu)
+        onbidFetch(recentSold[id], force, "물건 입찰결과목록", { recentSold = recentSold + (id to it) }) { client ->
+            val today = LocalDate.now()
+            val more = OnbidMoreClient(client)
+            val first = Regions.splitSigungu(sigungu).firstOrNull().orEmpty()
+            more.soldCases(type, today.minusDays(30), today.minusDays(1), sido, first, rows = 100).ifEmpty {
+                if (first.isNotBlank()) more.soldCases(type, today.minusDays(30), today.minusDays(1), sido, rows = 100) else emptyList()
+            }
+        }
+    }
+
+    /** 최근 2주 개찰 완료 공고 */
+    fun loadClosedNotices(type: ResultType, force: Boolean = false) {
+        onbidFetch(closedNotices[type.name], force, "공고 입찰결과목록", { closedNotices = closedNotices + (type.name to it) }) {
+            val today = LocalDate.now()
+            OnbidMoreClient(it).noticeResults(type, today.minusDays(14), today.minusDays(1), rows = 100)
+        }
+    }
+
+    fun loadRegionStats(statsType: String, force: Boolean = false) {
+        onbidFetch(regionStats[statsType], force, "지역별 입찰 통계", { regionStats = regionStats + (statsType to it) }) {
+            val more = OnbidMoreClient(it)
+            more.regionStats(statsType, OnbidExtrasClient.defaultPeriod()).ifEmpty { more.regionStats(statsType, (LocalDate.now().year - 2).toString()) }
+        }
+    }
+
+    fun govKey(kind: GovPropertyKind, sido: String, sigungu: String) = "${kind.name}|$sido|$sigungu"
+
+    fun loadGovProperties(kind: GovPropertyKind, sido: String, sigungu: String, force: Boolean = false) {
+        if (sido.isBlank()) return
+        val id = govKey(kind, sido, sigungu)
+        onbidFetch(govProperties[id], force, "정부재산목록 ${kind.label}", { govProperties = govProperties + (id to it) }) {
+            OnbidMoreClient(it).govProperties(kind, sido, Regions.splitSigungu(sigungu).firstOrNull().orEmpty(), rows = 200)
+        }
+    }
+
+    fun loadDisusedGoods(force: Boolean = false) {
+        onbidFetch(disusedGoods, force, "정부재산목록 불용품", { disusedGoods = it }) { OnbidMoreClient(it).disusedGoods(rows = 200) }
+    }
+
+    /** 유가증권 물건 (주식·출자증권)이면 주주·재무 정보 */
+    fun isSecurity(p: Property): Boolean =
+        !p.isCourt && (p.spec?.stockName?.isNotBlank() == true || listOf(p.usageLarge, p.usageMedium, p.usageSmall, p.name).any { it.contains("증권") || it.contains("주식") || it.contains("출자") })
+
+    fun loadSecurity(p: Property) {
+        if (!isSecurity(p)) return
+        onbidFetch(securities[p.id], false, "유가증권 상세정보", { securities = securities + (p.id to it) }) { OnbidMoreClient(it).security(p.id) }
     }
 
     private suspend fun <T> onbidLoad(apiName: String, block: () -> T): Load<T> = try {
