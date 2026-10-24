@@ -75,6 +75,8 @@ jobs:
         run: |
           mkdir -p out
           cp app/build/outputs/apk/release/app-release.apk "out/gongmae-compare-1.0.${{ github.run_number }}.apk"
+          # 이름이 바뀌지 않는 사본: releases/latest/download/gongmae-compare.apk 가 늘 최신 버전을 가리킨다.
+          cp app/build/outputs/apk/release/app-release.apk out/gongmae-compare.apk
 
       - uses: actions/upload-artifact@v4
         with:
@@ -90,6 +92,7 @@ jobs:
           make_latest: "true"
           files: out/*.apk
           body: |
+            늘 최신 버전 바로 받기: https://github.com/${{ github.repository }}/releases/latest/download/gongmae-compare.apk
             휴대폰에서 아래 Assets 의 .apk 파일을 눌러 내려받은 뒤 설치하세요.
             처음 설치할 때는 "출처를 알 수 없는 앱 설치"를 허용해야 합니다.
 

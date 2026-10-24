@@ -894,17 +894,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         throw e
     } catch (e: OnbidApiException) {
         val approval = e.code in APPROVAL_CODES
-        val fallback = kind.fallback
-        if (approval && fallback != null && kind.name !in blockedApis) {
+        if (approval && kind.fallback != null && kind.name !in blockedApis) {
             // 추천 API (공장·창고) 를 아직 신청 안 했으면 상업·업무용 거래로 대신 비교한다.
             blockedApis += kind.name
-            return marketState(p, kind)
+            marketState(p, kind)
+        } else {
+            if (approval) blockedApis += kind.name
+            MarketState.Error(
+                if (approval) "공공데이터포털에서 '${kind.apiName}' 활용신청이 필요합니다. (승인 후 1~2시간 뒤 반영)" else e.message.orEmpty(),
+                needsApiApproval = approval,
+            )
         }
-        if (approval) blockedApis += kind.name
-        MarketState.Error(
-            if (approval) "공공데이터포털에서 '${kind.apiName}' 활용신청이 필요합니다. (승인 후 1~2시간 뒤 반영)" else e.message.orEmpty(),
-            needsApiApproval = approval,
-        )
     } catch (e: Exception) {
         MarketState.Error("실거래가 조회 중 오류: ${e.message ?: e.javaClass.simpleName}")
     }
