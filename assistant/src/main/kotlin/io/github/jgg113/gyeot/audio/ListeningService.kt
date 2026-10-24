@@ -66,6 +66,7 @@ class ListeningService : Service() {
             val p = Processor(this, scope).also { processor = it; it.start() }
             recordJob = scope.launch(Dispatchers.IO) { record(p) }
             scope.launch { keepNotificationFresh() }
+            scope.launch(Dispatchers.IO) { watchCallRecordings() }
             ListenState.update { it.copy(running = true, paused = paused) }
         }
         return START_STICKY
@@ -112,6 +113,29 @@ class ListeningService : Service() {
             }
             // 멈춘 동안은 마이크를 아예 놓아 준다 (상태 표시줄의 마이크 표시도 꺼진다).
             while (paused && scope.isActive) delay(500)
+        }
+    }
+
+    /**
+     * 통화가 끝나 삼성 전화 앱이 녹음 파일을 저장하면 곧바로 받아써 정리한다.
+     * 미디어 저장소 변경을 지켜보고(10초 모아서), 놓친 것이 없게 15분마다 한 번 더 훑는다.
+     */
+    private suspend fun watchCallRecordings() {
+        val g = Graph.get(this)
+        val changed = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) { changed.trySend(Unit) }
+        }
+        contentResolver.registerContentObserver(android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, true, observer)
+        try {
+            changed.trySend(Unit)
+            while (scope.isActive) {
+                kotlinx.coroutines.withTimeoutOrNull(15 * 60_000L) { changed.receive() }
+                delay(10_000)
+                if (g.settings.importCalls) runCatching { g.calls.scan() }
+            }
+        } finally {
+            contentResolver.unregisterContentObserver(observer)
         }
     }
 

@@ -13,7 +13,14 @@ import java.time.Instant
 import java.time.LocalDate
 
 @Serializable
-data class Utterance(val at: Long, val text: String)
+data class Utterance(
+    val at: Long,
+    val text: String,
+    /** 어디서 들은 말인지: 빈 값 = 곁에서 들은 말, "call:엄마" = 엄마와의 통화 녹음. */
+    val source: String = "",
+) {
+    val callWith: String? get() = source.removePrefix("call:").takeIf { source.startsWith("call:") }
+}
 
 @Serializable
 data class Note(

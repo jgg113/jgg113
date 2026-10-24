@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings as AndroidSettings
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.lifecycleScope
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -111,6 +112,38 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    /** 권한 몇 개를 묻고, 대답이 끝나면 [then]. */
+    fun request(perms: List<String>, then: () -> Unit) {
+        val wanted = perms.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (wanted.isEmpty()) then() else {
+            afterPermissions = then
+            permissionLauncher.launch(wanted.toTypedArray())
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        io.github.jgg113.gyeot.voice.VoiceCall.foregroundActivities++
+        // 앱을 열 때도 새 통화 녹음이 있는지 본다 (듣기가 꺼져 있어도).
+        val g = Graph.get(this)
+        if (g.settings.importCalls) lifecycleScopeLaunchIO { g.calls.scan() }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        io.github.jgg113.gyeot.voice.VoiceCall.foregroundActivities--
+    }
+
+    private fun lifecycleScopeLaunchIO(block: suspend () -> Unit) {
+        lifecycleScope.launch(Dispatchers.IO) { runCatching { block() } }
+    }
+
+    fun openFullScreenSettings() {
+        if (Build.VERSION.SDK_INT >= 34) runCatching {
+            startActivity(Intent(AndroidSettings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:$packageName")))
+        }
+    }
 
     fun requestAll(then: () -> Unit) {
         val wanted = buildList {
@@ -370,7 +403,7 @@ private fun HistoryScreen() {
                 items(lines) { u ->
                     Row {
                         Text(clock(u.at), style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(48.dp))
-                        Text(u.text)
+                        Text(if (u.callWith != null) "📞 ${u.callWith}: ${u.text}" else u.text)
                     }
                     HorizontalDivider()
                 }
@@ -455,6 +488,11 @@ private fun SettingsScreen() {
     var keep by remember { mutableStateOf(s.retentionDays.toString()) }
     var addMode by remember { mutableStateOf(s.addMode) }
     var briefing by remember { mutableStateOf(s.briefingHour.toString()) }
+    var importCalls by remember { mutableStateOf(s.importCalls && g.calls.hasPermission()) }
+    var callRemind by remember { mutableStateOf(s.callForReminders) }
+    var callBrief by remember { mutableStateOf(s.callForBriefing) }
+    var callScan by remember { mutableStateOf("") }
+    var fullScreenOk by remember { mutableStateOf(io.github.jgg113.gyeot.voice.VoiceCall.canFullScreen(activity)) }
     var own by remember { mutableStateOf(s.ownReminders) }
     var calendars by remember { mutableStateOf(emptyList<CalendarWriter.CalendarInfo>()) }
     var calId by remember { mutableStateOf(s.calendarId) }
@@ -569,7 +607,55 @@ private fun SettingsScreen() {
             OutlinedButton(onClick = { activity.openAppSettings() }) { Text("앱 설정 열기") }
         }
 
-        SectionTitle("5. 개인정보")
+        SectionTitle("5. 통화 녹음도 정리하기")
+        Text(
+            "통화 중에는 안드로이드가 다른 앱의 마이크를 막아서 곁비서가 직접 못 들어요. 삼성 전화 앱의 '통화 자동 녹음'을 켜 두면, 통화가 끝나 녹음 파일이 저장될 때 " +
+                "곁비서가 그 파일을 받아써서 일정·할 일·중요한 말을 함께 정리해요 (녹음 파일은 읽기만 해요).",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("통화 녹음 자동으로 정리", Modifier.weight(1f))
+            Switch(importCalls, { on ->
+                if (!on) { importCalls = false; s.importCalls = false } else activity.request(listOf(io.github.jgg113.gyeot.calls.CallRecordingImporter.permission())) {
+                    val ok = g.calls.hasPermission()
+                    if (ok && !s.importCalls) g.calls.startFrom(System.currentTimeMillis() - 24L * 60 * 60 * 1000) // 처음 켜면 최근 하루치부터
+                    s.importCalls = ok; importCalls = ok
+                    if (!ok) callScan = "음악과 오디오(파일) 권한을 허용해야 통화 녹음을 읽을 수 있어요."
+                }
+            })
+        }
+        if (importCalls) OutlinedButton(onClick = {
+            callScan = "통화 녹음 찾는 중… (긴 통화는 몇 분 걸려요)"
+            scope.launch { callScan = withContext(Dispatchers.IO) { runCatching { g.calls.scan() }.fold({ "새 통화 녹음 ${it}개 정리했어요" }, { "실패: ${it.message}" }) } }
+        }) { Text("지금 새 통화 녹음 정리") }
+        if (callScan.isNotBlank()) Text(callScan, style = MaterialTheme.typography.bodySmall)
+
+        SectionTitle("6. 전화로 알려 주기")
+        Text("곁비서가 수신 전화처럼 벨을 울리고, 받으면 할 일을 한국어 음성으로 읽어 줘요. 진짜 통화 중일 때는 방해하지 않고 보통 알림으로 대신해요.", style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("일정 미리 알림을 전화로", Modifier.weight(1f))
+            Switch(callRemind, { callRemind = it; s.callForReminders = it })
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("아침 브리핑을 전화로", Modifier.weight(1f))
+            Switch(callBrief, { callBrief = it; s.callForBriefing = it })
+        }
+        if (!fullScreenOk) {
+            Text("화면이 꺼져 있을 때 전화 화면을 띄우려면 '전체 화면 알림'을 허용해 주세요.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = { activity.openFullScreenSettings(); fullScreenOk = io.github.jgg113.gyeot.voice.VoiceCall.canFullScreen(activity) }) { Text("전체 화면 알림 허용") }
+        }
+        OutlinedButton(onClick = {
+            scope.launch {
+                val speech = withContext(Dispatchers.IO) {
+                    val today = LocalDate.now(EventRules.SEOUL)
+                    val todos = g.store.notes().flatMap { it.todos }.filter { it.due.startsWith(today.toString()) }.map { it.text }.distinct()
+                    io.github.jgg113.gyeot.voice.VoiceScript.briefing(g.scheduleItems(today, today), todos, g.store.suggestions().size, today, morning = false)
+                }
+                io.github.jgg113.gyeot.voice.VoiceCall.ring(activity, "시험 전화 · 오늘 일정", speech)
+            }
+        }) { Text("지금 시험 전화 받아 보기") }
+
+        SectionTitle("7. 개인정보")
         Text(
             "• 원본 음성은 저장하지 않아요. 말소리 구간만 받아쓰기 서비스로 보내고 바로 버립니다.\n" +
                 "• 받아쓴 글·정리는 이 휴대폰에만 저장되고, 정리할 때만 Claude 로 보냅니다.\n" +

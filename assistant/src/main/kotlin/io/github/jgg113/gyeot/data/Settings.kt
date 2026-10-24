@@ -85,6 +85,19 @@ class Settings(context: Context) {
         get() = int("retention_days", 30)
         set(v) = putInt("retention_days", v.coerceIn(1, 365))
 
+    /** 삼성 자동 통화 녹음 파일을 받아써서 일정·할 일에 넣기. */
+    var importCalls: Boolean
+        get() = bool("import_calls", false)
+        set(v) = putBool("import_calls", v)
+    /** 일정 미리 알림을 전화처럼 걸어 음성으로 알려 주기. */
+    var callForReminders: Boolean
+        get() = bool("call_reminders", true)
+        set(v) = putBool("call_reminders", v)
+    /** 아침 브리핑을 전화처럼 걸어 읽어 주기. */
+    var callForBriefing: Boolean
+        get() = bool("call_briefing", true)
+        set(v) = putBool("call_briefing", v)
+
     /** 사용자가 듣기를 켜 두었는지 (재부팅·앱 업데이트 뒤 다시 켜는 데 쓴다). */
     var listeningWanted: Boolean
         get() = bool("listening", false)

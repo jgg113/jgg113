@@ -27,6 +27,7 @@ object Notifier {
     const val CH_NOTE = "note"
     const val CH_ASK = "ask"
     const val CH_BRIEF = "brief"
+    const val CH_CALL = "voice_call"
 
     const val ID_LISTEN = 1
 
@@ -52,6 +53,12 @@ object Notifier {
             },
             NotificationChannel(CH_BRIEF, "일정 브리핑", NotificationManager.IMPORTANCE_DEFAULT).apply {
                 description = "아침마다 오늘 일정 요약"
+            },
+            NotificationChannel(CH_CALL, "곁비서 전화", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "일정·브리핑을 전화처럼 걸어 목소리로 알려 주기"
+                setSound(null, null) // 벨소리는 전화 화면이 직접 울린다
+                enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             },
         ))
     }
@@ -248,6 +255,20 @@ object Notifier {
             .setAutoCancel(true)
             .build()
         nm(context).notify(ID_DIGEST, n)
+    }
+
+    fun callSummary(context: Context, note: Note, who: String, events: Int) {
+        if (!canPost(context)) return
+        val lines = note.keyPoints + note.todos.map { "할 일: ${it.text}" + if (it.due.isNotBlank()) " (${it.due.replace('T', ' ')})" else "" }
+        val n = Notification.Builder(context, CH_NOTE)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle("📞 $who 통화 정리" + if (events > 0) " · 일정 $events" else "" + if (note.todos.isNotEmpty()) " · 할 일 ${note.todos.size}" else "")
+            .setContentText(note.summary.substringAfter(" · ", note.summary))
+            .setStyle(Notification.BigTextStyle().bigText(note.summary + if (lines.isEmpty()) "" else "\n• " + lines.joinToString("\n• ")))
+            .setContentIntent(openApp(context))
+            .setAutoCancel(true)
+            .build()
+        nm(context).notify((note.id % 1_000_000).toInt() + 4_000_000, n)
     }
 
     fun simple(context: Context, title: String, text: String, id: Int) {

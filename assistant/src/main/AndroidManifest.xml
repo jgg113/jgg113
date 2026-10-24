@@ -18,8 +18,23 @@
     <uses-permission
         android:name="android.permission.SCHEDULE_EXACT_ALARM"
         android:maxSdkVersion="32" />
+    <!-- 삼성 자동 통화 녹음 파일 읽기 (읽기만 하고 고치거나 지우지 않는다) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <!-- 곁비서 전화: 잠금 화면 위로 수신 전화 같은 화면 띄우기, 진동 -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- 삼성 시계 앱에 알람 등록 -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+
+    <!-- 한국어 음성 합성(TTS) 엔진 찾기 (Android 11+ 패키지 공개 범위) -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
 
     <application
         android:name=".GyeotApp"
@@ -40,6 +55,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".ui.CallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:taskAffinity="io.github.jgg113.gyeot.call"
+            android:turnScreenOn="true" />
 
         <service
             android:name=".audio.ListeningService"

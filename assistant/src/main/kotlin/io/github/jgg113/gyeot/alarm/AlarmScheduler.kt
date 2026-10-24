@@ -29,6 +29,10 @@ class AlarmScheduler(private val context: Context) {
         if (e.startMillis > now) set(e.startMillis, pending(e.id, ReminderReceiver.KIND_START))
     }
 
+    /** 전화 화면의 [10분 뒤 다시]: 그 일정의 미리 알림을 몇 분 뒤로 다시 건다. */
+    fun snooze(eventId: Long, minutes: Int) =
+        set(System.currentTimeMillis() + minutes * 60_000L, pending(eventId, ReminderReceiver.KIND_EARLY))
+
     fun cancel(eventId: Long) {
         am.cancel(pending(eventId, ReminderReceiver.KIND_EARLY))
         am.cancel(pending(eventId, ReminderReceiver.KIND_START))

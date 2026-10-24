@@ -39,6 +39,9 @@ class Graph private constructor(private val context: Context) {
     }
     val ruleBrain = RuleBrain(polisher)
 
+    /** 삼성 자동 통화 녹음 가져오기 (처음 쓸 때 만든다). */
+    val calls by lazy { io.github.jgg113.gyeot.calls.CallRecordingImporter(context) }
+
     /** 지금 설정에 맞는 정리 엔진. */
     val brain: Brain get() = if (settings.localBrain) ruleBrain else analyzer
 
