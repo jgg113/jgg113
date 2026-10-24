@@ -205,6 +205,8 @@ data class Property(
     val lawdCode: String = "",
     /** 차량·동산 공매 물건이면 그 종류 */
     val movableKind: MovableKind? = null,
+    /** 차량·동산 제원 (연식·주행거리·연료…) */
+    val spec: ItemSpec? = null,
 ) {
     val position: LatLng? get() = if (latitude != null && longitude != null) LatLng(latitude, longitude) else null
 

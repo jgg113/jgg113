@@ -38,13 +38,18 @@ data class PropertyDetail(
     /** 전입일이 말소기준권리보다 앞선 임차인의 보증금 합 — 매수인이 인수할 가능성이 있는 금액. */
     val seniorLeaseDeposit: Long,
     val cautions: List<String>,
+    /** 실제 사진·감정평가서·지적도·공매재산명세서·유의사항 */
+    val docs: OnbidDocs = OnbidDocs(),
 )
 
 object RightsParser {
     private val baseRightKinds = listOf("근저당권", "저당권", "압류", "가압류", "강제경매", "임의경매", "담보가등기", "전세권")
 
     fun parse(rows: List<JsonObject>, now: LocalDateTime): PropertyDetail {
-        val property = PropertyAssembler.assembleOne(rows, now)
+        val docs = OnbidDocs.parse(rows)
+        val assembled = PropertyAssembler.assembleOne(rows, now)
+        // 목록 썸네일로 짐작한 사진보다 상세의 실제 사진 목록이 정확하다.
+        val property = if (docs.photos.isEmpty()) assembled else assembled.copy(photoUrls = docs.photos)
         fun list(key: String, inner: String) = rows.asSequence().map { it[key].objects(inner) }.firstOrNull { it.isNotEmpty() }.orEmpty()
 
         val registry = list("rgstPrmrInfList", "rgstPrmrInf").map {
@@ -103,7 +108,7 @@ object RightsParser {
             if (registry.any { it.kind.contains("유치권") } || occupancy.any { it.relation.contains("유치") }) add("유치권 관련 내용이 있습니다 — 현장 확인이 필요합니다.")
         }
 
-        return PropertyDetail(property, registry, leases, occupancy, claims, baseDate, senior.sumOf { it.amount }, cautions)
+        return PropertyDetail(property, registry, leases, occupancy, claims, baseDate, senior.sumOf { it.amount }, cautions, docs)
     }
 
     private fun dateOnly(raw: String): String = raw.filter { it.isDigit() }.take(8)

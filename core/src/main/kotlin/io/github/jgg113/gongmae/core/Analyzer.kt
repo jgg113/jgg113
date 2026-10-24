@@ -115,12 +115,13 @@ object Analyzer {
         cases: Map<String, CourtCase> = emptyMap(),
         facts: Map<String, PublicFacts> = emptyMap(),
         rents: Map<String, RentSummary> = emptyMap(),
+        solds: Map<String, SoldStats> = emptyMap(),
     ): Map<String, Analysis> {
         val medians = list.filter { it.pricePerPyeong != null }
             .groupBy { it.sigungu to it.category }
             .filterValues { it.size >= 3 }
             .mapValues { (_, items) -> median(items.mapNotNull { it.pricePerPyeong }) }
-        return list.associate { p -> p.id to analyze(p, medians[p.sigungu to p.category], rights[p.id], markets[p.id], cases[p.id], facts[p.id], rents[p.id]) }
+        return list.associate { p -> p.id to analyze(p, medians[p.sigungu to p.category], rights[p.id], markets[p.id], cases[p.id], facts[p.id], rents[p.id], solds[p.id]) }
     }
 
     fun analyze(
@@ -131,6 +132,7 @@ object Analyzer {
         courtCase: CourtCase? = null,
         facts: PublicFacts? = null,
         rent: RentSummary? = null,
+        sold: SoldStats? = null,
         today: LocalDate = LocalDate.now(),
     ): Analysis {
         val factors = mutableListOf<Factor>()
@@ -142,6 +144,13 @@ object Analyzer {
         val specials = SpecialRight.of(p)
         specials.forEach { risk(it.points, it.title, it.detail) }
         extraRules.forEach { rule -> if (rule.pattern.containsMatchIn(text)) risk(rule.points, rule.title, rule.detail) }
+        val spec = p.spec
+        if (p.category == Category.VEHICLE && spec != null) {
+            val age = spec.age(today)
+            val km = spec.mileageKm
+            if (age != null && age >= 15) risk(6, "오래된 차량 (${age}년)", "부품·수리비가 많이 들고 되팔 때 값이 낮습니다. 배출가스 등급(운행 제한)도 확인하세요.")
+            if (km != null && km >= 200_000) risk(6, "주행거리 많음 (${ItemSpec.formatKm(km)})", "엔진·변속기 상태를 직접 확인하세요.")
+        }
         when {
             p.category.isMovable -> Unit
             hardLand.containsMatchIn(p.usageSmall) -> risk(20, "활용이 어려운 땅 (${p.usageSmall})", "도로·하천·묘지 등은 개인이 쓰거나 되팔기 어렵습니다.")
@@ -243,6 +252,28 @@ object Analyzer {
             } else if (gap <= -5) {
                 merit(-(abs(gap) * 0.4).coerceAtMost(15.0).roundToInt(), "실거래 시세보다 비싼 최저가", "$basis 보다 ${Format.percent(abs(gap))} 비쌉니다.")
             }
+        }
+        if (p.category == Category.VEHICLE && spec != null) {
+            val age = spec.age(today)
+            val km = spec.mileageKm
+            if (age != null && age <= 5 && km != null && km < 60_000) merit(5, "연식 짧고 주행 적음", "${spec.summary} — 중고차 시장에서 잘 팔리는 조건입니다.")
+        }
+        // 온비드 입찰결과: 비슷한 물건이 최근 감정가의 몇 % 에 팔렸는지
+        if (sold != null && sold.sold.size >= 3) {
+            val expected = sold.expectedPrice(p.appraisalPrice)
+            val price = p.minBidPrice
+            if (expected != null && price != null && price > 0) {
+                val gap = (expected - price) * 100.0 / price
+                val basis = "최근 ${sold.months}개월 ${sold.scope} 낙찰 ${sold.sold.size}건의 감정가 대비 낙찰가율 중간값 ${Format.percent(sold.medianRatio)}" +
+                    " → 예상 낙찰가 ${Format.wonShort(expected)}"
+                when {
+                    gap >= 30 -> merit(-3, "낙찰가가 최저가보다 ${gap.roundToInt()}% 높게 형성", "$basis. 최저가 근처로는 낙찰받기 어렵습니다.")
+                    gap <= 5 -> merit(4, "최저가 근처에서 낙찰되는 편", "$basis. 경쟁이 덜해 최저가 근처로 노려볼 만합니다.")
+                    else -> Unit
+                }
+            }
+            val bidders = sold.averageBidders
+            if (bidders != null && bidders >= 6) merit(-2, "경쟁 치열 (평균 ${"%.1f".format(bidders)}명 입찰)", "${sold.scope} 최근 낙찰 물건에 평균 ${"%.1f".format(bidders)}명이 입찰했습니다.")
         }
         val trend = market?.trendPercent
         if (trend != null && market != null && market.trades.size >= 4) {

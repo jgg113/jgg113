@@ -92,6 +92,8 @@ data class Trade(
     val price: Long,
     val date: String,
     val floor: String,
+    /** 아파트 동 (상세 자료에만 있을 때가 많다) */
+    val building: String = "",
 )
 
 data class MarketSummary(
@@ -123,8 +125,26 @@ data class MarketSummary(
 class MolitClient(serviceKey: String, private val http: HttpGetter = UrlConnectionGetter) {
     private val key = ServiceKey.normalize(serviceKey)
 
+    /** 아파트 매매 상세 자료 활용신청이 안 돼 기본 자료로 돌아갔는지 */
+    @Volatile
+    var aptDetailUnavailable = false
+        private set
+
+    /** 아파트는 상세 자료(동·본번/부번)를 먼저 쓰고, 그 API 승인이 안 됐으면 기본 자료를 쓴다. */
     fun trades(kind: MarketKind, lawdCode: String, yearMonth: String): List<Trade> {
-        val url = "https://apis.data.go.kr/1613000/${kind.path}?serviceKey=" + URLEncoder.encode(key, "UTF-8") +
+        if (kind == MarketKind.APT && !aptDetailUnavailable) {
+            try {
+                return tradesAt(APT_DETAIL_PATH, kind, lawdCode, yearMonth)
+            } catch (e: OnbidApiException) {
+                if (e.code !in MovablesClient.APPROVAL_CODES) throw e
+                aptDetailUnavailable = true
+            }
+        }
+        return tradesAt(kind.path, kind, lawdCode, yearMonth)
+    }
+
+    fun tradesAt(path: String, kind: MarketKind, lawdCode: String, yearMonth: String): List<Trade> {
+        val url = "https://apis.data.go.kr/1613000/$path?serviceKey=" + URLEncoder.encode(key, "UTF-8") +
             "&LAWD_CD=$lawdCode&DEAL_YMD=$yearMonth&pageNo=1&numOfRows=1000"
         val result = try {
             http.get(url)
@@ -153,6 +173,9 @@ class MolitClient(serviceKey: String, private val http: HttpGetter = UrlConnecti
     }
 
     companion object {
+        /** 국토교통부_아파트 매매 실거래가 상세 자료 (15126468) */
+        const val APT_DETAIL_PATH = "RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
+        const val APT_DETAIL_PAGE = "https://www.data.go.kr/data/15126468/openapi.do"
         private val YM: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMM")
 
         fun parse(body: String, kind: MarketKind, status: Int = 200): List<Trade> {
@@ -195,6 +218,7 @@ class MolitClient(serviceKey: String, private val http: HttpGetter = UrlConnecti
                     price = price,
                     date = "$y.$m.$d",
                     floor = tag(item, "floor"),
+                    building = tag(item, "aptDong"),
                 )
             }
         }

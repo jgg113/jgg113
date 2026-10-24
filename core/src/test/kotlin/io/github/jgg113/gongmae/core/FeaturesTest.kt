@@ -313,7 +313,7 @@ class OnbidExtrasTest {
         assertEquals(listOf("1", "2", "3"), history.map { it.round })
         assertEquals(431_000_000, history.last().winningPrice)
 
-        val result = OnbidExtrasClient.parseBidResults(objects("""[{"pbctStatNm":"낙찰","scfbAmt":"431000000","apslEvlAmt":"500000000","bidPrtcptCnt":"7","etc":"x"}]""")).single()
+        val result = OnbidExtrasClient.parseBidResults(objects("""[{"pbctStatNm":"낙찰","scfbAmt":"431000000","apslEvlAmt":"500000000","vldBddrNope":"7","etc":"x"}]""")).single()
         assertEquals(86.2, result.winningRatio!!, 0.01)
         assertEquals(7, result.bidders)
         assertTrue(result.fields.any { it.first == "낙찰가" })
@@ -356,10 +356,15 @@ class ApiDoctorTest {
         }
         val results = ApiDoctor("k", http, LocalDate.of(2026, 10, 23)).run()
         val byName = results.associateBy { it.name }
-        assertEquals(ApiHealth.OK, byName.getValue("온비드 부동산 물건목록").health)
-        assertTrue(byName.getValue("온비드 부동산 물건목록").detail.contains("7건"))
-        assertEquals(ApiHealth.OK, byName.getValue("실거래가 · 아파트 매매 실거래가 자료").health)
-        assertEquals(ApiHealth.NEEDS_APPROVAL, byName.getValue("전월세 · 아파트 전월세 자료").health)
-        assertEquals(11 + MarketKind.entries.size + RentKind.entries.size, results.size)
+        assertEquals(ApiHealth.OK, byName.getValue("부동산 물건목록").health)
+        assertTrue(byName.getValue("부동산 물건목록").detail.contains("7건"))
+        assertEquals(ApiHealth.OK, byName.getValue("아파트 매매").health)
+        assertEquals(ApiHealth.OK, byName.getValue("아파트 매매 상세").health)
+        assertEquals(ApiHealth.NEEDS_APPROVAL, byName.getValue("아파트 전월세").health)
+        // 차량 목록이 비어 있으면 차량 상세는 건너뛴다.
+        assertEquals(ApiHealth.SKIPPED, byName.getValue("차량 물건상세").health)
+        assertEquals(ApiDoctor.TOTAL, results.size)
+        assertEquals(26, results.count { it.group == "온비드" })
+        assertEquals(results.size, results.map { it.pageUrl }.distinct().size)
     }
 }

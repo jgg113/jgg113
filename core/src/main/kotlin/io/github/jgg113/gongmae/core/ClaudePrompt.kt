@@ -28,6 +28,9 @@ object ClaudePrompt {
         facts: PublicFacts? = null,
         rent: RentSummary? = null,
         usageStat: UsageStat? = null,
+        sold: SoldStats? = null,
+        docs: OnbidDocs? = null,
+        bidInfo: BidInfo? = null,
     ): String = buildString {
         if (p.category.isMovable) {
             appendLine("너는 한국 공매(온비드) ${p.category.label} 입찰 전문가야. 아래 물건을 분석해 줘.")
@@ -52,6 +55,17 @@ object ClaudePrompt {
         line("재매각", p.reauctionDate.takeIf { it.isNotBlank() }?.let { "재매각 명령 ${RightsParser.formatYmd(it)}" }.orEmpty())
         line("비고", p.notes.take(if (mode == Mode.DETAIL) 600 else 250))
         line("지분", p.shareInfo.take(200))
+        (docs?.spec ?: p.spec)?.let { spec -> line("제원", spec.rows.joinToString(", ") { "${it.first} ${it.second}" }.take(300)) }
+        if (docs != null) {
+            docs.notes.take(if (mode == Mode.DETAIL) 6 else 3).forEach { (k, v) -> line(k, v.take(if (mode == Mode.DETAIL) 300 else 120)) }
+            if (mode == Mode.DETAIL) docs.statement.forEach { (k, v) -> line("명세서 $k", v.take(200)) }
+            if (docs.appraisals.isNotEmpty()) {
+                line("감정평가", docs.appraisals.joinToString(" / ") { "${it.org} ${RightsParser.formatYmd(it.date)} ${Format.won(it.amount)}" })
+            }
+        }
+        if (bidInfo != null && bidInfo.rules.isNotEmpty()) {
+            line("입찰 조건", bidInfo.rules.take(if (mode == Mode.DETAIL) 10 else 4).joinToString(", ") { "${it.first}: ${it.second}" }.take(500))
+        }
 
         val rounds = court?.rounds?.takeIf { it.isNotEmpty() } ?: p.rounds
         if (mode == Mode.DETAIL && rounds.size > 1) {
@@ -113,6 +127,19 @@ object ClaudePrompt {
             appendLine("[온비드 같은 용도 낙찰 통계 (${usageStat.usage})]")
             line("평균 낙찰가율", Format.percent(usageStat.priceRate))
             line("낙찰률·경쟁률", "${Format.percent(usageStat.soldRate)} · ${usageStat.competition ?: "-"}:1 (입찰 ${usageStat.bidCount}건 중 낙찰 ${usageStat.soldCount}건)")
+        }
+
+        if (sold != null && sold.cases.isNotEmpty()) {
+            appendLine()
+            appendLine("[온비드 비슷한 물건 낙찰 사례 (최근 ${sold.months}개월, ${sold.scope})]")
+            line("낙찰가율 중간값", "감정가 대비 ${Format.percent(sold.medianRatio)}, 최저가 대비 ${Format.percent(sold.medianMinRatio)} (낙찰 ${sold.sold.size}건)")
+            sold.averageBidders?.let { line("평균 입찰자", "%.1f명".format(it)) }
+            sold.expectedPrice(p.appraisalPrice)?.let { line("이 물건 예상 낙찰가", Format.won(it)) }
+            if (mode == Mode.DETAIL) {
+                sold.sold.take(5).forEach { c ->
+                    appendLine("- ${Format.dateTime(c.openedAt).take(10)} ${c.name.take(40)} 감정 ${Format.wonShort(c.appraisal)} → 낙찰 ${Format.wonShort(c.winningPrice)} (${Format.percent(c.ratio)}, ${c.bidders ?: "-"}명)")
+                }
+            }
         }
 
         if (facts != null && !facts.isEmpty) {

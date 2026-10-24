@@ -13,10 +13,10 @@ enum class RankDivision(val label: String, val apiName: String, val movableKind:
 }
 
 /** 온비드 순위 목록 종류 */
-enum class RankKind(val label: String, val path: String) {
-    VIEWS("조회수 TOP", "OnbidInqRnkClgSrvc/getInqRnkClg"),
-    INTEREST("관심물건 TOP (최근 1주)", "OnbidItrsCltrRnkClgSrvc/getItrsCltrRnkClg"),
-    DISCOUNT("저감률 TOP (많이 깎인)", "Onbid50PctDecrCltrSrvc/get50PctDecrCltr"),
+enum class RankKind(val label: String, val path: String, val datasetId: String) {
+    VIEWS("조회수 TOP", "OnbidInqRnkClgSrvc/getInqRnkClg", "15157704"),
+    INTEREST("관심물건 TOP (최근 1주)", "OnbidItrsCltrRnkClgSrvc/getItrsCltrRnkClg", "15157699"),
+    DISCOUNT("저감률 TOP (많이 깎인)", "Onbid50PctDecrCltrSrvc/get50PctDecrCltr", "15157709"),
 }
 
 /** 용도별 입찰 통계 한 줄 */
@@ -88,12 +88,24 @@ class OnbidExtrasClient(private val onbid: OnbidClient) {
         return parseUsageStats(page.items)
     }
 
-    fun bidHistory(cltrMngNo: String, conditionNo: String): List<BidHistoryRound> {
-        val page = onbid.call(
-            "OnbidCltrBidDtlSrvc2/getCltrBidInf2",
-            mapOf("cltrMngNo" to cltrMngNo, "pbctCdtnNo" to conditionNo, "pageNo" to "1", "numOfRows" to "10"),
+    fun bidHistory(cltrMngNo: String, conditionNo: String): List<BidHistoryRound> = bidInfo(cltrMngNo, conditionNo).history
+
+    /** 물건상세 입찰정보: 회차 이력 + 입찰 방법·제한·제출서류 + 공고관리번호 (공고문 조회에 쓴다) */
+    fun bidInfo(cltrMngNo: String, conditionNo: String): BidInfo {
+        val params = buildMap {
+            put("cltrMngNo", cltrMngNo)
+            if (conditionNo.isNotBlank()) put("pbctCdtnNo", conditionNo)
+            put("pageNo", "1")
+            put("numOfRows", "10")
+        }
+        val rows = onbid.call("OnbidCltrBidDtlSrvc2/getCltrBidInf2", params).items
+        val row = rows.firstOrNull()
+        return BidInfo(
+            noticeNo = row?.str("pbancMngNo").orEmpty(),
+            noticeName = row?.str("onbidPbancNm").orEmpty(),
+            history = parseBidHistory(rows),
+            rules = row?.let(OnbidMoreClient::parseRules).orEmpty(),
         )
-        return parseBidHistory(page.items)
     }
 
     fun bidResult(cltrMngNo: String, conditionNo: String = ""): List<BidResultInfo> {
@@ -183,24 +195,36 @@ class OnbidExtrasClient(private val onbid: OnbidClient) {
             }.sortedBy { it.openedAt }
         }
 
+        /** 물건 입찰결과상세 필드 이름 (보여 줄 것만, 순서대로) */
         private val resultLabels = linkedMapOf(
-            "pbctStatNm" to "결과", "cltrOpbdDt" to "개찰일시", "opbdDt" to "개찰일시", "scfbAmt" to "낙찰가", "apslEvlAmt" to "감정가",
-            "lowstBidPrcIndctCont" to "최저입찰가", "bidPrtcptCnt" to "입찰자 수", "bidrCnt" to "입찰자 수", "pbctNsq" to "회차",
-            "scfbAmtRto" to "낙찰가율", "onbidCltrNm" to "물건명", "dspsMthodNm" to "처분방식", "bidMthodNm" to "입찰방식",
+            "pbctNsq" to "회차", "pbctStatNm" to "결과", "cltrOpbdDt" to "개찰일시", "opbdCmptnDt" to "개찰완료",
+            "apslEvlAmt" to "감정가", "lowstBidPrcIndctCont" to "최저입찰가", "scfbAmt" to "낙찰가",
+            "apslPrcCtrsScfbPrcRto" to "감정가 대비 낙찰가율(%)", "lowstBidCtrsScfbPrcRto" to "최저가 대비 낙찰가율(%)",
+            "vldBddrNope" to "유효 입찰자 수", "nfctBddrNope" to "무효 입찰자 수", "bidAmtClgCont" to "입찰금액 목록",
+            "pbctTdpsCont" to "입찰보증금", "usbdNft" to "유찰 횟수", "cptnMthodNm" to "입찰방식", "bidMthodNm" to "세부 입찰방식",
+            "bidDivNm" to "입찰구분", "onbidPbancNm" to "공고명", "orgNm" to "기관", "rtrcnRsnCont" to "취소 사유",
+            "afsbRtrcnRsnCont" to "매각결정 취소 사유",
         )
 
         fun parseBidResults(rows: List<JsonObject>): List<BidResultInfo> = rows.map { row ->
-            val fields = row.keys.mapNotNull { key ->
-                val value = row.str(key)
-                if (value.isEmpty()) null else (resultLabels[key] ?: key) to value
+            val fields = resultLabels.mapNotNull { (key, label) ->
+                val raw = row.str(key)
+                if (raw.isEmpty()) return@mapNotNull null
+                val value = when {
+                    key == "cltrOpbdDt" || key == "opbdCmptnDt" -> normalizeDateTime(raw).let { if (it.isEmpty()) raw else Format.dateTime(it) }
+                    key in setOf("apslEvlAmt", "lowstBidPrcIndctCont", "scfbAmt") -> parseAmount(raw)?.let(Format::won) ?: raw
+                    key == "bidAmtClgCont" -> raw.split('|').mapNotNull { parseAmount(it)?.let(Format::won) ?: it.trim().ifEmpty { null } }.joinToString(", ")
+                    else -> raw
+                }
+                label to value
             }
             BidResultInfo(
-                result = row.firstStr("pbctStatNm", "bidRsltNm"),
-                openedAt = normalizeDateTime(row.firstStr("cltrOpbdDt", "opbdDt", "pbctOpbdDt")),
-                winningPrice = row.amount("scfbAmt", "scfbPrc")?.takeIf { it > 0 },
+                result = row.firstStr("pbctStatNm").ifEmpty { STATUS[row.str("pbctStatCd")].orEmpty() },
+                openedAt = normalizeDateTime(row.firstStr("cltrOpbdDt", "opbdCmptnDt")),
+                winningPrice = row.amount("scfbAmt")?.takeIf { it > 0 },
                 appraisalPrice = row.amount("apslEvlAmt")?.takeIf { it > 0 },
-                minPrice = row.amount("lowstBidPrcIndctCont", "lowstBidPrc")?.takeIf { it > 0 },
-                bidders = row.firstStr("bidPrtcptCnt", "bidrCnt", "bidPrtcpntCnt", "prtcptnCnt").toIntOrNull(),
+                minPrice = row.amount("lowstBidPrcIndctCont")?.takeIf { it > 0 },
+                bidders = row.str("vldBddrNope").toIntOrNull(),
                 fields = fields,
             )
         }

@@ -114,7 +114,12 @@ class OnbidClient(
         var rows = fetchAll(jobs, request.sido, request.sigungu, progress, warnings)
         var localFilter = false
         if (rows.isEmpty() && request.sigungu.isNotBlank() && warnings.isEmpty()) {
-            // 시군구 표기가 API 와 다를 수 있으므로 시도 전체를 받아 주소로 거른다.
+            // 시군구 표기가 API 와 다를 수 있다. 온비드 주소 목록에서 같은 시군구의 온비드 표기를 찾아 다시 부른다.
+            val alias = onbidSigungu(request.sido, request.sigungu)
+            if (alias != null && alias != request.sigungu) rows = fetchAll(jobs, request.sido, alias, progress, warnings)
+        }
+        if (rows.isEmpty() && request.sigungu.isNotBlank() && warnings.isEmpty()) {
+            // 그래도 없으면 시도 전체를 받아 주소로 거른다.
             localFilter = true
             rows = fetchAll(jobs, request.sido, "", progress, warnings)
                 .filter { Regions.matchesSigungu(it.str("lctnSggnm"), it.firstStr("zadrNm", "cltrAdr", "cltrRadr"), request.sigungu) }
@@ -154,6 +159,16 @@ class OnbidClient(
         progress?.onProgress(jobs.size, jobs.size, "완료")
         if (jobs.isNotEmpty() && failures == jobs.size) throw firstError!!
         return rows
+    }
+
+    /** 온비드 코드·주소 서비스에서 [wanted] 와 같은 시군구의 온비드 표기 ("수원시 장안구" → "수원시장안구" 등). 못 찾으면 null. */
+    fun onbidSigungu(sido: String, wanted: String): String? {
+        val names = runCatching { OnbidMoreClient(this).addresses(sido).map { it.second }.filter { it.isNotBlank() }.distinct() }.getOrNull() ?: return null
+        val compact = wanted.replace(" ", "")
+        return names.firstOrNull { it == wanted }
+            ?: names.firstOrNull { it.replace(" ", "") == compact }
+            ?: names.firstOrNull { Regions.matchesSigungu(it, "", wanted) }
+            ?: names.firstOrNull { it.replace(" ", "").startsWith(compact) || compact.startsWith(it.replace(" ", "")) }
     }
 
     /** 부동산 물건상세 (권리관계·임대차·전체 회차). 별도 활용신청이 필요하다. */

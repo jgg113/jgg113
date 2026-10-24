@@ -5,10 +5,10 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
-/** 온비드 물건유형 (공고목록 cltrTypeCd). 부동산은 물건목록 API 로 따로 받는다. */
-enum class MovableKind(val label: String, val code: String, val category: Category) {
-    VEHICLE("자동차", "0002", Category.VEHICLE),
-    GOODS("동산", "0003", Category.MOVABLE),
+/** 온비드 물건유형 (공고목록 cltrTypeCd) 과 전용 물건목록·물건상세 API */
+enum class MovableKind(val label: String, val code: String, val category: Category, val listPath: String, val detailPath: String) {
+    VEHICLE("자동차", "0002", Category.VEHICLE, "OnbidCarListSrvc2/getCarCltrList2", "OnbidCarDtlSrvc2/getCarDtlInf2"),
+    GOODS("동산", "0003", Category.MOVABLE, "OnbidMvastListSrvc2/getMvastCltrList2", "OnbidMvastDtlSrvc2/getMvastDtlInf2"),
 }
 
 /**
@@ -46,16 +46,22 @@ enum class GoodsGroup(val label: String, val keywords: List<String>) {
 
 data class MovableSearchRequest(
     val kinds: Set<MovableKind> = MovableKind.entries.toSet(),
-    /** 오늘부터 며칠 안에 개찰하는 공고까지 */
+    /** 비우면 전국 */
+    val sido: String = "",
+    val sigungu: String = "",
+    val includePrivateContract: Boolean = false,
+    /** 종류마다 받을 최대 쪽 수 (1쪽 500건) */
+    val maxPages: Int = 6,
+    /** (공고 경로) 오늘부터 며칠 안에 개찰하는 공고까지 */
     val days: Int = 21,
-    /** 종류마다 상세를 불러올 최대 공고 수 (하루 호출 한도 1,000건을 아끼려고 제한) */
+    /** (공고 경로) 종류마다 상세를 불러올 최대 공고 수 (하루 호출 한도 1,000건을 아끼려고 제한) */
     val maxNotices: Int = 30,
 )
 
 /**
- * 온비드 차량·동산 공매. 물건목록 API 는 부동산만 주므로
- * 공고목록(OnbidPbancListSrvc2) → 공고별 물건(OnbidPbancCltrDtlSrvc2) 두 단계로 받는다.
- * 두 서비스 모두 공공데이터포털에서 활용신청이 필요하다.
+ * 온비드 차량·동산 공매.
+ * 차량·동산 물건목록 API (연식·주행거리·연료 같은 제원 포함) 로 먼저 받고,
+ * 그 API 활용신청이 안 됐으면 공고목록(OnbidPbancListSrvc2) → 공고별 물건(OnbidPbancCltrDtlSrvc2) 두 단계로 받는다.
  */
 class MovablesClient(
     private val onbid: OnbidClient,
@@ -66,8 +72,21 @@ class MovablesClient(
         val warnings = mutableListOf<String>()
         val found = mutableListOf<Property>()
         var rows = 0
+        val viaNotices = mutableSetOf<MovableKind>()
         val kinds = MovableKind.entries.filter { it in request.kinds }
         kinds.forEachIndexed { kindIndex, kind ->
+            progress?.onProgress(kindIndex, kinds.size, "${kind.label} 물건목록")
+            try {
+                val list = listItems(kind, request, progress)
+                rows += list.size
+                found += assembleList(list, kind, now)
+            } catch (e: OnbidApiException) {
+                if (e.code !in APPROVAL_CODES) throw e
+                viaNotices += kind
+                warnings += "${kind.label} 물건목록 API 활용신청이 확인되지 않아 공고 경로로 불러왔습니다. (제원·지역 검색은 물건목록 API 승인 후 가능)"
+            }
+        }
+        kinds.filter { it in viaNotices }.forEachIndexed { kindIndex, kind ->
             progress?.onProgress(kindIndex, kinds.size, "${kind.label} 공고 목록")
             val notices = notices(kind, now.toLocalDate(), request.days)
             if (notices.size > request.maxNotices) {
@@ -89,6 +108,58 @@ class MovablesClient(
             }
         }
         return SearchOutcome(found.distinctBy { it.id }, rows, warnings, regionFilteredLocally = false)
+    }
+
+    /** 차량·동산 물건목록 API. 재산유형은 한 번에 묶어 부르고, 안 되면 하나씩 부른다. */
+    fun listItems(kind: MovableKind, request: MovableSearchRequest, progress: ProgressListener? = null): List<JsonObject> {
+        val flags = if (request.includePrivateContract) listOf("N", "Y") else listOf("N")
+        val out = mutableListOf<JsonObject>()
+        for (flag in flags) {
+            val base = buildMap {
+                put("pvctTrgtYn", flag)
+                if (request.sido.isNotBlank()) put("lctnSdnm", request.sido)
+                if (request.sigungu.isNotBlank()) put("lctnSggnm", request.sigungu)
+            }
+            val combined = try {
+                listPages(kind.listPath, base + ("prptDivCd" to ALL_DIVS), request.maxPages) { page ->
+                    progress?.onProgress(page, request.maxPages, "${kind.label} 물건목록 ${page}쪽")
+                }
+            } catch (e: OnbidApiException) {
+                if (e.isFatal || e.code in APPROVAL_CODES) throw e
+                null
+            }
+            out += combined ?: DIVS.flatMap { div ->
+                runCatching { listPages(kind.listPath, base + ("prptDivCd" to div), 2) {} }.getOrElse { e ->
+                    if (e is OnbidApiException && (e.isFatal || e.code in APPROVAL_CODES)) throw e
+                    emptyList()
+                }
+            }
+        }
+        return out
+    }
+
+    private fun listPages(path: String, params: Map<String, String>, maxPages: Int, onPage: (Int) -> Unit): List<JsonObject> {
+        val out = mutableListOf<JsonObject>()
+        for (page in 1..maxPages) {
+            onPage(page)
+            val result = onbid.call(path, params + mapOf("pageNo" to page.toString(), "numOfRows" to "500"))
+            out += result.items
+            val total = result.totalCount ?: out.size
+            if (result.items.size < 500 || out.size >= total) break
+            sleeper(gapMs)
+        }
+        return out
+    }
+
+    /** 차량·동산 물건상세 (실제 사진·감정평가서·보관/인도 장소·유의사항·제원) */
+    fun detail(kind: MovableKind, cltrMngNo: String, conditionNo: String = ""): OnbidDocs {
+        val params = buildMap {
+            put("cltrMngNo", cltrMngNo)
+            if (conditionNo.isNotBlank()) put("pbctCdtnNo", conditionNo)
+            put("pageNo", "1")
+            put("numOfRows", "10")
+        }
+        return OnbidDocs.parse(onbid.call(kind.detailPath, params).items)
     }
 
     /** 개찰일이 오늘~[days]일 뒤인 공고의 관리번호 (최근 공고 먼저) */
@@ -143,6 +214,23 @@ class MovablesClient(
     }
 
     companion object {
+        /** 이 오류면 해당 API 활용신청이 안 된 것으로 보고 다른 경로를 쓴다. */
+        val APPROVAL_CODES = setOf("12", "20", "30", "HTTP401", "HTTP403")
+
+        /** 물건목록 API 행 → 물건 (부동산 목록과 필드가 같고 제원이 더 있다) */
+        fun assembleList(rows: List<JsonObject>, kind: MovableKind, now: LocalDateTime): List<Property> {
+            val specs = rows.groupBy { it.str("cltrMngNo") }.mapValues { (_, group) -> group.firstNotNullOfOrNull { ItemSpec.from(it) } }
+            return PropertyAssembler.assemble(rows, now).map { p ->
+                p.copy(
+                    usageLarge = p.usageLarge.ifEmpty { kind.label },
+                    movableKind = kind,
+                    spec = specs[p.id],
+                    // 차량·동산은 지번이 보관 장소라서 시군구까지만 둔다 (지도는 보관 장소 근처).
+                    address = p.address.ifEmpty { listOf(p.sido, p.sigungu, p.dong).filter { it.isNotBlank() }.joinToString(" ") },
+                )
+            }
+        }
+
         const val LIST_PATH = "OnbidPbancListSrvc2/getPbancList2"
         const val ITEMS_PATH = "OnbidPbancCltrDtlSrvc2/getPbancCltrInf2"
         private val YMD: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
