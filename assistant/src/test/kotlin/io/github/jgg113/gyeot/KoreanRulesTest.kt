@@ -19,7 +19,11 @@ class KoreanRulesTest {
     private fun analyze(vararg lines: String) =
         brain.analyze(emptyList(), lines.map { Utterance(now.toInstant().toEpochMilli(), it) }, emptyList(), now)
 
-    private fun registered(vararg lines: String) = analyze(*lines).events.filter { it.confidence >= EventRules.MIN_CONFIDENCE }
+    private fun decide(e: io.github.jgg113.gyeot.ai.ExtractedEvent) = EventRules.decide(e, EventRules.timing(e)!!, now, EventRules.MODE_SMART)
+    /** '알아서' 모드에서 묻지 않고 바로 넣을 일정 */
+    private fun registered(vararg lines: String) = analyze(*lines).events.filter { decide(it) == EventRules.Decision.REGISTER }
+    /** "추가할까요?" 하고 물어볼 일정 */
+    private fun asked(vararg lines: String) = analyze(*lines).events.filter { decide(it) == EventRules.Decision.SUGGEST }
 
     @Test
     fun numbers() {
@@ -103,12 +107,34 @@ class KoreanRulesTest {
     }
 
     @Test
-    fun ignoresPastVagueAndSmallTalk() {
-        assertTrue(registered("어제 세 시에 회의했어").isEmpty())
-        assertTrue(registered("언제 밥 한번 먹자").isEmpty())
-        assertTrue(registered("내일 비 온대").isEmpty())
-        assertTrue(registered("그 영화 진짜 재밌더라").isEmpty())
+    fun ignoresPastAndSmallTalk() {
+        for (s in listOf("어제 세 시에 회의했어", "언제 밥 한번 먹자", "내일 비 온대", "그 영화 진짜 재밌더라")) {
+            assertTrue(registered(s).isEmpty() && asked(s).isEmpty(), s)
+        }
+    }
+
+    @Test
+    fun proposalsAreAskedNotAdded() {
+        // 직접 정하지 않은 말은 넣지 않고 "추가할까요?" 묻는다.
         assertTrue(registered("내일 세 시에 시간 있어").isEmpty())
+        assertEquals("2026-10-25T15:00", asked("내일 세 시에 시간 있어").single().start)
+        assertEquals(1, asked("주말에 영화 보러 갈까").size)
+    }
+
+    @Test
+    fun implicitNeedsAreAskedWithoutTime() {
+        val e = asked("아 치과 가 봐야 되는데").single()
+        assertTrue(e.timeUnknown)
+        assertTrue(e.title.contains("치과"), e.title)
+        assertTrue(asked("보험 갱신해야 돼").single().timeUnknown)
+        assertTrue(asked("치과 갔다 왔어").isEmpty())
+    }
+
+    @Test
+    fun roughDatesAreAsked() {
+        val e = asked("다음 주에 출장 가").single()
+        assertEquals("2026-10-26", e.start)
+        assertEquals("2026-10-31", asked("이달 말까지 세금 내야 돼").single().start)
     }
 
     @Test

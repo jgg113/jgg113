@@ -10,7 +10,31 @@ import java.time.format.DateTimeParseException
 /** Claude 가 뽑은 일정을 실제 시각으로 바꾸고, 등록해도 되는지(미래인지·중복인지·확실한지) 가린다. */
 object EventRules {
     val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
-    const val MIN_CONFIDENCE = 0.6
+    /** 이보다 낮으면 묻지도 않는다 (지나가는 말). */
+    const val MIN_SUGGEST = 0.35
+    /** '알아서' 모드에서 묻지 않고 바로 넣는 확신도. */
+    const val AUTO_SMART = 0.75
+    /** '바로 넣기' 모드의 기준. */
+    const val AUTO_ALWAYS = 0.6
+
+    enum class Decision { REGISTER, SUGGEST, DROP }
+
+    /** 일정 추가 방식: smart(확실하면 바로, 애매하면 물어보기) · ask(늘 물어보기) · auto(웬만하면 바로). */
+    fun decide(e: ExtractedEvent, timing: Timing, now: ZonedDateTime, mode: String): Decision {
+        if (e.title.isBlank() || e.confidence < MIN_SUGGEST) return Decision.DROP
+        val future = if (timing.allDay) !timing.start.toLocalDate().isBefore(now.toLocalDate()) else timing.start.isAfter(now)
+        if (!future) return Decision.DROP
+        if (e.timeUnknown) return Decision.SUGGEST
+        return when (mode) {
+            MODE_ASK -> Decision.SUGGEST
+            MODE_AUTO -> if (e.confidence >= AUTO_ALWAYS) Decision.REGISTER else Decision.SUGGEST
+            else -> if (e.confidence >= AUTO_SMART) Decision.REGISTER else Decision.SUGGEST
+        }
+    }
+
+    const val MODE_SMART = "smart"
+    const val MODE_ASK = "ask"
+    const val MODE_AUTO = "auto"
 
     data class Timing(val start: ZonedDateTime, val end: ZonedDateTime, val allDay: Boolean)
 
@@ -51,13 +75,6 @@ object EventRules {
             Math.abs(s - startMillis) <= Duration.ofMinutes(30).toMillis() &&
                 (a == b || a.contains(b) || b.contains(a) || sharedBigrams(a, b) >= 0.5)
         }
-    }
-
-    fun shouldRegister(e: ExtractedEvent, timing: Timing, now: ZonedDateTime): Boolean {
-        if (e.title.isBlank() || e.confidence < MIN_CONFIDENCE) return false
-        // 종일 일정은 오늘 것까지, 시각이 있는 일정은 아직 안 지난 것만.
-        return if (timing.allDay) !timing.start.toLocalDate().isBefore(now.toLocalDate())
-        else timing.start.isAfter(now)
     }
 
     private fun sharedBigrams(a: String, b: String): Double {

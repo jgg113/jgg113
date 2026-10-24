@@ -35,10 +35,15 @@ class AlarmScheduler(private val context: Context) {
     }
 
     /** 다음 하루 요약 시각을 예약한다. hour < 0 이면 끈다. */
-    fun scheduleDigest(hour: Int) {
+    fun scheduleDigest(hour: Int) = daily(hour, DIGEST_CODE, ReminderReceiver.KIND_DIGEST)
+
+    /** 다음 아침 브리핑 시각을 예약한다. hour < 0 이면 끈다. */
+    fun scheduleBriefing(hour: Int) = daily(hour, BRIEFING_CODE, ReminderReceiver.KIND_BRIEFING)
+
+    private fun daily(hour: Int, code: Int, kind: String) {
         val pi = PendingIntent.getBroadcast(
-            context, DIGEST_CODE,
-            Intent(context, ReminderReceiver::class.java).putExtra(ReminderReceiver.EXTRA_KIND, ReminderReceiver.KIND_DIGEST),
+            context, code,
+            Intent(context, ReminderReceiver::class.java).setAction("gyeot.daily.$kind").putExtra(ReminderReceiver.EXTRA_KIND, kind),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         am.cancel(pi)
@@ -46,7 +51,7 @@ class AlarmScheduler(private val context: Context) {
         val zone = ZoneId.of("Asia/Seoul")
         var at = LocalDate.now(zone).atTime(hour, 0).atZone(zone)
         if (!at.toInstant().isAfter(java.time.Instant.now())) at = at.plusDays(1)
-        // 하루 요약은 몇 분 늦어도 괜찮으니 정확 알람을 쓰지 않는다.
+        // 요약·브리핑은 몇 분 늦어도 괜찮으니 정확 알람을 쓰지 않는다.
         am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at.toInstant().toEpochMilli(), pi)
     }
 
@@ -70,5 +75,6 @@ class AlarmScheduler(private val context: Context) {
 
     companion object {
         private const val DIGEST_CODE = 42
+        private const val BRIEFING_CODE = 43
     }
 }

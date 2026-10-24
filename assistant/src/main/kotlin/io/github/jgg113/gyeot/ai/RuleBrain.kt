@@ -30,7 +30,7 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
             val spokenAt = Instant.ofEpochMilli(u.at).atZone(EventRules.SEOUL).let { if (it.isAfter(now)) now else it }
             for (clause in clauses(u.text)) {
                 val found = KoreanTime.parse(clause, spokenAt)
-                extractEvent(clause, found)?.let { e -> if (events.none { it.start == e.start && similar(it.title, e.title) }) events += e }
+                extractEvent(clause, found, spokenAt)?.let { e -> if (events.none { it.start == e.start && similar(it.title, e.title) }) events += e }
                 extractTodo(clause, found)?.let { t -> if (todos.none { it.text == t.text }) todos += t }
                 if (isKeyPoint(clause)) points += clause
             }
@@ -69,21 +69,23 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
 
     // ---------------- 규칙 ----------------
 
-    private fun extractEvent(clause: String, f: KoreanTime.Found): ExtractedEvent? {
-        val date = f.date ?: return null
+    private fun extractEvent(clause: String, f: KoreanTime.Found, now: ZonedDateTime): ExtractedEvent? {
+        if (PAST_DAY.containsMatchIn(clause)) return null
         val cue = EVENT_CUES.firstOrNull { clause.contains(it) }
+        val date = f.date ?: return implicitEvent(clause, now)
         val deadline = clause.contains("까지")
         if (cue == null && f.time == null && !deadline) return null // 날짜만 있고 약속 말이 없으면 ("내일 비 온대") 넘긴다
-        if (PAST_DAY.containsMatchIn(clause)) return null
         val pastVerb = PAST_VERB.containsMatchIn(clause) && !COMMIT.containsMatchIn(clause)
         var confidence = 0.45
         if (f.time != null) confidence += 0.2
+        if (f.dateExplicit && !f.roughDate) confidence += 0.1
         if (deadline) confidence += 0.2
         if (cue != null) confidence += 0.25
         if (COMMIT.containsMatchIn(clause)) confidence += 0.1
         if (f.guessedHalf || f.roughTime) confidence -= 0.1
-        if (pastVerb) confidence -= 0.4
-        if (VAGUE.containsMatchIn(clause)) confidence -= 0.3
+        if (f.roughDate) confidence -= 0.15
+        if (pastVerb) confidence -= 0.5
+        if (VAGUE.containsMatchIn(clause)) confidence -= 0.35
         val start = if (f.time == null) date.toString() else date.atTime(f.time).format(MINUTE)
         val title = (if (deadline && cue == null) "마감: " else "") + title(clause, f)
         return ExtractedEvent(
@@ -94,6 +96,28 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
             confidence = confidence.coerceIn(0.0, 1.0),
             evidence = clause,
             isChange = CHANGE.containsMatchIn(clause),
+        )
+    }
+
+    /**
+     * 날짜·시각은 없지만 챙겨야 할 일로 들리는 말 ("치과 가 봐야 되는데", "보험 갱신해야 돼", "엄마한테 전화해야지").
+     * 언제인지 모르니 내일 아침 9시로 임시로 잡고, 반드시 "추가할까요?" 하고 묻는다.
+     */
+    private fun implicitEvent(clause: String, now: ZonedDateTime): ExtractedEvent? {
+        if (!NEED.containsMatchIn(clause) || PAST_VERB.containsMatchIn(clause) && !NEED_END.containsMatchIn(clause)) return null
+        val rest = strip(clause, emptyList())
+        val noun = TITLE_NOUNS.firstOrNull { rest.contains(it) }
+        val tokens = rest.split(' ').filter { it.isNotBlank() }
+        if (noun == null && tokens.size < 2) return null
+        val title = tokens.dropLastWhile { ENDING_WORD.matches(it) || NEED_WORD.matches(it) }.take(5).joinToString(" ").ifBlank { noun ?: return null }
+        val at = now.toLocalDate().plusDays(1).atTime(9, 0)
+        return ExtractedEvent(
+            title = title.take(30),
+            start = at.format(MINUTE),
+            location = location(clause),
+            confidence = if (noun != null) 0.5 else 0.4,
+            evidence = clause,
+            timeUnknown = true,
         )
     }
 
@@ -165,12 +189,15 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
         private val COMMIT = Regex("기로\\s*했|기로\\s*해|자$|자\\s|할게|할께|합시다|봐요|보자|만나요|갈게|올게|예약했|잡았|잡혔")
         private val PAST_VERB = Regex("(았|었|였|했|갔|왔|봤|났)(어|다|지|네|요|었|습니다)")
         private val PAST_DAY = Regex("어제|그저께|그제|지난\\s*주|저번\\s*주|작년|지난번")
-        private val VAGUE = Regex("언제\\s*한\\s*번|나중에\\s*한\\s*번|언제가|언제 되|몇\\s*시|시간\\s*있|시간\\s*돼|시간\\s*되|어때|괜찮아|될까|할까")
+        private val VAGUE = Regex("언제\\s*한\\s*번|나중에\\s*한\\s*번|언제가|언제 되|몇\\s*시|시간\\s*있|시간\\s*돼|시간\\s*되|어때|괜찮아|[가-힣]까(?=\\s|$|\\?)|[가-힣]래(?=\\s*$|\\?)")
         private val CHANGE = Regex("미뤄|미루|당겨|당기|바뀌|바꿔|변경|옮겨|연기")
         private val MONEY = Regex("\\d[\\d,]*\\s*(원|만\\s*원|천\\s*원|만원)|[일이삼사오육칠팔구십백천만]+\\s*원|\\d+\\s*만")
         private val ACCOUNT = Regex("계좌|번호|주소|비밀번호|비번|전화번호|이메일|아이디|코드")
         private val DECISION = Regex("결정|확정|정했|하기로|바뀌|변경|취소|미뤄|당겨|합의|계약")
         private val LONG_NUMBER = Regex("\\d{4,}|\\d+-\\d+")
+        private val NEED = Regex("(가야|가 봐야|가봐야|해야|예약해야|챙겨야|사야|내야|보내야|받아야|신청해야|갱신해야|들러야|전화해야|연락해야|알아봐야|준비해야|잊지 말아야|잊으면 안)")
+        private val NEED_END = Regex("(야|야지|야겠|야 돼|야 되|야 해|안 돼|안돼)")
+        private val NEED_WORD = Regex("(가야|가 봐야|해야|봐야|돼|되는데|하는데|해|겠다|겠네|지|돼요|되는데요|할|것|같아)")
         private val ENDING_WORD = Regex("주세요|줘|줘요|줄래|돼|돼요|해|해요|있어|있어요|있대|했어|할게|하자|하래|야|이야|입니다|합니다")
         private val WITH_END = Regex("(이랑|랑|하고|와|과)$")
         private val WITH = Regex("(\\S+?)(이랑|랑|하고|와|과)\\s")

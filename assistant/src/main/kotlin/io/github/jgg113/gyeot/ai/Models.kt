@@ -30,6 +30,8 @@ data class ExtractedEvent(
     val evidence: String = "",
     /** 이미 있는 일정의 시각이 바뀌었다는 말이면 true (예전 것을 지우고 새로 넣는다). */
     val isChange: Boolean = false,
+    /** 할 일·약속은 들었지만 언제인지 못 들었으면 true (start 는 임시 값, 꼭 물어본다). */
+    val timeUnknown: Boolean = false,
 )
 
 @Serializable

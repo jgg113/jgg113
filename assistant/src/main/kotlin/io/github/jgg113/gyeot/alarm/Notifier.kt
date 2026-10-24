@@ -25,6 +25,8 @@ object Notifier {
     const val CH_EVENT = "event"
     const val CH_REMIND = "remind"
     const val CH_NOTE = "note"
+    const val CH_ASK = "ask"
+    const val CH_BRIEF = "brief"
 
     const val ID_LISTEN = 1
 
@@ -44,6 +46,12 @@ object Notifier {
             },
             NotificationChannel(CH_NOTE, "중요한 말·하루 요약", NotificationManager.IMPORTANCE_DEFAULT).apply {
                 description = "놓치면 안 되는 이야기, 하루 정리"
+            },
+            NotificationChannel(CH_ASK, "일정 추가할까요?", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "대화에서 일정 같은 말을 들었을 때 캘린더·알림에 넣을지 묻기"
+            },
+            NotificationChannel(CH_BRIEF, "일정 브리핑", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "아침마다 오늘 일정 요약"
             },
         ))
     }
@@ -100,26 +108,92 @@ object Notifier {
 
     fun eventRegistered(context: Context, e: SavedEvent, calendarName: String?) {
         if (!canPost(context)) return
-        val pending = e.status == "pending"
         val b = Notification.Builder(context, CH_EVENT)
             .setSmallIcon(R.drawable.ic_ear)
-            .setContentTitle(if (pending) "일정을 찾았어요: ${e.title}" else "일정 등록: ${e.title}")
+            .setContentTitle("일정 등록: ${e.title}")
             .setContentText(describe(e))
             .setStyle(Notification.BigTextStyle().bigText(buildString {
                 append(describe(e))
                 if (e.location.isNotBlank()) append("\n장소: ${e.location}")
                 if (e.evidence.isNotBlank()) append("\n들은 말: \"${e.evidence}\"")
-                if (!pending && calendarName != null) append("\n→ $calendarName 에 넣었어요")
+                if (calendarName != null) append("\n→ $calendarName 에 넣었어요")
             }))
             .setContentIntent(openApp(context))
             .setAutoCancel(true)
         val code = (e.id % 100_000).toInt() * 10
-        if (pending) b.addAction(Notification.Action.Builder(null, "캘린더에 등록", action(context, ActionReceiver.REGISTER, e.id, code + 1)).build())
-        else b.addAction(Notification.Action.Builder(null, "취소", action(context, ActionReceiver.CANCEL, e.id, code + 2)).build())
+        b.addAction(Notification.Action.Builder(null, "취소", action(context, ActionReceiver.CANCEL, e.id, code + 2)).build())
         if (e.startMillis - System.currentTimeMillis() in 0..CLOCK_ALARM_WINDOW_MS && !e.allDay) {
             b.addAction(Notification.Action.Builder(null, "시계 알람도", clockAlarm(context, e, code + 3)).build())
         }
         nm(context).notify(eventNotificationId(e.id), b.build())
+    }
+
+    /**
+     * "캘린더에 추가할까요?" — 대화에서 일정 같은 말을 들었는데 확실하지 않을 때 묻는다.
+     * [캘린더에 추가] [알림만] [아니요], 눌러서 열면 날짜·시각을 고칠 수 있다.
+     */
+    fun suggestion(context: Context, e: SavedEvent, replaces: SavedEvent?) {
+        if (!canPost(context)) return
+        val code = (e.id % 100_000).toInt() * 10
+        val title = when {
+            replaces != null -> "일정을 옮길까요? ${e.title}"
+            e.timeUnknown -> "챙겨 드릴까요? ${e.title}"
+            else -> "캘린더에 추가할까요? ${e.title}"
+        }
+        val whenText = when {
+            replaces != null -> "${describe(replaces)} → ${describe(e)}"
+            e.timeUnknown -> "언제인지는 못 들었어요. 누르면 날짜를 정할 수 있어요"
+            else -> describe(e)
+        }
+        val b = Notification.Builder(context, CH_ASK)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle(title)
+            .setContentText(whenText)
+            .setStyle(Notification.BigTextStyle().bigText(buildString {
+                append(whenText)
+                if (e.location.isNotBlank()) append("\n장소: ${e.location}")
+                if (e.evidence.isNotBlank()) append("\n들은 말: \"${e.evidence}\"")
+            }))
+            .setContentIntent(openApp(context))
+            .setAutoCancel(true)
+        if (e.timeUnknown) {
+            b.addAction(Notification.Action.Builder(null, "내일 아침 9시에 알림", action(context, ActionReceiver.REMIND_ONLY, e.id, code + 5)).build())
+        } else {
+            b.addAction(Notification.Action.Builder(null, "캘린더에 추가", action(context, ActionReceiver.ADD_CALENDAR, e.id, code + 4)).build())
+            b.addAction(Notification.Action.Builder(null, "알림만", action(context, ActionReceiver.REMIND_ONLY, e.id, code + 5)).build())
+        }
+        b.addAction(Notification.Action.Builder(null, "아니요", action(context, ActionReceiver.DISMISS, e.id, code + 6)).build())
+        nm(context).notify(eventNotificationId(e.id), b.build())
+    }
+
+    fun reminderSet(context: Context, e: SavedEvent) {
+        if (!canPost(context)) return
+        val n = Notification.Builder(context, CH_EVENT)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle("알림 맞춤: ${e.title}")
+            .setContentText("${describe(e)} · ${if (e.allDay) "그날 아침 8시" else "${e.reminderMinutes}분 전과 정각"}에 알려 드려요")
+            .setContentIntent(openApp(context))
+            .setAutoCancel(true)
+            .addAction(Notification.Action.Builder(null, "취소", action(context, ActionReceiver.CANCEL, e.id, (e.id % 100_000).toInt() * 10 + 2)).build())
+            .build()
+        nm(context).notify(eventNotificationId(e.id), n)
+    }
+
+    /** 아침 브리핑: 오늘 일정 + 대답 기다리는 제안 + 오늘 기한 할 일. */
+    fun briefing(context: Context, title: String, lines: List<String>) {
+        if (!canPost(context) || lines.isEmpty()) return
+        val style = Notification.InboxStyle()
+        lines.take(7).forEach { style.addLine(it) }
+        if (lines.size > 7) style.setSummaryText("외 ${lines.size - 7}개")
+        val n = Notification.Builder(context, CH_BRIEF)
+            .setSmallIcon(R.drawable.ic_ear)
+            .setContentTitle(title)
+            .setContentText(lines.first())
+            .setStyle(style)
+            .setContentIntent(openApp(context))
+            .setAutoCancel(true)
+            .build()
+        nm(context).notify(ID_BRIEFING, n)
     }
 
     fun reminder(context: Context, e: SavedEvent, atStart: Boolean) {
@@ -162,7 +236,7 @@ object Notifier {
         val todos = notes.flatMap { it.todos }.map { it.text }.distinct()
         if (points.isEmpty() && todos.isEmpty() && events.isEmpty()) return
         val style = Notification.InboxStyle()
-        events.take(4).forEach { style.addLine("📅 ${it.title} · ${describe(it)}") }
+        events.take(4).forEach { style.addLine("📅 ${describe(it)} ${it.title}") }
         todos.take(4).forEach { style.addLine("✔ $it") }
         points.take(6).forEach { style.addLine("• $it") }
         val n = Notification.Builder(context, CH_NOTE)
@@ -203,6 +277,7 @@ object Notifier {
 
     private fun eventNotificationId(eventId: Long) = (eventId % 1_000_000).toInt() * 4 + 10_000_000
     const val ID_DIGEST = 9
+    const val ID_BRIEFING = 6
     const val ID_RESUME = 8
     const val ID_ERROR = 7
     private const val CLOCK_ALARM_WINDOW_MS = 23L * 60 * 60 * 1000

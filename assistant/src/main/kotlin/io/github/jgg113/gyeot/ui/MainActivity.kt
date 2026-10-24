@@ -65,6 +65,8 @@ import androidx.compose.ui.unit.dp
 import io.github.jgg113.gyeot.Graph
 import io.github.jgg113.gyeot.data.Settings as AppSettings
 import io.github.jgg113.gyeot.ai.EventRules
+import io.github.jgg113.gyeot.ai.ScheduleSummary
+import android.app.AlertDialog.Builder as AlertDialogBuilder
 import io.github.jgg113.gyeot.alarm.Notifier
 import io.github.jgg113.gyeot.audio.ListenState
 import io.github.jgg113.gyeot.audio.ListeningService
@@ -138,6 +140,20 @@ class MainActivity : ComponentActivity() {
         }.onFailure { startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
     }
 
+    /** 날짜 → (종일이 아니면) 시각을 차례로 고르게 한다. */
+    fun pickDateTime(initial: Long, allDayInitially: Boolean, done: (Long, Boolean) -> Unit) {
+        val t = Instant.ofEpochMilli(initial).atZone(EventRules.SEOUL)
+        android.app.DatePickerDialog(this, { _, y, m, d ->
+            val day = LocalDate.of(y, m + 1, d)
+            AlertDialogBuilder(this).setTitle("시각").setItems(arrayOf("시각 고르기", "종일")) { _, which ->
+                if (which == 1) done(day.atStartOfDay(EventRules.SEOUL).toInstant().toEpochMilli(), true)
+                else android.app.TimePickerDialog(this, { _, h, min ->
+                    done(day.atTime(h, min).atZone(EventRules.SEOUL).toInstant().toEpochMilli(), false)
+                }, if (allDayInitially) 9 else t.hour, if (allDayInitially) 0 else t.minute, false).show()
+            }.show()
+        }, t.year, t.monthValue - 1, t.dayOfMonth).show()
+    }
+
     fun openAppSettings() {
         startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
     }
@@ -187,8 +203,22 @@ private fun TodayScreen() {
     val state by ListenState.state.collectAsState()
     val version by g.store.version.collectAsState()
     val events = remember(version) { g.store.upcomingEvents() }
+    val asking = remember(version) { g.store.suggestions().sortedBy { it.startMillis } }
     val today = LocalDate.now(EventRules.SEOUL)
     val notes = remember(version) { g.store.notes().filter { Store.dayOf(it.at) == today }.reversed() }
+    var range by remember { mutableIntStateOf(0) } // 0 오늘·내일, 1 이번 주, 2 다음 주
+    var summary by remember { mutableStateOf("") }
+    LaunchedEffect(version, range) {
+        summary = withContext(Dispatchers.IO) {
+            val monday = today.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
+            val (from, to) = when (range) {
+                1 -> today to monday.plusDays(6)
+                2 -> monday.plusWeeks(1) to monday.plusWeeks(1).plusDays(6)
+                else -> today to today.plusDays(1)
+            }
+            ScheduleSummary.text(g.scheduleItems(from, to), from, to, today)
+        }
+    }
 
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
@@ -225,7 +255,23 @@ private fun TodayScreen() {
                 }
             }
         }
-        item { SectionTitle("다가오는 일정 (${events.size})") }
+        if (asking.isNotEmpty()) {
+            item { SectionTitle("추가할까요? (${asking.size})") }
+            items(asking, key = { it.id }) { e -> SuggestionCard(e, g, activity) }
+        }
+        item { SectionTitle("일정 요약") }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("오늘·내일", "이번 주", "다음 주").forEachIndexed { i, t -> FilterChip(selected = range == i, onClick = { range = i }, label = { Text(t) }) }
+                    }
+                    Text(summary.ifBlank { "불러오는 중…" })
+                    if (!g.calendar.hasPermission()) Text("캘린더 권한을 허용하면 삼성 캘린더의 다른 일정도 함께 보여요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                }
+            }
+        }
+        item { SectionTitle("대화에서 넣은 일정 (${events.size})") }
         if (events.isEmpty()) item { Text("대화에서 찾은 일정이 여기에 쌓여요. 예) \"내일 3시에 치과 가야 돼\"", color = MaterialTheme.colorScheme.outline) }
         items(events, key = { it.id }) { e -> EventCard(e, g) }
         item { SectionTitle("오늘 들은 중요한 이야기 (${notes.size})") }
@@ -245,15 +291,39 @@ private fun EventCard(e: SavedEvent, g: Graph) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     when {
-                        e.status == "pending" -> "확인 기다림"
                         e.calendarEventId != null -> "캘린더 등록됨 · ${e.reminderMinutes}분 전 알림"
-                        else -> "앱에만 저장 (캘린더 권한 필요)"
+                        else -> "🔔 앱 알림만 · ${if (e.allDay) "그날 아침 8시" else "${e.reminderMinutes}분 전·정각"}"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.weight(1f),
                 )
-                if (e.status == "pending") TextButton(onClick = { scope.launch(Dispatchers.IO) { g.events.confirm(e.id) } }) { Text("등록") }
                 TextButton(onClick = { scope.launch(Dispatchers.IO) { g.events.cancel(e.id) } }) { Text("취소") }
+            }
+        }
+    }
+}
+
+/** "추가할까요?" 카드: 캘린더 / 알림만 / 날짜·시각 바꾸기 / 아니요. */
+@Composable
+private fun SuggestionCard(e: SavedEvent, g: Graph, activity: MainActivity) {
+    val scope = rememberCoroutineScope()
+    fun act(block: () -> Unit) { scope.launch(Dispatchers.IO) { block() } }
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
+        Column(Modifier.padding(12.dp)) {
+            Text(e.title, fontWeight = FontWeight.Bold)
+            Text(if (e.timeUnknown) "언제인지 못 들었어요 — [날짜 정하기]로 정해 주세요" else Notifier.describe(e) + if (e.location.isNotBlank()) " · ${e.location}" else "")
+            if (e.evidence.isNotBlank()) Text("들은 말: \"${e.evidence}\"", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (!e.timeUnknown) {
+                    Button(onClick = { act { g.events.addToCalendar(e.id) } }) { Text("캘린더") }
+                    OutlinedButton(onClick = { act { g.events.remindOnly(e.id) } }) { Text("알림만") }
+                }
+                OutlinedButton(onClick = {
+                    activity.pickDateTime(e.startMillis, e.allDay && !e.timeUnknown) { start, allDay ->
+                        act { g.events.reschedule(e.id, start, allDay, toCalendar = true) }
+                    }
+                }) { Text(if (e.timeUnknown) "날짜 정하기" else "바꾸기") }
+                TextButton(onClick = { act { g.events.dismiss(e.id) } }) { Text("아니요") }
             }
         }
     }
@@ -319,7 +389,7 @@ private fun AskScreen() {
     var busy by remember { mutableStateOf(false) }
     var days by remember { mutableIntStateOf(3) }
     Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
-        Text("들은 대화를 근거로 물어보세요. 예) \"아까 팀장님이 보고서 언제까지라고 했지?\", \"어제 들은 계좌번호 알려줘\"")
+        Text("들은 대화와 캘린더를 근거로 물어보세요. 예) \"이번 주 일정 뭐 있어?\", \"아까 팀장님이 보고서 언제까지라고 했지?\", \"어제 들은 계좌번호 알려줘\"")
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(1, 3, 7).forEach { d -> FilterChip(selected = days == d, onClick = { days = d }, label = { Text(if (d == 1) "오늘" else "${d}일") }) }
@@ -332,7 +402,7 @@ private fun AskScreen() {
             scope.launch {
                 answer = withContext(Dispatchers.IO) {
                     try {
-                        g.brain.ask(question, material(g, days), ZonedDateTime.now(EventRules.SEOUL))
+                        g.ask(question, material(g, days))
                     } catch (e: Exception) {
                         "⚠ ${e.message}"
                     }
@@ -383,7 +453,8 @@ private fun SettingsScreen() {
     var remind by remember { mutableStateOf(s.reminderMinutes.toString()) }
     var digest by remember { mutableStateOf(s.digestHour.toString()) }
     var keep by remember { mutableStateOf(s.retentionDays.toString()) }
-    var auto by remember { mutableStateOf(s.autoRegister) }
+    var addMode by remember { mutableStateOf(s.addMode) }
+    var briefing by remember { mutableStateOf(s.briefingHour.toString()) }
     var own by remember { mutableStateOf(s.ownReminders) }
     var calendars by remember { mutableStateOf(emptyList<CalendarWriter.CalendarInfo>()) }
     var calId by remember { mutableStateOf(s.calendarId) }
@@ -405,7 +476,8 @@ private fun SettingsScreen() {
         remind.toIntOrNull()?.let { s.reminderMinutes = it }
         digest.toIntOrNull()?.let { s.digestHour = it; g.alarms.scheduleDigest(s.digestHour) }
         keep.toIntOrNull()?.let { s.retentionDays = it }
-        s.autoRegister = auto; s.ownReminders = own; s.calendarId = calId
+        s.addMode = addMode; s.ownReminders = own; s.calendarId = calId
+        briefing.toIntOrNull()?.let { s.briefingHour = it; g.alarms.scheduleBriefing(s.briefingHour) }
         s.sttEngine = sttEngine; s.brainEngine = brainEngine; s.useLocalLlm = useLlm
     }
 
@@ -468,16 +540,21 @@ private fun SettingsScreen() {
                 FilterChip(selected = calId == c.id || (calId == -1L && c == calendars.first()), onClick = { calId = c.id; s.calendarId = c.id }, label = { Text(c.label) })
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("묻지 않고 바로 캘린더에 넣기", Modifier.weight(1f))
-            Switch(auto, { auto = it; s.autoRegister = it })
+        Text("대화에서 일정 같은 말을 들었을 때", style = MaterialTheme.typography.bodyMedium)
+        listOf(
+            EventRules.MODE_SMART to "알아서: 확실한 약속은 바로 넣고, 애매하거나 돌려 말한 건 \"추가할까요?\" 묻기",
+            EventRules.MODE_ASK to "늘 묻기: 모든 일정을 \"추가할까요?\" 하고 물어보기",
+            EventRules.MODE_AUTO to "바로 넣기: 웬만하면 묻지 않고 넣기",
+        ).forEach { (mode, label) ->
+            FilterChip(selected = addMode == mode, onClick = { addMode = mode; s.addMode = mode }, label = { Text(label) }, modifier = Modifier.fillMaxWidth())
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("캘린더 알림과 별도로 앱이 직접 알리기 (미리 + 정각)", Modifier.weight(1f))
             Switch(own, { own = it; s.ownReminders = it })
         }
         OutlinedTextField(remind, { remind = it }, Modifier.fillMaxWidth(), label = { Text("미리 알림 (분 전)") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-        OutlinedTextField(digest, { digest = it }, Modifier.fillMaxWidth(), label = { Text("하루 요약 알림 시각 (0~23시, -1 끔)") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+        OutlinedTextField(briefing, { briefing = it }, Modifier.fillMaxWidth(), label = { Text("아침 일정 브리핑 시각 (0~23시, -1 끔)") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+        OutlinedTextField(digest, { digest = it }, Modifier.fillMaxWidth(), label = { Text("저녁 하루 요약 시각 (0~23시, -1 끔)") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
 
         SectionTitle("4. 24시간 듣기 (삼성 갤럭시)")
         Text(

@@ -37,11 +37,18 @@ class RulesTest {
     @Test
     fun pastOrUnsureEventsAreNotRegistered() {
         val past = ExtractedEvent("회의", "2026-10-24T10:00", confidence = 0.9)
-        assertFalse(EventRules.shouldRegister(past, EventRules.timing(past)!!, now))
+        fun d(e: ExtractedEvent, mode: String = EventRules.MODE_SMART) = EventRules.decide(e, EventRules.timing(e)!!, now, mode)
+        assertEquals(EventRules.Decision.DROP, d(past))
         val vague = ExtractedEvent("밥 한번", "2026-10-30T12:00", confidence = 0.3)
-        assertFalse(EventRules.shouldRegister(vague, EventRules.timing(vague)!!, now))
+        assertEquals(EventRules.Decision.DROP, d(vague))
         val today = ExtractedEvent("택배", "2026-10-24", confidence = 0.8)
-        assertTrue(EventRules.shouldRegister(today, EventRules.timing(today)!!, now))
+        assertEquals(EventRules.Decision.REGISTER, d(today))
+        // 애매하면 묻고, '늘 묻기'면 확실해도 묻는다. 시각을 모르면 어느 모드든 묻는다.
+        val maybe = ExtractedEvent("영화", "2026-10-31T19:00", confidence = 0.55)
+        assertEquals(EventRules.Decision.SUGGEST, d(maybe))
+        assertEquals(EventRules.Decision.SUGGEST, d(today, EventRules.MODE_ASK))
+        assertEquals(EventRules.Decision.SUGGEST, d(ExtractedEvent("치과", "2026-10-25T09:00", confidence = 0.9, timeUnknown = true), EventRules.MODE_AUTO))
+        assertEquals(EventRules.Decision.REGISTER, d(maybe.copy(confidence = 0.65), EventRules.MODE_AUTO))
     }
 
     @Test

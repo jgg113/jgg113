@@ -128,7 +128,7 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
         val context = g.store.utterancesSince(from - CONTEXT_MS).filter { it.at < from }.takeLast(40)
         val now = ZonedDateTime.now(EventRules.SEOUL)
         try {
-            val result = g.brain.analyze(context, fresh, g.store.upcomingEvents().filter { it.status != "cancelled" }, now)
+            val result = g.brain.analyze(context, fresh, g.store.upcomingEvents() + g.store.suggestions(), now)
             synchronized(pending) { pending.removeAll(fresh); hinted = false }
             failures = 0
             val eventIds = g.events.handle(result.events, now)

@@ -22,6 +22,10 @@ object KoreanTime {
         /** "저녁"처럼 대략적인 때만 있었는지. */
         val roughTime: Boolean,
         val spans: List<IntRange>,
+        /** 날짜를 말에서 직접 찾았는지 ("3시"만 있어 오늘로 친 경우는 false). */
+        val dateExplicit: Boolean = false,
+        /** "다음 주에", "이달 말"처럼 날짜가 대략적인지. */
+        val roughDate: Boolean = false,
     ) {
         val any get() = date != null || time != null
     }
@@ -40,6 +44,9 @@ object KoreanTime {
     private val MONTH_DAY = Regex("""(\d{1,2}|$SINO)\s*월\s*(\d{1,2}|$SINO)\s*일""")
     private val NEXT_MONTH_DAY = Regex("""다음\s*달\s*(\d{1,2}|$SINO)\s*일""")
     // "15일에", "십오 일까지" — 한 글자 한자어 수("이 일에"=이 일)는 뜻이 갈려서 숫자 또는 '십'이 들어간 수만 받는다.
+    private val WEEK_ONLY = Regex("""(이번|다음|담|다다음)\s*주\s*(에|중|안에|쯤|내|까지)""")
+    private val MONTH_END = Regex("""(이번\s*달|이달|이번달)\s*(말|안에|까지)|월말""")
+    private val NEXT_MONTH = Regex("""다음\s*달\s*(에|초|중|쯤|말)?""")
     private val BARE_DAY = Regex("""(\d{1,2}|[일이삼]?십[일이삼사오육칠팔구]?)\s*일\s*(에|날|까지|부터|쯤|정도)""")
 
     fun parse(text: String, now: ZonedDateTime): Found {
@@ -56,7 +63,7 @@ object KoreanTime {
             if (n != null && n > 0) {
                 val t = if (m.groupValues[2] == "시간") now.plusHours(n.toLong()) else now.plusMinutes(n.toLong())
                 spans += m.range
-                return Found(t.toLocalDate(), t.toLocalTime().withSecond(0).withNano(0), false, false, spans)
+                return Found(t.toLocalDate(), t.toLocalTime().withSecond(0).withNano(0), false, false, spans, dateExplicit = true)
             }
         }
 
@@ -112,6 +119,26 @@ object KoreanTime {
             }
         }
 
+        // 대략적인 날짜는 다른 날짜 말이 없을 때만: "다음 주에" → 다음 주 월요일, "이달 말" → 말일, "다음 달" → 1일.
+        var roughDate = false
+        if (date == null) WEEK_ONLY.find(text)?.let { m ->
+            date = when (m.groupValues[1]) {
+                "이번" -> today
+                "다다음" -> today.with(TemporalAdjusters.next(DayOfWeek.MONDAY)).plusWeeks(1)
+                else -> today.with(TemporalAdjusters.next(DayOfWeek.MONDAY))
+            }
+            roughDate = true; spans += m.range
+        }
+        if (date == null) MONTH_END.find(text)?.let { m ->
+            date = today.with(TemporalAdjusters.lastDayOfMonth()); roughDate = true; spans += m.range
+        }
+        if (date == null) NEXT_MONTH.find(text)?.let { m ->
+            val first = today.plusMonths(1).withDayOfMonth(1)
+            date = if (m.groupValues[1] == "말") first.with(TemporalAdjusters.lastDayOfMonth()) else first
+            roughDate = true; spans += m.range
+        }
+        val dateExplicit = date != null
+
         // 3) 시각
         val hm = HOUR.find(text)
         if (hm != null) {
@@ -159,7 +186,7 @@ object KoreanTime {
             rough = true
             spans += IntRange(m.range.first + m.value.length - m.groupValues[2].length, m.range.last)
         }
-        return Found(date, time, guessed, rough, spans)
+        return Found(date, time, guessed, rough, spans, dateExplicit, roughDate)
     }
 
     private val DOW = mapOf(

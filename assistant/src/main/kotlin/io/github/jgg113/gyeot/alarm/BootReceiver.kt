@@ -13,8 +13,9 @@ import io.github.jgg113.gyeot.audio.ListeningService
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val g = Graph.get(context)
-        g.store.upcomingEvents().filter { it.status == "registered" }.forEach { g.alarms.schedule(it) }
+        g.store.upcomingEvents().forEach { g.alarms.schedule(it) }
         g.alarms.scheduleDigest(g.settings.digestHour)
+        g.alarms.scheduleBriefing(g.settings.briefingHour)
         if (!g.settings.listeningWanted) return
         val started = runCatching { ListeningService.start(context) }.isSuccess
         if (!started) {

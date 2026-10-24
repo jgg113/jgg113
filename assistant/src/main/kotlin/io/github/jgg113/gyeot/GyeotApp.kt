@@ -9,5 +9,6 @@ class GyeotApp : Application() {
         Notifier.createChannels(this)
         val g = Graph.get(this)
         g.alarms.scheduleDigest(g.settings.digestHour)
+        g.alarms.scheduleBriefing(g.settings.briefingHour)
     }
 }

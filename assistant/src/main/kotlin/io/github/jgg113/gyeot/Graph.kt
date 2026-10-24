@@ -3,6 +3,9 @@ package io.github.jgg113.gyeot
 import android.content.Context
 import io.github.jgg113.gyeot.ai.Analyzer
 import io.github.jgg113.gyeot.ai.Brain
+import io.github.jgg113.gyeot.ai.EventRules
+import io.github.jgg113.gyeot.ai.ScheduleSummary
+import io.github.jgg113.gyeot.data.SavedEvent
 import io.github.jgg113.gyeot.ai.LocalLlm
 import io.github.jgg113.gyeot.ai.RuleBrain
 import io.github.jgg113.gyeot.audio.Wav
@@ -42,6 +45,33 @@ class Graph private constructor(private val context: Context) {
     /** 지금 설정에 맞는 받아쓰기. */
     fun transcribe(pcm: ShortArray): String =
         if (settings.localStt) localTranscriber.transcribe(pcm) else transcriber.transcribe(Wav.encode(pcm))
+
+    /** 기간 안의 일정: 휴대폰 캘린더 전체 + 앱 알림만 맞춘 것 + 추가할지 묻는 중인 것. */
+    fun scheduleItems(from: java.time.LocalDate, to: java.time.LocalDate): List<ScheduleSummary.Item> {
+        val zone = EventRules.SEOUL
+        val fromMs = from.atStartOfDay(zone).toInstant().toEpochMilli()
+        val toMs = to.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val cal = calendar.instances(fromMs, toMs)
+        val app = store.events().filter { e ->
+            e.startMillis in fromMs until toMs && !e.timeUnknown &&
+                (e.status == SavedEvent.REMINDER || e.asking || (e.status == SavedEvent.REGISTERED && (e.calendarEventId == null || !calendar.hasPermission())))
+        }.map { e ->
+            ScheduleSummary.Item(e.title, e.startMillis, e.endMillis, e.allDay, e.location, if (e.asking) "ask" else "app")
+        }
+        return (cal + app).sortedBy { it.start }
+    }
+
+    /** 묻기 탭: "이번 주 일정 뭐야?" 같은 질문은 캘린더로 바로 답하고, 나머지는 대화 기록에서 찾는다. */
+    fun ask(question: String, material: String): String {
+        val now = java.time.ZonedDateTime.now(EventRules.SEOUL)
+        val schedule = if (ScheduleSummary.isScheduleQuestion(question)) {
+            val (from, to) = ScheduleSummary.range(question, now)
+            ScheduleSummary.text(scheduleItems(from, to), from, to, now.toLocalDate())
+        } else null
+        if (schedule != null && settings.localBrain) return schedule
+        val week = ScheduleSummary.text(scheduleItems(now.toLocalDate().minusDays(1), now.toLocalDate().plusDays(13)), now.toLocalDate().minusDays(1), now.toLocalDate().plusDays(13), now.toLocalDate())
+        return brain.ask(question, "## 캘린더 일정 (어제~2주 뒤)\n$week\n\n$material", now)
+    }
 
     /** 듣기를 시작해도 되는지, 안 되면 이유. */
     fun notReadyReason(): String? = when {

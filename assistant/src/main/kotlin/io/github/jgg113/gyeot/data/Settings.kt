@@ -58,10 +58,17 @@ class Settings(context: Context) {
     var calendarId: Long
         get() = p.getLong("calendar_id", -1L)
         set(v) = p.edit().putLong("calendar_id", v).apply()
-    /** 확인 없이 바로 캘린더에 넣기 (끄면 알림의 [등록]을 눌러야 넣는다). */
-    var autoRegister: Boolean
-        get() = bool("auto_register", true)
-        set(v) = putBool("auto_register", v)
+    /**
+     * 일정 추가 방식: smart(확실한 건 바로 넣고 애매한 건 물어보기) · ask(늘 "추가할까요?" 묻기) · auto(웬만하면 바로).
+     * 예전 '바로 넣기' 스위치를 껐던 사람은 ask 로 시작한다.
+     */
+    var addMode: String
+        get() = str("add_mode", if (bool("auto_register", true)) "smart" else "ask")
+        set(v) = put("add_mode", v)
+    /** 아침 일정 브리핑 시각 (0~23시, -1 끔). */
+    var briefingHour: Int
+        get() = int("briefing_hour", 8)
+        set(v) = putInt("briefing_hour", v.coerceIn(-1, 23))
     var reminderMinutes: Int
         get() = int("reminder_min", 30)
         set(v) = putInt("reminder_min", v.coerceIn(0, 24 * 60))

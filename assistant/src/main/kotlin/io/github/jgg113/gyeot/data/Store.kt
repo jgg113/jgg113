@@ -40,10 +40,26 @@ data class SavedEvent(
     val evidence: String = "",
     /** 캘린더(CalendarContract) 이벤트 id, 아직 안 넣었으면 null. */
     val calendarEventId: Long? = null,
-    /** registered · pending(확인 기다림) · cancelled */
-    val status: String = "registered",
+    /**
+     * registered(캘린더에 넣음) · reminder(캘린더 없이 앱 알림만) · suggested(추가할지 묻는 중)
+     * · dismissed(아니요) · cancelled(넣었다가 취소). 옛 버전의 pending 은 suggested 로 본다.
+     */
+    val status: String = REGISTERED,
     val createdAt: Long = System.currentTimeMillis(),
-)
+    /** 언제인지 못 들어 시각이 임시 값인지. */
+    val timeUnknown: Boolean = false,
+) {
+    val active get() = status == REGISTERED || status == REMINDER
+    val asking get() = status == SUGGESTED || status == "pending"
+
+    companion object {
+        const val REGISTERED = "registered"
+        const val REMINDER = "reminder"
+        const val SUGGESTED = "suggested"
+        const val DISMISSED = "dismissed"
+        const val CANCELLED = "cancelled"
+    }
+}
 
 /**
  * 휴대폰 안에만 저장한다: 받아쓴 글(날짜별), 정리 노트, 등록한 일정. 원본 음성은 저장하지 않는다.
@@ -133,8 +149,17 @@ class Store(context: Context) {
         changed()
     }
 
+    /** 캘린더에 넣었거나 알림을 맞춘, 아직 안 끝난 일정. */
     fun upcomingEvents(now: Long = System.currentTimeMillis()): List<SavedEvent> =
-        events().filter { it.status != "cancelled" && it.endMillis >= now }
+        events().filter { it.active && it.endMillis >= now }
+
+    /** "추가할까요?" 하고 대답을 기다리는 일정 (지난 것은 빼고). */
+    fun suggestions(now: Long = System.currentTimeMillis()): List<SavedEvent> =
+        events().filter { it.asking && (it.timeUnknown || it.endMillis >= now) }
+
+    /** 같은 걸 또 묻거나 또 넣지 않으려고 보는 목록: 상태와 상관없이 최근·앞으로의 일정. */
+    fun recentEvents(now: Long = System.currentTimeMillis()): List<SavedEvent> =
+        events().filter { it.endMillis >= now - 24L * 60 * 60 * 1000 || it.asking }
 
     fun clearAll() {
         synchronized(lock) {

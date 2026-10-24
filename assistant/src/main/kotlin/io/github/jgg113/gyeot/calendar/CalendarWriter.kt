@@ -89,6 +89,38 @@ class CalendarWriter(private val context: Context) {
         return id
     }
 
+    /** 기간 안의 모든 캘린더 일정 (삼성 캘린더에 직접 넣은 것 포함, 반복 일정은 펼쳐서). */
+    fun instances(fromMillis: Long, toMillis: Long): List<io.github.jgg113.gyeot.ai.ScheduleSummary.Item> {
+        if (!hasPermission()) return emptyList()
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
+            .let { ContentUris.appendId(it, fromMillis); ContentUris.appendId(it, toMillis); it.build() }
+        val projection = arrayOf(
+            CalendarContract.Instances.TITLE,
+            CalendarContract.Instances.BEGIN,
+            CalendarContract.Instances.END,
+            CalendarContract.Instances.ALL_DAY,
+            CalendarContract.Instances.EVENT_LOCATION,
+        )
+        val out = mutableListOf<io.github.jgg113.gyeot.ai.ScheduleSummary.Item>()
+        runCatching {
+            context.contentResolver.query(uri, projection, "${CalendarContract.Instances.VISIBLE} = 1", null, "${CalendarContract.Instances.BEGIN} ASC")?.use { c ->
+                while (c.moveToNext()) {
+                    val allDay = c.getInt(3) == 1
+                    var begin = c.getLong(1)
+                    var end = c.getLong(2)
+                    if (allDay) {
+                        // 종일 일정은 UTC 자정으로 저장돼 있다 → 한국 날짜의 0시로 바꾼다.
+                        val day = java.time.Instant.ofEpochMilli(begin).atZone(java.time.ZoneOffset.UTC).toLocalDate()
+                        begin = day.atStartOfDay(java.time.ZoneId.of("Asia/Seoul")).toInstant().toEpochMilli()
+                        end = begin + DAY_MS
+                    }
+                    out += io.github.jgg113.gyeot.ai.ScheduleSummary.Item(c.getString(0).orEmpty().ifBlank { "(제목 없음)" }, begin, end, allDay, c.getString(4).orEmpty())
+                }
+            }
+        }
+        return out
+    }
+
     fun delete(calendarEventId: Long): Boolean {
         if (!hasPermission()) return false
         val uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, calendarEventId)
