@@ -18,6 +18,8 @@ data class Utterance(
     val text: String,
     /** 어디서 들은 말인지: 빈 값 = 곁에서 들은 말, "call:엄마" = 엄마와의 통화 녹음. */
     val source: String = "",
+    /** 앞뒤 10분 동안 말소리가 거의 쉬지 않았는지 (TV·영상 소리일 가능성). */
+    val media: Boolean = false,
 ) {
     val callWith: String? get() = source.removePrefix("call:").takeIf { source.startsWith("call:") }
 }
@@ -55,6 +57,16 @@ data class SavedEvent(
     val createdAt: Long = System.currentTimeMillis(),
     /** 언제인지 못 들어 시각이 임시 값인지. */
     val timeUnknown: Boolean = false,
+    /** 근거: 들은 시각, 어디서(곁에서/통화), 판단 이유, 확신도, 누가 넣었는지. */
+    val heardAt: Long = 0,
+    val source: String = "",
+    val reasons: List<String> = emptyList(),
+    val confidence: Double = 0.0,
+    /** auto(확실해 보여 바로) · approved(물어본 뒤 내가 승인) · voice(통화에서 말로 부탁) · edited(날짜 고쳐서) */
+    val addedBy: String = "",
+    val mediaLikely: Boolean = false,
+    /** "틀렸어요"로 지운 일정. */
+    val wrong: Boolean = false,
 ) {
     val active get() = status == REGISTERED || status == REMINDER
     val asking get() = status == SUGGESTED || status == "pending"

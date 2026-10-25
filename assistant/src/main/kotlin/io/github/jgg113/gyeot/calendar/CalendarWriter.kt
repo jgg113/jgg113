@@ -60,10 +60,7 @@ class CalendarWriter(private val context: Context) {
         val values = ContentValues().apply {
             put(CalendarContract.Events.CALENDAR_ID, calendarId)
             put(CalendarContract.Events.TITLE, event.title)
-            put(CalendarContract.Events.DESCRIPTION, buildString {
-                if (event.evidence.isNotBlank()) append("들은 말: \"${event.evidence}\"\n")
-                append("클로드비서 수빈이가 대화에서 찾아 넣은 일정입니다.")
-            })
+            put(CalendarContract.Events.DESCRIPTION, describe(event))
             if (event.location.isNotBlank()) put(CalendarContract.Events.EVENT_LOCATION, event.location)
             put(CalendarContract.Events.DTSTART, event.startMillis)
             put(CalendarContract.Events.DTEND, event.endMillis)
@@ -119,6 +116,25 @@ class CalendarWriter(private val context: Context) {
             }
         }
         return out
+    }
+
+    /** 캘린더 메모에 남길 근거: 언제·어디서 들었는지, 들은 말, 판단 이유. 삼성 캘린더에서도 바로 확인할 수 있게. */
+    private fun describe(e: SavedEvent): String = buildString {
+        append("클로드비서 수빈이가 넣은 일정이에요.\n")
+        if (e.heardAt > 0) {
+            val t = java.time.Instant.ofEpochMilli(e.heardAt).atZone(java.time.ZoneId.of("Asia/Seoul"))
+            val where = if (e.source.startsWith("call:")) "📞 ${e.source.removePrefix("call:")} 통화 녹음" else "곁에서 들은 말"
+            append("들은 때: ${t.monthValue}월 ${t.dayOfMonth}일 ${"%02d:%02d".format(t.hour, t.minute)} · $where\n")
+        }
+        if (e.evidence.isNotBlank()) append("들은 말: \"${e.evidence}\"\n")
+        when (e.addedBy) {
+            "approved" -> append("넣은 방법: 물어본 뒤 직접 승인하셨어요\n")
+            "voice" -> append("넣은 방법: 수빈이와 통화 중 말로 부탁하셨어요\n")
+            "edited" -> append("넣은 방법: 날짜·시간을 고쳐서 넣으셨어요\n")
+            else -> append("넣은 방법: 확실한 약속으로 보여 바로 넣었어요 (확신도 ${(e.confidence * 100).toInt()}%)\n")
+        }
+        e.reasons.forEach { append("· ").append(it).append('\n') }
+        append("앞뒤 대화는 클로드비서 앱 → 오늘 탭에서 이 일정을 누르면 볼 수 있어요.")
     }
 
     fun delete(calendarEventId: Long): Boolean {

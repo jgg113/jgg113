@@ -74,6 +74,13 @@ object Notifier {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
+    /** 일정 알림을 누르면 그 일정의 근거 화면을 연다. */
+    fun openEvent(context: Context, eventId: Long): PendingIntent = PendingIntent.getActivity(
+        context, 200_000 + (eventId % 100_000).toInt(),
+        Intent(context, MainActivity::class.java).putExtra(MainActivity.EXTRA_EVENT, eventId).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
     private fun action(context: Context, action: String, eventId: Long, code: Int): PendingIntent = PendingIntent.getBroadcast(
         context, code,
         Intent(context, ActionReceiver::class.java).setAction(action).putExtra(ActionReceiver.EXTRA_EVENT, eventId),
@@ -118,16 +125,17 @@ object Notifier {
         val b = Notification.Builder(context, CH_EVENT)
             .setSmallIcon(R.drawable.ic_ear)
             .setContentTitle("일정 등록: ${e.title}")
-            .setContentText(describe(e))
+            .setContentText(describe(e) + " · 눌러서 근거 보기")
             .setStyle(Notification.BigTextStyle().bigText(buildString {
                 append(describe(e))
                 if (e.location.isNotBlank()) append("\n장소: ${e.location}")
                 if (e.evidence.isNotBlank() && detailed(context)) append("\n들은 말: \"${e.evidence}\"")
                 if (calendarName != null) append("\n→ $calendarName 에 넣었어요")
             }))
-            .setContentIntent(openApp(context))
+            .setContentIntent(openEvent(context, e.id))
             .setAutoCancel(true)
         val code = (e.id % 100_000).toInt() * 10
+        b.addAction(Notification.Action.Builder(null, "근거 보기", openEvent(context, e.id)).build())
         b.addAction(Notification.Action.Builder(null, "취소", action(context, ActionReceiver.CANCEL, e.id, code + 2)).build())
         if (e.startMillis - System.currentTimeMillis() in 0..CLOCK_ALARM_WINDOW_MS && !e.allDay) {
             b.addAction(Notification.Action.Builder(null, "시계 알람도", clockAlarm(context, e, code + 3)).build())
@@ -160,8 +168,10 @@ object Notifier {
                 append(whenText)
                 if (e.location.isNotBlank()) append("\n장소: ${e.location}")
                 if (e.evidence.isNotBlank()) append("\n들은 말: \"${e.evidence}\"")
+                if (e.mediaLikely) append("\n📺 TV·영상 소리일 수 있어 바로 넣지 않았어요")
+                append("\n눌러서 근거·앞뒤 대화 보기")
             }))
-            .setContentIntent(openApp(context))
+            .setContentIntent(openEvent(context, e.id))
             .setAutoCancel(true)
         if (e.timeUnknown) {
             b.addAction(Notification.Action.Builder(null, "내일 아침 9시에 알림", action(context, ActionReceiver.REMIND_ONLY, e.id, code + 5)).build())
@@ -179,7 +189,7 @@ object Notifier {
             .setSmallIcon(R.drawable.ic_ear)
             .setContentTitle("알림 맞춤: ${e.title}")
             .setContentText("${describe(e)} · ${if (e.allDay) "그날 아침 8시" else "${e.reminderMinutes}분 전과 정각"}에 알려 드려요")
-            .setContentIntent(openApp(context))
+            .setContentIntent(openEvent(context, e.id))
             .setAutoCancel(true)
             .addAction(Notification.Action.Builder(null, "취소", action(context, ActionReceiver.CANCEL, e.id, (e.id % 100_000).toInt() * 10 + 2)).build())
             .build()
@@ -219,7 +229,7 @@ object Notifier {
                 if (e.evidence.isNotBlank()) append("\n들은 말: \"${e.evidence}\"")
             }))
             .setCategory(Notification.CATEGORY_REMINDER)
-            .setContentIntent(openApp(context))
+            .setContentIntent(openEvent(context, e.id))
             .setAutoCancel(true)
             .build()
         nm(context).notify(eventNotificationId(e.id) + if (atStart) 2 else 1, n)

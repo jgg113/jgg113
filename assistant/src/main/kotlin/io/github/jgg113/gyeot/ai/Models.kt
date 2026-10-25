@@ -32,6 +32,14 @@ data class ExtractedEvent(
     val isChange: Boolean = false,
     /** 할 일·약속은 들었지만 언제인지 못 들었으면 true (start 는 임시 값, 꼭 물어본다). */
     val timeUnknown: Boolean = false,
+    /** 왜 일정으로 봤는지 (사람이 읽을 문장들). 구조화 출력 스키마에는 없다 — 앱이 채운다. */
+    val reasons: List<String> = emptyList(),
+    /** 근거가 된 말을 들은 시각. */
+    val heardAt: Long = 0,
+    /** 어디서 들었는지: "" = 곁에서, "call:엄마" = 통화 녹음. */
+    val source: String = "",
+    /** TV·영상처럼 쉬지 않고 이어지는 소리 속에서 들었는지 — 그러면 바로 넣지 않고 묻는다. */
+    val mediaLikely: Boolean = false,
 )
 
 @Serializable

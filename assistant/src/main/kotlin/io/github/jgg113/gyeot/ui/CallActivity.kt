@@ -322,8 +322,8 @@ class CallActivity : ComponentActivity() {
     /** "내일 세 시에 치과 일정 넣어 줘" — 말로 부탁한 일정은 묻지 않고 바로 넣는다. */
     private fun addByVoice(text: String, now: ZonedDateTime): String {
         val found = g.ruleBrain.analyze(emptyList(), listOf(Utterance(now.toInstant().toEpochMilli(), text)), emptyList(), now)
-            .events.firstOrNull() ?: return "언제인지 잘 못 알아들었어요. 날짜랑 시간을 한 번 더 말씀해 주시겠어요?"
-        val ids = g.events.handle(listOf(found.copy(confidence = maxOf(found.confidence, 0.9), timeUnknown = false)), now, EventRules.MODE_AUTO)
+            .events.firstOrNull()?.let { it.copy(mediaLikely = false, reasons = listOf("수빈이와 통화 중에 직접 말로 부탁하셨어요")) } ?: return "언제인지 잘 못 알아들었어요. 날짜랑 시간을 한 번 더 말씀해 주시겠어요?"
+        val ids = g.events.handle(listOf(found.copy(confidence = maxOf(found.confidence, 0.9), timeUnknown = false)), now, EventRules.MODE_AUTO, addedBy = "voice")
         val e = ids.firstOrNull()?.let { g.store.event(it) } ?: return "이미 같은 일정이 있어서 따로 넣지 않았어요."
         return "네! ${Notifier.describe(e)}에 ${e.title}, ${if (e.calendarEventId != null) "캘린더에 넣었어요" else "알림 맞춰 뒀어요"}."
     }

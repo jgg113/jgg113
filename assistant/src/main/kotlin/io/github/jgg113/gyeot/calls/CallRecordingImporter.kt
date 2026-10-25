@@ -111,7 +111,7 @@ class CallRecordingImporter(private val context: Context) {
         utterances.forEach { g.store.appendUtterance(it) }
         val now = ZonedDateTime.now(EventRules.SEOUL)
         val result = g.brain.analyze(emptyList(), utterances, g.store.upcomingEvents() + g.store.suggestions(), now)
-        val eventIds = g.events.handle(result.events, now)
+        val eventIds = g.events.handle(EventRules.attachSource(result.events, utterances), now)
         val minutes = (r.durationMs / 60_000).coerceAtLeast(1)
         val note = Note(
             id = System.currentTimeMillis(),

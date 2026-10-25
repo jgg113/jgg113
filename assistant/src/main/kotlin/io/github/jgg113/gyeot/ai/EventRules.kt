@@ -25,6 +25,8 @@ object EventRules {
         val future = if (timing.allDay) !timing.start.toLocalDate().isBefore(now.toLocalDate()) else timing.start.isAfter(now)
         if (!future) return Decision.DROP
         if (e.timeUnknown) return Decision.SUGGEST
+        // TV·영상 소리일 수 있으면 어떤 모드든 먼저 묻는다.
+        if (e.mediaLikely) return Decision.SUGGEST
         return when (mode) {
             MODE_ASK -> Decision.SUGGEST
             MODE_AUTO -> if (e.confidence >= AUTO_ALWAYS) Decision.REGISTER else Decision.SUGGEST
@@ -58,6 +60,25 @@ object EventRules {
         } catch (_: DateTimeParseException) {
             null
         }
+    }
+
+    /**
+     * Claude 처럼 근거 시각을 모르는 결과에, 근거 문장과 가장 비슷한 받아쓴 말을 찾아
+     * 들은 시각·어디서·TV 의심 여부를 붙인다. 이미 붙어 있으면 그대로.
+     */
+    fun attachSource(events: List<ExtractedEvent>, said: List<io.github.jgg113.gyeot.data.Utterance>): List<ExtractedEvent> = events.map { e ->
+        if (e.heardAt > 0 || said.isEmpty()) return@map e
+        val u = said.maxByOrNull { overlap(it.text, e.evidence) } ?: said.last()
+        e.copy(
+            heardAt = u.at, source = u.source, mediaLikely = e.mediaLikely || u.media,
+            reasons = e.reasons.ifEmpty { listOf("Claude 가 대화를 읽고 일정으로 판단했어요 (확신도 ${(e.confidence * 100).toInt()}%)") } +
+                (if (u.media) listOf("앞뒤로 말소리가 거의 쉬지 않고 이어졌어요 — TV·영상 소리일 수 있어 바로 넣지 않고 물어봐요") else emptyList()),
+        )
+    }
+
+    private fun overlap(a: String, b: String): Int {
+        val ga = a.filter { !it.isWhitespace() }.windowed(2).toSet()
+        return b.filter { !it.isWhitespace() }.windowed(2).count { it in ga }
     }
 
     /** 같은 일정을 두 번 넣지 않으려고 쓰는 키: 제목 글자만 + 시작 시각(분). */

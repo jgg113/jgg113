@@ -30,7 +30,14 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
             val spokenAt = Instant.ofEpochMilli(u.at).atZone(EventRules.SEOUL).let { if (it.isAfter(now)) now else it }
             for (clause in clauses(u.text)) {
                 val found = KoreanTime.parse(clause, spokenAt)
-                extractEvent(clause, found, spokenAt)?.let { e -> if (events.none { it.start == e.start && similar(it.title, e.title) }) events += e }
+                extractEvent(clause, found, spokenAt)?.let { raw ->
+                    var e = raw.copy(heardAt = u.at, source = u.source, mediaLikely = u.media)
+                    if (u.media) e = e.copy(
+                        confidence = (e.confidence - 0.25).coerceAtLeast(0.0),
+                        reasons = e.reasons + "앞뒤로 말소리가 거의 쉬지 않고 이어졌어요 — TV·영상 소리일 수 있어 바로 넣지 않고 물어봐요",
+                    )
+                    if (events.none { it.start == e.start && similar(it.title, e.title) }) events += e
+                }
                 extractTodo(clause, found)?.let { t -> if (todos.none { it.text == t.text }) todos += t }
                 if (isKeyPoint(clause)) KoreanText.tidy(clause).takeIf { it.length >= 4 }?.let { points += it }
             }
@@ -76,16 +83,21 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
         val deadline = clause.contains("까지")
         if (cue == null && f.time == null && !deadline) return null // 날짜만 있고 약속 말이 없으면 ("내일 비 온대") 넘긴다
         val pastVerb = PAST_VERB.containsMatchIn(clause) && !COMMIT.containsMatchIn(clause)
+        val reasons = mutableListOf<String>()
+        val phrases = f.spans.sortedBy { it.first }.mapNotNull { r -> clause.substring(r.first.coerceAtLeast(0), (r.last + 1).coerceAtMost(clause.length)).trim().takeIf { it.isNotBlank() } }
+        if (phrases.isNotEmpty()) reasons += "날짜·시각 말: " + phrases.joinToString(", ") { "'$it'" }
         var confidence = 0.45
         if (f.time != null) confidence += 0.2
         if (f.dateExplicit && !f.roughDate) confidence += 0.1
-        if (deadline) confidence += 0.2
-        if (cue != null) confidence += 0.25
-        if (COMMIT.containsMatchIn(clause)) confidence += 0.1
-        if (f.guessedHalf || f.roughTime) confidence -= 0.1
-        if (f.roughDate) confidence -= 0.15
-        if (pastVerb) confidence -= 0.5
-        if (VAGUE.containsMatchIn(clause)) confidence -= 0.35
+        if (deadline) { confidence += 0.2; reasons += "'까지' — 기한이 있는 일로 봤어요" }
+        if (cue != null) { confidence += 0.25; reasons += "약속·일정을 뜻하는 말: '$cue'" }
+        COMMIT.find(clause)?.let { confidence += 0.1; reasons += "정해졌다는 말: '${it.value.trim()}'" }
+        if (f.guessedHalf) { confidence -= 0.1; reasons += "오전·오후를 말하지 않아 ${if ((f.time?.hour ?: 0) >= 12) "오후" else "오전"}로 짐작했어요" }
+        if (f.roughTime) { confidence -= 0.1; reasons += "시각 없이 대략적인 때만 있어 ${f.time} 로 잡았어요" }
+        if (f.roughDate) { confidence -= 0.15; reasons += "날짜가 대략적이에요 ('다음 주', '이달 말' 등)" }
+        if (pastVerb) { confidence -= 0.5; reasons += "지난 일처럼 들려요" }
+        VAGUE.find(clause)?.let { confidence -= 0.35; reasons += "제안·질문처럼 들려요: '${it.value.trim()}'" }
+        BROADCAST.find(clause)?.let { confidence -= 0.3; reasons += "방송·영상에서 자주 나오는 말이 섞였어요: '${it.value}'" }
         val start = if (f.time == null) date.toString() else date.atTime(f.time).format(MINUTE)
         val title = (if (deadline && cue == null) "마감: " else "") + title(clause, f)
         return ExtractedEvent(
@@ -96,6 +108,7 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
             confidence = confidence.coerceIn(0.0, 1.0),
             evidence = clause,
             isChange = CHANGE.containsMatchIn(clause),
+            reasons = reasons,
         )
     }
 
@@ -118,6 +131,7 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
             confidence = if (noun != null) 0.5 else 0.4,
             evidence = clause,
             timeUnknown = true,
+            reasons = listOf("해야 할 일처럼 들려요: '${NEED.find(clause)?.value}'", "언제인지는 말하지 않아 먼저 물어봐요"),
         )
     }
 
@@ -213,6 +227,7 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
         private val ACCOUNT = Regex("계좌|번호|주소|비밀번호|비번|전화번호|이메일|아이디|코드")
         private val DECISION = Regex("결정|확정|정했|하기로|바뀌|변경|취소|미뤄|당겨|합의|계약")
         private val LONG_NUMBER = Regex("\\d{4,}|\\d+-\\d+")
+        private val BROADCAST = Regex("시청자|시청해|채널|방송|뉴스|앵커|기자|광고|구독|드라마|이 시간에|본방|재방송|여러분|특파원|전해\\s*드립니다|홈쇼핑|주문하세요|상담\\s*전화|지금\\s*바로\\s*전화")
         private val STRONG_TODO = Regex("(야|야지|줘|줘요|주세요|줄래|할게|할께|드릴게|보낼게|챙겨|잊지)$")
         private val AUX = Regex("돼|돼요|해|해요|된다|되지|합니다|돼야|겠다|겠어|마|마세요|말고")
         private val NEED = Regex("(가야|가 봐야|가봐야|해야|예약해야|챙겨야|사야|내야|보내야|받아야|신청해야|갱신해야|들러야|전화해야|연락해야|알아봐야|준비해야|잊지 말아야|잊으면 안)")

@@ -72,7 +72,7 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
             val text = transcribeWithRetry(pcm)
             ListenState.update { it.copy(queued = (it.queued - count).coerceAtLeast(0)) }
             val clean = text?.let { TranscriptFilter.clean(it) } ?: continue
-            val u = Utterance(batchEnd, clean)
+            val u = Utterance(batchEnd, clean, media = noteSpeech(batchEnd, pcm.size / SpeechSegmenter.SAMPLE_RATE.toDouble()))
             g.store.appendUtterance(u)
             synchronized(pending) {
                 pending += u
@@ -81,6 +81,14 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
             lastSpeechAt = System.currentTimeMillis()
             ListenState.update { it.copy(lastHeardAt = u.at, lastText = clean, error = "") }
         }
+    }
+
+    /** 최근 10분 동안 말소리 길이를 모아, 6분 넘게 쉬지 않고 말소리였으면 TV·영상 소리로 의심한다. */
+    private val speech = ArrayDeque<Pair<Long, Double>>()
+    private fun noteSpeech(at: Long, seconds: Double): Boolean {
+        speech.addLast(at to seconds)
+        while (speech.isNotEmpty() && speech.first().first < at - MEDIA_WINDOW_MS) speech.removeFirst()
+        return speech.sumOf { it.second } >= MEDIA_SPEECH_SEC
     }
 
     private suspend fun transcribeWithRetry(pcm: ShortArray): String? {
@@ -131,7 +139,7 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
             val result = g.brain.analyze(context, fresh, g.store.upcomingEvents() + g.store.suggestions(), now)
             synchronized(pending) { pending.removeAll(fresh); hinted = false }
             failures = 0
-            val eventIds = g.events.handle(result.events, now)
+            val eventIds = g.events.handle(EventRules.attachSource(result.events, fresh), now)
             if (result.importance != "low" || eventIds.isNotEmpty() || result.todos.isNotEmpty()) {
                 val note = Note(
                     id = System.currentTimeMillis(),
@@ -168,5 +176,7 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
         private const val MIN_CHARS = 15
         private const val MAX_PENDING_CHARS = 4_000
         private const val CONTEXT_MS = 15 * 60_000L
+        private const val MEDIA_WINDOW_MS = 10 * 60_000L
+        private const val MEDIA_SPEECH_SEC = 6 * 60.0
     }
 }

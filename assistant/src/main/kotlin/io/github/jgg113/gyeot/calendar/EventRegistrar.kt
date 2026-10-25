@@ -26,7 +26,7 @@ class EventRegistrar(
 
     /** @return 저장한(등록했거나 물어본) 일정 id 들 */
     @Synchronized
-    fun handle(found: List<ExtractedEvent>, now: ZonedDateTime = ZonedDateTime.now(EventRules.SEOUL), mode: String = settings.addMode): List<Long> {
+    fun handle(found: List<ExtractedEvent>, now: ZonedDateTime = ZonedDateTime.now(EventRules.SEOUL), mode: String = settings.addMode, addedBy: String = "auto"): List<Long> {
         val saved = mutableListOf<Long>()
         for (e in found) {
             val timing = EventRules.timing(e) ?: continue
@@ -49,6 +49,11 @@ class EventRegistrar(
                 evidence = e.evidence.trim(),
                 status = SavedEvent.SUGGESTED,
                 timeUnknown = e.timeUnknown,
+                heardAt = e.heardAt.takeIf { it > 0 } ?: System.currentTimeMillis(),
+                source = e.source,
+                reasons = e.reasons,
+                confidence = e.confidence,
+                mediaLikely = e.mediaLikely,
             )
             // "회의 4시로 미뤄졌어": 며칠 안쪽의 비슷한 제목 일정은 새 시각으로 옮긴다 (바로 넣을 때만 예전 것을 지운다).
             val replaced = if (e.isChange) store.upcomingEvents().filter {
@@ -57,7 +62,7 @@ class EventRegistrar(
             } else emptyList()
             saved += if (decision == EventRules.Decision.REGISTER) {
                 replaced.forEach { cancel(it.id) }
-                register(event.copy(status = SavedEvent.REGISTERED))
+                register(event.copy(status = SavedEvent.REGISTERED, addedBy = addedBy))
             } else {
                 store.upsertEvent(event)
                 Notifier.suggestion(context, event, replaced.firstOrNull())
@@ -73,14 +78,14 @@ class EventRegistrar(
         if (e.active && e.calendarEventId != null) return
         replaceOld(e)
         alarms.cancel(e.id)
-        register(e.copy(status = SavedEvent.REGISTERED, timeUnknown = false))
+        register(e.copy(status = SavedEvent.REGISTERED, timeUnknown = false, addedBy = if (e.addedBy == "edited") "edited" else "approved"))
     }
 
     /** [알림만] — 캘린더에는 넣지 않고 앱이 그 시각에 알려 준다. */
     fun remindOnly(eventId: Long) {
         val e = store.event(eventId) ?: return
         replaceOld(e)
-        val stored = e.copy(status = SavedEvent.REMINDER, timeUnknown = false)
+        val stored = e.copy(status = SavedEvent.REMINDER, timeUnknown = false, addedBy = e.addedBy.ifBlank { "approved" }.let { if (it == "auto") "approved" else it })
         store.upsertEvent(stored)
         alarms.schedule(stored)
         Notifier.reminderSet(context, stored)
@@ -99,17 +104,17 @@ class EventRegistrar(
         val length = if (allDay) 24L * 60 * 60 * 1000 else (e.endMillis - e.startMillis).takeIf { it > 0 && !e.allDay } ?: 60L * 60 * 1000
         e.calendarEventId?.let { calendar.delete(it) }
         alarms.cancel(e.id)
-        val moved = e.copy(startMillis = startMillis, endMillis = startMillis + length, allDay = allDay, calendarEventId = null, timeUnknown = false)
+        val moved = e.copy(startMillis = startMillis, endMillis = startMillis + length, allDay = allDay, calendarEventId = null, timeUnknown = false, addedBy = "edited", status = SavedEvent.SUGGESTED)
         store.upsertEvent(moved)
         if (toCalendar) addToCalendar(moved.id) else remindOnly(moved.id)
     }
 
-    /** 이미 넣은 일정을 지운다 (캘린더·알람 모두). */
-    fun cancel(eventId: Long) {
+    /** 이미 넣은 일정을 지운다 (캘린더·알람 모두). [wrong] 이면 "틀린 일정"으로 기억해 같은 말로 다시 넣지 않는다. */
+    fun cancel(eventId: Long, wrong: Boolean = false) {
         val e = store.event(eventId) ?: return
         e.calendarEventId?.let { calendar.delete(it) }
         alarms.cancel(e.id)
-        store.upsertEvent(e.copy(status = SavedEvent.CANCELLED))
+        store.upsertEvent(e.copy(status = SavedEvent.CANCELLED, wrong = wrong || e.wrong))
         Notifier.cancelEvent(context, e.id)
     }
 

@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -95,6 +96,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tab.intValue = intent.getIntExtra(EXTRA_TAB, 0)
+        intent.getLongExtra(EXTRA_EVENT, -1).takeIf { it >= 0 }?.let { openEvent.longValue = it }
         val g = Graph.get(this)
         // 부팅 뒤 '다시 듣기' 알림을 눌러 들어온 경우 등: 켜 두었던 듣기를 이어 간다.
         if (g.settings.listeningWanted && !ListenState.state.value.running && hasMic()) runCatching { ListeningService.start(this) }
@@ -109,6 +111,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         tab.intValue = intent.getIntExtra(EXTRA_TAB, tab.intValue)
+        intent.getLongExtra(EXTRA_EVENT, -1).takeIf { it >= 0 }?.let { openEvent.longValue = it; tab.intValue = 0 }
     }
 
     private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -193,6 +196,9 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_TAB = "tab"
+        const val EXTRA_EVENT = "event_id"
+        /** 근거 화면으로 열 일정 id (-1 이면 닫힘). */
+        val openEvent = androidx.compose.runtime.mutableLongStateOf(-1L)
     }
 }
 
@@ -213,6 +219,8 @@ private fun App(tab: Int, onTab: (Int) -> Unit) {
             }
         },
     ) { pad ->
+        val detail = MainActivity.openEvent.longValue
+        if (detail >= 0) EventEvidence(detail) { MainActivity.openEvent.longValue = -1 }
         Column(Modifier.padding(pad).fillMaxSize()) {
             when (tab) {
                 0 -> TodayScreen()
@@ -317,11 +325,12 @@ private fun TodayScreen() {
 @Composable
 private fun EventCard(e: SavedEvent, g: Graph) {
     val scope = rememberCoroutineScope()
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth().clickable { MainActivity.openEvent.longValue = e.id }) {
         Column(Modifier.padding(12.dp)) {
             Text(e.title, fontWeight = FontWeight.Bold)
             Text(Notifier.describe(e) + if (e.location.isNotBlank()) " · ${e.location}" else "")
             if (e.evidence.isNotBlank()) Text("\"${e.evidence}\"", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+            Text(whyLine(e) + " · 눌러서 근거 보기", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     when {
@@ -337,16 +346,129 @@ private fun EventCard(e: SavedEvent, g: Graph) {
     }
 }
 
+/** 카드에 한 줄로: 어떻게 들어갔는지. */
+private fun whyLine(e: SavedEvent): String = when (e.addedBy) {
+    "approved" -> "물어본 뒤 승인하셨어요"
+    "voice" -> "통화에서 말로 부탁하셨어요"
+    "edited" -> "날짜를 고쳐 넣으셨어요"
+    "auto" -> "확실해 보여 바로 넣었어요 (${(e.confidence * 100).toInt()}%)"
+    else -> "대화에서 찾았어요"
+}
+
+/**
+ * 일정 근거 화면: 왜 넣었는지, 언제·어디서 들었는지, 들은 말, 판단 이유, 앞뒤 대화 원문.
+ * 실제 약속이 아니면 [틀렸어요 — 지우기], 시간이 틀리면 [날짜·시간 고치기].
+ */
+@Composable
+private fun EventEvidence(eventId: Long, close: () -> Unit) {
+    val activity = androidx.compose.ui.platform.LocalContext.current as MainActivity
+    val g = remember { Graph.get(activity) }
+    val scope = rememberCoroutineScope()
+    val version by g.store.version.collectAsState()
+    val e = remember(version, eventId) { g.store.event(eventId) }
+    var askMode by remember { mutableStateOf(false) }
+    if (e == null) { close(); return }
+    // 예전 버전이 넣은 일정은 들은 시각이 없어, 근거 문장과 같은 말을 받아쓴 기록에서 찾아 쓴다.
+    val heardAt = remember(e.id) {
+        if (e.heardAt > 0 || e.evidence.isBlank()) e.heardAt
+        else g.store.utterancesSince(e.createdAt - 2L * 24 * 60 * 60 * 1000).filter { it.at <= e.createdAt + 60_000 }
+            .lastOrNull { it.text.contains(e.evidence.take(10)) }?.at ?: 0L
+    }
+    val around = remember(e.id, version, heardAt) {
+        if (heardAt <= 0) emptyList()
+        else g.store.utterancesSince(heardAt - 4 * 60_000).filter { it.at <= heardAt + 3 * 60_000 }
+    }
+    val heard = if (heardAt > 0) Instant.ofEpochMilli(heardAt).atZone(EventRules.SEOUL) else null
+    androidx.compose.ui.window.Dialog(onDismissRequest = close, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Card(Modifier.fillMaxWidth().padding(12.dp)) {
+            Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(e.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text((if (e.timeUnknown) "날짜 미정" else Notifier.describe(e)) + if (e.location.isNotBlank()) " · ${e.location}" else "")
+                Text(
+                    when {
+                        e.wrong -> "❌ 틀린 일정으로 표시해 지웠어요"
+                        e.status == SavedEvent.CANCELLED -> "취소한 일정이에요"
+                        e.status == SavedEvent.DISMISSED -> "'아니요'라고 하신 일정이에요"
+                        e.asking -> "❓ 아직 넣지 않고 물어보는 중이에요"
+                        e.calendarEventId != null -> "📅 캘린더에 들어가 있어요"
+                        else -> "🔔 앱 알림만 맞춰 뒀어요"
+                    },
+                    fontWeight = FontWeight.Medium,
+                )
+
+                SectionTitle("왜 넣었나요?")
+                Text(when (e.addedBy) {
+                    "approved" -> "수빈이가 물어봤고, 직접 '추가'를 누르셨어요."
+                    "voice" -> "수빈이와 통화하면서 말로 부탁하셨어요."
+                    "edited" -> "날짜·시간을 직접 고쳐서 넣으셨어요."
+                    "auto" -> "확실한 약속처럼 들려 묻지 않고 바로 넣었어요. 확신도 ${(e.confidence * 100).toInt()}%."
+                    else -> if (e.asking) "약속 같은 말을 들었지만 확실하지 않아 먼저 여쭤보는 거예요. 확신도 ${(e.confidence * 100).toInt()}%." else "대화에서 찾은 일정이에요."
+                })
+                if (e.mediaLikely) Text("📺 그때 10분 동안 말소리가 거의 쉬지 않았어요. TV·영상 소리였을 수 있어요.", color = MaterialTheme.colorScheme.error)
+                if (heard != null) Text("들은 때: ${heard.monthValue}월 ${heard.dayOfMonth}일 ${clock(heardAt)} · " +
+                    if (e.source.startsWith("call:")) "📞 ${e.source.removePrefix("call:")} 통화 녹음" else "휴대폰 곁에서 들은 말")
+                if (e.evidence.isNotBlank()) Text("들은 말: \"${e.evidence}\"", fontWeight = FontWeight.Bold)
+                if (e.reasons.isNotEmpty()) {
+                    Text("판단 근거", style = MaterialTheme.typography.labelLarge)
+                    e.reasons.forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }
+                } else if (e.heardAt <= 0) {
+                    Text("이 일정은 판단 이유를 기록하기 전 버전에서 넣었어요. 아래 앞뒤 대화로 확인해 주세요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                }
+
+                if (around.isNotEmpty()) {
+                    SectionTitle("앞뒤 대화 (받아쓴 원문)")
+                    around.forEach { u ->
+                        val key = u.at == heardAt || (e.evidence.isNotBlank() && u.text.contains(e.evidence.take(8)))
+                        Row {
+                            Text(clock(u.at), style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(48.dp))
+                            Text(
+                                (u.callWith?.let { "📞 " } ?: "") + u.text,
+                                fontWeight = if (key) FontWeight.Bold else FontWeight.Normal,
+                                color = if (key) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                if (!e.wrong && e.status != SavedEvent.CANCELLED && e.status != SavedEvent.DISMISSED) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (e.asking && !e.timeUnknown) Button(onClick = { scope.launch(Dispatchers.IO) { g.events.addToCalendar(e.id) } }) { Text("맞아요, 넣어 줘") }
+                        else if (!e.asking) Button(onClick = close) { Text("맞아요") }
+                        OutlinedButton(onClick = {
+                            activity.pickDateTime(e.startMillis, e.allDay) { start, allDay -> scope.launch(Dispatchers.IO) { g.events.reschedule(e.id, start, allDay, toCalendar = true) } }
+                        }) { Text("날짜·시간 고치기") }
+                    }
+                    OutlinedButton(onClick = {
+                        scope.launch(Dispatchers.IO) { if (e.asking) { g.events.dismiss(e.id); g.events.cancel(e.id, wrong = true) } else g.events.cancel(e.id, wrong = true) }
+                        if (g.settings.addMode != EventRules.MODE_ASK) askMode = true else close()
+                    }) { Text("❌ 실제 약속이 아니에요 — 지우기") }
+                }
+                TextButton(onClick = close) { Text("닫기") }
+            }
+        }
+    }
+    if (askMode) AlertDialog(
+        onDismissRequest = { askMode = false; close() },
+        title = { Text("지웠어요") },
+        text = { Text("앞으로는 확실해 보여도 바로 넣지 않고, 모든 일정을 먼저 \"추가할까요?\" 하고 물어볼까요? (TV를 자주 켜 두신다면 추천해요)") },
+        confirmButton = { TextButton(onClick = { g.settings.addMode = EventRules.MODE_ASK; askMode = false; close() }) { Text("네, 늘 물어봐 줘") } },
+        dismissButton = { TextButton(onClick = { askMode = false; close() }) { Text("지금처럼") } },
+    )
+}
+
 /** "추가할까요?" 카드: 캘린더 / 알림만 / 날짜·시각 바꾸기 / 아니요. */
 @Composable
 private fun SuggestionCard(e: SavedEvent, g: Graph, activity: MainActivity) {
     val scope = rememberCoroutineScope()
     fun act(block: () -> Unit) { scope.launch(Dispatchers.IO) { block() } }
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
+    Card(Modifier.fillMaxWidth().clickable { MainActivity.openEvent.longValue = e.id }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
         Column(Modifier.padding(12.dp)) {
             Text(e.title, fontWeight = FontWeight.Bold)
             Text(if (e.timeUnknown) "언제인지 못 들었어요 — [날짜 정하기]로 정해 주세요" else Notifier.describe(e) + if (e.location.isNotBlank()) " · ${e.location}" else "")
             if (e.evidence.isNotBlank()) Text("들은 말: \"${e.evidence}\"", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+            if (e.mediaLikely) Text("📺 TV·영상 소리일 수 있어요", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            Text("눌러서 근거·앞뒤 대화 보기", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (!e.timeUnknown) {
                     Button(onClick = { act { g.events.addToCalendar(e.id) } }) { Text("캘린더") }
