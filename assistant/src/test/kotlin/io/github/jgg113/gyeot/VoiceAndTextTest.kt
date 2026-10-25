@@ -20,6 +20,8 @@ class VoiceAndTextTest {
         // 휴대폰 화면에 나왔던 깨진 글자: 바이트 조각으로 나온 한국어
         assertEquals("집으로 빠르게", KoreanText.fixByteLevel("집으로Ġë¹ł르게"))
         assertEquals("그대로 둠", KoreanText.fixByteLevel("그대로 둠"))
+        // 두 번째 화면(기록 탭)에 나왔던 글
+        assertEquals("아르바이트한 친구로부터", KoreanText.fixByteLevel("아르바이트한Ġì¹ľ구로부터"))
         assertFalse(KoreanText.isCleanKorean("나에게 집으로 오라고 吩咐했다"))
         assertFalse(KoreanText.isCleanKorean("오타가 안부상을Gë 었습니다"))
         assertTrue(KoreanText.isCleanKorean("민수랑 내일 3시에 만나기로 했어요"))

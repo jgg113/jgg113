@@ -76,6 +76,26 @@ class Graph private constructor(private val context: Context) {
         return brain.ask(question, "## 캘린더 일정 (어제~2주 뒤)\n$week\n\n$material", now)
     }
 
+    /**
+     * 정리 노트를 받아쓴 원문에서 규칙으로 다시 만든다 (작은 AI 를 쓰지 않음).
+     * 예전 버전의 요약 AI 가 남긴 깨진 글자·지어낸 문장을 없애는 데 쓴다. 쓸모없는 노트면 null.
+     */
+    fun rebuildNote(n: io.github.jgg113.gyeot.data.Note): io.github.jgg113.gyeot.data.Note? {
+        val said = store.utterancesSince(n.from - 1_000).filter { it.at <= n.at + 1_000 }
+        if (said.isEmpty()) return null
+        val at = java.time.Instant.ofEpochMilli(n.at).atZone(EventRules.SEOUL)
+        val r = plainRules.analyze(emptyList(), said, emptyList(), at)
+        if (r.importance == "low" && n.eventIds.isEmpty() && r.todos.isEmpty() && r.keyPoints.isEmpty()) return null
+        val who = said.firstNotNullOfOrNull { it.callWith }
+        val prefix = if (who != null) "📞 $who 통화 (${((n.at - n.from) / 60_000).coerceAtLeast(1)}분) · " else ""
+        return n.copy(summary = prefix + r.summary, importance = r.importance, keyPoints = r.keyPoints, todos = r.todos)
+    }
+    private val plainRules = RuleBrain()
+
+    /** 하루치 정리를 다시 한다 (기록 탭의 [정리 다시 하기]). */
+    fun rebuildDay(day: java.time.LocalDate) =
+        store.rewriteNotes { n -> if (io.github.jgg113.gyeot.data.Store.dayOf(n.at) == day) rebuildNote(n) else n }
+
     /** 최근 며칠의 정리 노트 + 받아쓴 말 원문 (날짜·시각 붙임) — 묻기 탭·수빈이 통화가 근거로 쓴다. */
     fun recentMaterial(days: Int): String {
         val today = java.time.LocalDate.now(EventRules.SEOUL)

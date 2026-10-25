@@ -382,6 +382,7 @@ private fun NoteCard(n: Note) {
 private fun HistoryScreen() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val g = remember { Graph.get(ctx) }
+    val scope = rememberCoroutineScope()
     val version by g.store.version.collectAsState()
     var day by remember { mutableStateOf(LocalDate.now(EventRules.SEOUL)) }
     val lines = remember(version, day) { g.store.utterances(day).reversed() }
@@ -395,6 +396,7 @@ private fun HistoryScreen() {
             Spacer(Modifier.weight(1f))
             FilterChip(selected = showNotes, onClick = { showNotes = !showNotes }, label = { Text("정리만") })
         }
+        if (showNotes && notes.isNotEmpty()) TextButton(onClick = { scope.launch(Dispatchers.IO) { g.rebuildDay(day) } }) { Text("↻ 이 날 정리 다시 하기 (받아쓴 원문으로)") }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
             if (showNotes) {
                 if (notes.isEmpty()) item { Text("이 날 정리된 대화가 없어요.", color = MaterialTheme.colorScheme.outline) }

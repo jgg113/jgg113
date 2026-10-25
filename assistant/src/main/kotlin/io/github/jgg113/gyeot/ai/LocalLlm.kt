@@ -33,7 +33,7 @@ class LocalLlm private constructor(private val engine: LlmInference) : AutoClose
         KoreanText.fixByteLevel(
             engine.generateResponse("<|im_start|>system\n$system<|im_end|>\n<|im_start|>user\n$user<|im_end|>\n<|im_start|>assistant\n")
                 .substringBefore("<|im_end|>"),
-        ).trim()
+        ).replace("\\n", "\n").replace("\\-", "-").trim()
 
     override fun close() = engine.close()
 
