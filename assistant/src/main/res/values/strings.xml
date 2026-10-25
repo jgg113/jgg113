@@ -2,4 +2,6 @@
 <resources>
     <string name="app_name">클로드비서</string>
     <string name="tile_label">수빈이 듣기</string>
+    <string name="sc_call">수빈이와 통화</string>
+    <string name="sc_pause">듣기 잠시 멈춤</string>
 </resources>

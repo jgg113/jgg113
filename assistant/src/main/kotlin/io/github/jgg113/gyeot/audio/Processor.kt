@@ -61,7 +61,9 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
             val first = segments.receive()
             batch += first.second
             batchEnd = first.first
-            while (batch.sumOf { it.size } < MAX_BATCH_SAMPLES) {
+            // 고정밀(Qwen3) 모델은 짧게 나눠 보내야 빠르고 잘리지 않는다.
+            val maxBatch = if (g.settings.localStt && g.localTranscriber.engine() == io.github.jgg113.gyeot.data.Settings.MODEL_QWEN3) QWEN_BATCH_SAMPLES else MAX_BATCH_SAMPLES
+            while (batch.sumOf { it.size } < maxBatch) {
                 val next = withTimeoutOrNull(BATCH_WAIT_MS) { segments.receive() } ?: break
                 batch += next.second
                 batchEnd = next.first
@@ -111,6 +113,7 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
     private suspend fun analyzeLoop() {
         while (scope.isActive) {
             delay(5_000)
+            g.localTranscriber.closeIfIdle()
             val (count, chars, hint) = synchronized(pending) { Triple(pending.size, pending.sumOf { it.text.length }, hinted) }
             if (count == 0) continue
             val idle = System.currentTimeMillis() - lastSpeechAt
@@ -170,6 +173,7 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
     companion object {
         private const val TAG = "GyeotProcessor"
         private const val MAX_BATCH_SAMPLES = SpeechSegmenter.SAMPLE_RATE * 25
+        private const val QWEN_BATCH_SAMPLES = SpeechSegmenter.SAMPLE_RATE * 15
         private const val BATCH_WAIT_MS = 4_000L
         private const val IDLE_MS = 90_000L
         private const val HINT_IDLE_MS = 20_000L

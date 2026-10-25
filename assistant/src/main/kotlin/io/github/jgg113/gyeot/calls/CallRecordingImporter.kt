@@ -87,7 +87,7 @@ class CallRecordingImporter(private val context: Context) {
         val start = info.startMillis ?: (r.addedMillis - r.durationMs)
         val tag = "call:${info.who}"
         val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, r.id)
-        val segmenter = SpeechSegmenter(endSilenceMs = 800, maxSegmentMs = 25_000)
+        val segmenter = g.newSegmenter(maxSegmentSec = 20f, minSilenceSec = 0.5f)
         val frame = ShortArray(segmenter.frameSamples)
         var filled = 0
         var samples = 0L
@@ -103,8 +103,10 @@ class CallRecordingImporter(private val context: Context) {
             }
         }
         segmenter.flush()?.let { segments += (samples * 1000 / SpeechSegmenter.SAMPLE_RATE) to it }
+        segmenter.release()
         val utterances = segments.mapNotNull { (endMs, seg) ->
-            val text = runCatching { g.transcribe(seg) }.getOrNull()?.let { TranscriptFilter.clean(it) } ?: return@mapNotNull null
+            // 통화는 짧고 중요해서, 고정밀 모델을 받아 두었으면 통화 전체를 고정밀로 받아쓴다.
+            val text = runCatching { g.transcribe(seg, preferBest = true) }.getOrNull()?.let { TranscriptFilter.clean(it) } ?: return@mapNotNull null
             Utterance(start + endMs, text, source = tag)
         }
         if (utterances.isEmpty()) return

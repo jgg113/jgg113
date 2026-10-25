@@ -17,6 +17,29 @@ class Settings(context: Context) {
     var sttEngine: String
         get() = str("stt_engine", ENGINE_LOCAL)
         set(v) = put("stt_engine", v)
+    /** 휴대폰 안 받아쓰기 모델: "dolphin"(기본, 105MB) 또는 "qwen3"(고정밀, 약 1GB). 예전 "zipformer"는 받아 둔 경우에만. */
+    var localModel: String
+        get() = str("local_model", MODEL_DOLPHIN)
+        set(v) = put("local_model", v)
+    /**
+     * 받아쓴 뒤 고쳐 쓸 말 (한 줄에 하나, "틀린말=바른말"). 자주 틀리는 이름·낱말을 바로잡는다.
+     * 예) "민스=민수", "토닉 워터=토닉워터"
+     */
+    var corrections: String
+        get() = str("corrections", "")
+        set(v) = put("corrections", v)
+    /** 고정밀 모델을 받아 두었으면, 기본 모델로 받아쓴 글에 일정·약속 냄새가 날 때 그 구간만 고정밀로 다시 받아쓴다. */
+    var localBoost: Boolean
+        get() = bool("local_boost", true)
+        set(v) = putBool("local_boost", v)
+    /**
+     * 일정·약속 같은 중요한 말만 클라우드(Groq Whisper 무료 한도)로 한 번 더 받아써 정확도를 높인다.
+     * 받아쓰기 키가 있을 때만. 나머지는 모두 휴대폰 안에서.
+     */
+    var cloudBoost: Boolean
+        get() = bool("cloud_boost", false)
+        set(v) = putBool("cloud_boost", v)
+
     /** 정리 엔진: "local"(휴대폰 안 규칙 + 선택적 작은 AI) 또는 "claude". */
     var brainEngine: String
         get() = str("brain_engine", ENGINE_LOCAL)
@@ -128,6 +151,9 @@ class Settings(context: Context) {
     companion object {
         const val DETAIL_BRIEF = "brief"
         const val DETAIL_FULL = "detailed"
+        const val MODEL_ZIPFORMER = "zipformer"
+        const val MODEL_DOLPHIN = "dolphin"
+        const val MODEL_QWEN3 = "qwen3"
         const val ENGINE_LOCAL = "local"
         const val ENGINE_CLOUD = "cloud"
         const val ENGINE_CLAUDE = "claude"

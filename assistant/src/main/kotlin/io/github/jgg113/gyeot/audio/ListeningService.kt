@@ -54,10 +54,19 @@ class ListeningService : Service() {
             return START_NOT_STICKY
         }
         val notification = Notifier.listening(this, "말소리를 기다리는 중", paused)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(Notifier.ID_LISTEN, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(Notifier.ID_LISTEN, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(Notifier.ID_LISTEN, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(Notifier.ID_LISTEN, notification)
+            }
+        } catch (e: Exception) {
+            // 안드로이드 14+ 는 앱이 화면에 없을 때(시스템이 서비스를 되살릴 때 등) 마이크 서비스를 못 켜게 막는다.
+            // 그때 앱이 죽지 않게, "눌러서 다시 듣기" 알림을 남기고 멈춘다.
+            ListenState.update { it.copy(running = false, error = "휴대폰이 듣기를 멈췄어요. 앱을 열면 다시 들어요") }
+            Notifier.simple(this, "수빈이가 잠시 못 듣고 있어요", "휴대폰이 백그라운드 듣기를 멈췄어요. 눌러서 앱을 열면 다시 들어요.", Notifier.ID_RESUME)
+            stopSelf()
+            return START_NOT_STICKY
         }
         if (recordJob == null) {
             wakeLock = getSystemService(PowerManager::class.java)
@@ -74,7 +83,8 @@ class ListeningService : Service() {
 
     @SuppressLint("MissingPermission")
     private suspend fun record(p: Processor) {
-        val segmenter = SpeechSegmenter()
+        var segmenter = Graph.get(this).newSegmenter()
+        var frames = 0L
         val rate = SpeechSegmenter.SAMPLE_RATE
         val min = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val frame = ShortArray(segmenter.frameSamples)
@@ -100,6 +110,10 @@ class ListeningService : Service() {
                         if (n < 0) throw IllegalStateException("마이크 읽기 오류 $n")
                         read += n
                     }
+                    // 말소리 감지 모델을 듣는 도중에 받았으면, 조용할 때 그 모델로 바꾼다 (10초마다 확인).
+                    if (++frames % 500 == 0L && segmenter !is SileroSegmenter && !segmenter.inSpeech && Graph.get(this).models.installed(Graph.get(this).models.vad)) {
+                        segmenter.release(); segmenter = Graph.get(this).newSegmenter()
+                    }
                     val wasHearing = segmenter.inSpeech
                     segmenter.push(frame.copyOf())?.let { p.offer(System.currentTimeMillis(), it) }
                     if (segmenter.inSpeech != wasHearing) ListenState.update { it.copy(hearing = segmenter.inSpeech) }
@@ -111,6 +125,7 @@ class ListeningService : Service() {
                 runCatching { rec.stop() }
                 rec.release()
             }
+            if (!scope.isActive) segmenter.release()
             // 멈춘 동안은 마이크를 아예 놓아 준다 (상태 표시줄의 마이크 표시도 꺼진다).
             while (paused && scope.isActive) delay(500)
         }

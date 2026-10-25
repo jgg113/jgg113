@@ -97,6 +97,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         tab.intValue = intent.getIntExtra(EXTRA_TAB, 0)
         intent.getLongExtra(EXTRA_EVENT, -1).takeIf { it >= 0 }?.let { openEvent.longValue = it }
+        handleShortcut(intent)
         val g = Graph.get(this)
         // 부팅 뒤 '다시 듣기' 알림을 눌러 들어온 경우 등: 켜 두었던 듣기를 이어 간다.
         if (g.settings.listeningWanted && !ListenState.state.value.running && hasMic()) runCatching { ListeningService.start(this) }
@@ -112,9 +113,23 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         tab.intValue = intent.getIntExtra(EXTRA_TAB, tab.intValue)
         intent.getLongExtra(EXTRA_EVENT, -1).takeIf { it >= 0 }?.let { openEvent.longValue = it; tab.intValue = 0 }
+        handleShortcut(intent)
     }
 
     private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    /** 앱 아이콘 길게 누르기 바로가기: 수빈이와 통화 / 듣기 잠시 멈춤. */
+    private fun handleShortcut(i: Intent) {
+        when (i.getStringExtra("shortcut")) {
+            "call" -> io.github.jgg113.gyeot.voice.VoiceCall.chat(this)
+            "pause" -> {
+                val s = ListenState.state.value
+                if (s.running) ListeningService.pause(this, !s.paused)
+                android.widget.Toast.makeText(this, if (s.running && !s.paused) "듣기를 잠시 멈췄어요" else if (s.running) "다시 들어요" else "듣기가 꺼져 있어요", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+        i.removeExtra("shortcut")
+    }
 
     /** 권한 몇 개를 묻고, 대답이 끝나면 [then]. */
     fun request(perms: List<String>, then: () -> Unit) {
@@ -277,6 +292,12 @@ private fun TodayScreen() {
                     if (state.lastHeardAt > 0) Text("마지막 ${clock(state.lastHeardAt)}: ${state.lastText}", maxLines = 2)
                     if (state.queued > 0) Text("받아쓰기 대기 ${state.queued}개")
                     if (state.error.isNotBlank()) Text("⚠ ${state.error}", color = MaterialTheme.colorScheme.error)
+                    if (g.settings.localStt && g.localTranscriber.engine() == AppSettings.MODEL_ZIPFORMER) {
+                        Text("✨ 더 정확한 한국어 인식 모델이 나왔어요 (오류 절반). 설정 → 1번에서 '기본 (105MB)'을 받아 주세요.", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                        val p by g.models.progress(g.models.dolphin).collectAsState()
+                        if (p.running) Text("받는 중 ${p.percent}%")
+                        else TextButton(onClick = { g.models.download(g.models.dolphin); g.models.download(g.models.vad) }) { Text(if (p.error.isNotBlank()) "다시 받기" else "지금 받기 (와이파이 권장)") }
+                    }
                     val why = remember(state.running, version) { g.notReadyReason() }
                     if (why != null) Text(why, color = MaterialTheme.colorScheme.error)
                     else Text(
@@ -285,8 +306,8 @@ private fun TodayScreen() {
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { io.github.jgg113.gyeot.voice.VoiceCall.chat(activity) }, modifier = Modifier.fillMaxWidth()) { Text("📞 수빈이와 통화") }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { io.github.jgg113.gyeot.voice.VoiceCall.chat(activity) }) { Text("📞 수빈이와 통화") }
                         if (!state.running) Button(onClick = { activity.startListening() }) { Text("듣기 시작") }
                         else {
                             Button(onClick = { ListeningService.pause(activity, !state.paused) }) { Text(if (state.paused) "다시 듣기" else "잠시 멈춤") }
@@ -344,6 +365,41 @@ private fun EventCard(e: SavedEvent, g: Graph) {
             }
         }
     }
+}
+
+/**
+ * 받아쓴 줄 고치기. 낱말이 바뀐 곳은 "틀린말=바른말" 규칙으로 저장해 다음부터 자동으로 고친다.
+ */
+@Composable
+private fun EditUtterance(u: io.github.jgg113.gyeot.data.Utterance, g: Graph, close: () -> Unit) {
+    var text by remember { mutableStateOf(u.text) }
+    var learn by remember { mutableStateOf(true) }
+    val learned = remember(text) { io.github.jgg113.gyeot.stt.Corrections.learn(u.text, text) }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("받아쓴 말 고치기") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${clock(u.at)} 에 들은 말", style = MaterialTheme.typography.labelMedium)
+                OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), minLines = 2)
+                if (learned.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Checkbox(learn, { learn = it })
+                    Text("다음부터 자동으로 고치기: " + learned.joinToString(", ") { "${it.wrong}→${it.right}" }, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                g.store.updateUtterance(u, text.trim())
+                if (learn && learned.isNotEmpty()) {
+                    val rules = io.github.jgg113.gyeot.stt.Corrections.parse(g.settings.corrections) + learned
+                    g.settings.corrections = rules.distinctBy { it.wrong }.joinToString("\n") { "${it.wrong}=${it.right}" }
+                }
+                close()
+            }) { Text("고치기") }
+        },
+        dismissButton = { TextButton(onClick = close) { Text("그만두기") } },
+    )
 }
 
 /** 카드에 한 줄로: 어떻게 들어갔는지. */
@@ -510,6 +566,8 @@ private fun HistoryScreen() {
     val lines = remember(version, day) { g.store.utterances(day).reversed() }
     val notes = remember(version, day) { g.store.notes().filter { Store.dayOf(it.at) == day }.reversed() }
     var showNotes by remember { mutableStateOf(true) }
+    var editing by remember { mutableStateOf<io.github.jgg113.gyeot.data.Utterance?>(null) }
+    editing?.let { u -> EditUtterance(u, g) { editing = null } }
     Column(Modifier.padding(horizontal = 16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { day = day.minusDays(1) }) { Text("◀") }
@@ -518,15 +576,29 @@ private fun HistoryScreen() {
             Spacer(Modifier.weight(1f))
             FilterChip(selected = showNotes, onClick = { showNotes = !showNotes }, label = { Text("정리만") })
         }
-        if (showNotes && notes.isNotEmpty()) TextButton(onClick = { scope.launch(Dispatchers.IO) { g.rebuildDay(day) } }) { Text("↻ 이 날 정리 다시 하기 (받아쓴 원문으로)") }
+        Row {
+            if (showNotes && notes.isNotEmpty()) TextButton(onClick = { scope.launch(Dispatchers.IO) { g.rebuildDay(day) } }) { Text("↻ 정리 다시 하기") }
+            if (lines.isNotEmpty() || notes.isNotEmpty()) TextButton(onClick = {
+                // 이 날 정리 + 받아쓴 원문을 글로 내보낸다 (카카오톡·메일로 보내거나 보관).
+                val text = buildString {
+                    appendLine("클로드비서 기록 · $day")
+                    notes.reversed().forEach { n -> appendLine("[정리 ${clock(n.from)}~${clock(n.at)}] ${n.summary}"); n.keyPoints.forEach { appendLine("  - $it") }; n.todos.forEach { appendLine("  - 할 일: ${it.text}") } }
+                    appendLine()
+                    lines.reversed().forEach { u -> appendLine("[${clock(u.at)}] ${u.callWith?.let { "📞$it " }.orEmpty()}${u.text}") }
+                }
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT, "클로드비서 기록 $day").putExtra(Intent.EXTRA_TEXT, text)
+                ctx.startActivity(Intent.createChooser(send, "기록 내보내기"))
+            }) { Text("📤 이 날 기록 내보내기") }
+        }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
             if (showNotes) {
                 if (notes.isEmpty()) item { Text("이 날 정리된 대화가 없어요.", color = MaterialTheme.colorScheme.outline) }
                 items(notes, key = { it.id }) { NoteCard(it) }
             } else {
                 if (lines.isEmpty()) item { Text("이 날 받아쓴 말이 없어요.", color = MaterialTheme.colorScheme.outline) }
+                item { Text("잘못 받아쓴 줄을 누르면 고칠 수 있어요. 고친 낱말은 다음부터 자동으로 바로잡아요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline) }
                 items(lines) { u ->
-                    Row {
+                    Row(Modifier.fillMaxWidth().clickable { editing = u }) {
                         Text(clock(u.at), style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(48.dp))
                         Text(if (u.callWith != null) "📞 ${u.callWith}: ${u.text}" else u.text)
                     }
@@ -609,6 +681,12 @@ private fun SettingsScreen() {
     var brainEngine by remember { mutableStateOf(s.brainEngine) }
     var useLlm by remember { mutableStateOf(s.useLocalLlm) }
     val asrProgress by g.models.progress(g.models.asr).collectAsState()
+    val qwenProgress by g.models.progress(g.models.qwen3).collectAsState()
+    val dolphinProgress by g.models.progress(g.models.dolphin).collectAsState()
+    var localModel by remember { mutableStateOf(s.localModel) }
+    var corrections by remember { mutableStateOf(s.corrections) }
+    var cloudBoost by remember { mutableStateOf(s.cloudBoost) }
+    var localBoost by remember { mutableStateOf(s.localBoost) }
     val llmProgress by g.models.progress(g.models.llm).collectAsState()
 
     LaunchedEffect(Unit) { calendars = withContext(Dispatchers.IO) { g.calendar.writableCalendars() } }
@@ -623,7 +701,10 @@ private fun SettingsScreen() {
         s.addMode = addMode; s.ownReminders = own; s.calendarId = calId
         briefing.toIntOrNull()?.let { s.briefingHour = it; g.alarms.scheduleBriefing(s.briefingHour) }
         s.sttEngine = sttEngine; s.brainEngine = brainEngine; s.useLocalLlm = useLlm
+        s.corrections = corrections
     }
+    // 저장 버튼을 깜빡해도, 설정 탭을 떠날 때 입력한 값을 저장한다.
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { save() } }
 
     Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionTitle("1. 받아쓰기 (음성 인식)")
@@ -632,8 +713,41 @@ private fun SettingsScreen() {
             FilterChip(selected = sttEngine == AppSettings.ENGINE_CLOUD, onClick = { sttEngine = AppSettings.ENGINE_CLOUD; s.sttEngine = sttEngine }, label = { Text("클라우드 API") })
         }
         if (sttEngine == AppSettings.ENGINE_LOCAL) {
-            Text("인터넷 없이 휴대폰 안에서 한국어를 받아씁니다 (sherpa-onnx, 한국어 일상 대화로 학습한 모델). 처음 한 번 85MB 를 받습니다.", style = MaterialTheme.typography.bodySmall)
-            ModelRow(g.models.installed(g.models.asr) && !asrProgress.running, asrProgress, g.models.asr.label, onGet = { g.models.download(g.models.asr) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.asr) })
+            Text("인터넷 없이 휴대폰 안에서 한국어를 받아씁니다. 작은 목소리는 자동으로 키워서 받아써요.", style = MaterialTheme.typography.bodySmall)
+            Text("받아쓰기 모델", style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = localModel != AppSettings.MODEL_QWEN3, onClick = { localModel = AppSettings.MODEL_DOLPHIN; s.localModel = localModel; g.localTranscriber.close() }, label = { Text("기본 (105MB)") })
+                FilterChip(selected = localModel == AppSettings.MODEL_QWEN3, onClick = { localModel = AppSettings.MODEL_QWEN3; s.localModel = localModel; g.localTranscriber.close() }, label = { Text("고정밀 (약 1GB)") })
+            }
+            if (localModel != AppSettings.MODEL_QWEN3) {
+                Text("Dolphin (무료 공개 모델). 공개 한국어 평가 음성에서 예전 모델보다 오류가 절반이고, 시끄럽고 먼 소리에 훨씬 강해요. 빠르고 가벼워요.", style = MaterialTheme.typography.bodySmall)
+                ModelRow(g.models.installed(g.models.dolphin) && !dolphinProgress.running, dolphinProgress, g.models.dolphin.label, onGet = { g.models.download(g.models.dolphin); g.models.download(g.models.vad) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.dolphin) })
+            } else {
+                Text("Qwen3-ASR (무료 공개 모델). 아래 '자주 나오는 이름'을 힌트로 써서 이름을 더 잘 알아들어요. 받아쓰는 데 시간이 더 걸리고 메모리를 1.5GB 안팎 써요 (갤럭시 S·폴드급 권장, 10분 안 쓰면 메모리에서 내려요). 받기 전까지는 기본 모델로 받아써요.", style = MaterialTheme.typography.bodySmall)
+                ModelRow(g.models.installed(g.models.qwen3) && !qwenProgress.running, qwenProgress, g.models.qwen3.label, onGet = { g.models.download(g.models.qwen3); g.models.download(g.models.vad) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.qwen3) })
+            }
+            if (localModel != AppSettings.MODEL_QWEN3) {
+                Text("더 정확하게: 고정밀 모델도 받아 두면, 일정·약속 같은 중요한 말만 고정밀로 한 번 더 받아써요 (휴대폰 안, 무료). 배터리는 조금만 더 써요.", style = MaterialTheme.typography.bodySmall)
+                ModelRow(g.models.installed(g.models.qwen3) && !qwenProgress.running, qwenProgress, "고정밀 모델 (약 1GB, 와이파이)", onGet = { g.models.download(g.models.qwen3) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.qwen3) })
+                if (g.models.installed(g.models.qwen3)) Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("중요한 말은 고정밀로 한 번 더", Modifier.weight(1f))
+                    Switch(localBoost, { localBoost = it; s.localBoost = it })
+                }
+            }
+            Text("지금 쓰는 모델: " + when (g.localTranscriber.engine()) { AppSettings.MODEL_QWEN3 -> "고정밀"; AppSettings.MODEL_ZIPFORMER -> "예전 모델 (새 모델을 받아 주세요)"; else -> "기본" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            if (g.models.installed(g.models.asr) && (g.models.installed(g.models.dolphin) || g.models.installed(g.models.qwen3))) {
+                TextButton(onClick = { g.localTranscriber.close(); g.models.delete(g.models.asr) }) { Text("예전 모델(85MB) 지우기") }
+            }
+            if (!g.models.installed(g.models.vad)) Text("말소리 감지 모델(0.6MB)은 음성 인식 모델을 받을 때 함께 받아요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+            DictationTestRow(g, activity)
+            Text("자꾸 틀리는 말 고치기 (한 줄에 하나, 틀린말=바른말)", style = MaterialTheme.typography.bodyMedium)
+            OutlinedTextField(corrections, { corrections = it }, Modifier.fillMaxWidth(), label = { Text("예) 민스=민수") }, minLines = 2)
+            Text("기록 탭에서 받아쓴 줄을 눌러 고쳐도 여기에 자동으로 더해져요.", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("일정·약속 같은 중요한 말만 클라우드로 한 번 더 받아쓰기 (Groq 무료 키 필요, 나머지는 휴대폰 안)", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Switch(cloudBoost, { cloudBoost = it; s.cloudBoost = it })
+            }
+            if (cloudBoost) OutlinedTextField(sttKey, { sttKey = it }, Modifier.fillMaxWidth(), label = { Text("Groq API 키 (console.groq.com, 무료)") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
         } else {
             Text("OpenAI 호환 받아쓰기 API. Groq(무료 한도): console.groq.com 에서 키. OpenAI: 주소 https://api.openai.com/v1, 모델 gpt-4o-transcribe.", style = MaterialTheme.typography.bodySmall)
             OutlinedTextField(sttKey, { sttKey = it }, Modifier.fillMaxWidth(), label = { Text("음성 인식 API 키") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
@@ -787,6 +901,38 @@ private fun SettingsScreen() {
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("그만두기") } },
         )
     }
+}
+
+/** [🎤 받아쓰기 시험]: 6초 동안 말해 보면 지금 모델이 어떻게 받아쓰는지 보여 준다. */
+@Composable
+private fun DictationTestRow(g: Graph, activity: MainActivity) {
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    OutlinedButton(enabled = !busy, onClick = {
+        activity.request(listOf(Manifest.permission.RECORD_AUDIO)) {
+            if (activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return@request
+            busy = true
+            state = "🎤 지금부터 6초 동안 평소처럼 말해 보세요… (예: 내일 오후 세 시에 강남역에서 민수랑 만나기로 했어)"
+            scope.launch {
+                val wasListening = ListenState.state.value.running && !ListenState.state.value.paused
+                if (wasListening) ListeningService.pause(activity, true)
+                state = withContext(Dispatchers.IO) {
+                    runCatching {
+                        kotlinx.coroutines.delay(400)
+                        val r = io.github.jgg113.gyeot.stt.DictationTest.run(g)
+                        val model = when (r.model) { AppSettings.MODEL_QWEN3 -> "고정밀"; AppSettings.MODEL_ZIPFORMER -> "예전 모델"; "cloud" -> "클라우드"; else -> "기본" }
+                        "받아쓴 글 ($model 모델, ${"%.1f".format(r.seconds)}초 걸림):\n\"${r.text.ifBlank { "(아무것도 못 알아들었어요)" }}\"\n\n" +
+                            "소리 크기 ${r.levelDb}dB — ${io.github.jgg113.gyeot.stt.DictationTest.levelAdvice(r.levelDb)}" +
+                            if (r.gain > 1.5) " (${"%.0f".format(r.gain)}배 키움)" else ""
+                    }.getOrElse { "시험 실패: ${it.message}" }
+                }
+                if (wasListening) ListeningService.pause(activity, false)
+                busy = false
+            }
+        }
+    }) { Text(if (busy) "듣는 중…" else "🎤 받아쓰기 시험 (6초 말해 보기)") }
+    if (state.isNotBlank()) Text(state, style = MaterialTheme.typography.bodyMedium)
 }
 
 /** 수빈이 목소리 고르기: 휴대폰에 있는 한국어 목소리 목록 + 높이·빠르기 + 미리 듣기. */

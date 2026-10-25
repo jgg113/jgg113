@@ -14,7 +14,9 @@ object TranscriptFilter {
     )
 
     fun clean(raw: String): String? {
-        val text = raw.trim().replace(Regex("\\s+"), " ")
+        // 다국어 모델이 알아듣기 힘든 소리를 한자·일본 글자로 적는 일이 있다 — 그런 글자는 빼고, 한글이 거의 없으면 버린다.
+        val text = raw.replace(Regex("[\\u3040-\\u30FF\\u4E00-\\u9FFF]+"), " ").trim().replace(Regex("\\s+"), " ")
+        if (raw.any { it in '\u4E00'..'\u9FFF' || it in '\u3040'..'\u30FF' } && text.count { it in '가'..'힣' } < 2) return null
         if (text.length < 2) return null
         val compact = text.replace(" ", "")
         if (hallucinations.any { compact.contains(it.replace(" ", ""), ignoreCase = true) } && text.length < 40) return null

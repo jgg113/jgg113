@@ -32,19 +32,48 @@ class ModelManager(context: Context) {
     }
 
     val asr = Pack(
-        "ko-zipformer", "한국어 음성 인식 (85MB)",
+        "ko-zipformer", "예전 한국어 음성 인식 (85MB)",
         listOf(
             "encoder-epoch-99-avg-1.int8.onnx", "decoder-epoch-99-avg-1.onnx", "joiner-epoch-99-avg-1.int8.onnx", "tokens.txt",
         ).map { it to "https://huggingface.co/k2-fsa/sherpa-onnx-zipformer-korean-2024-06-24/resolve/main/$it" },
         85,
     )
+    /**
+     * 기본 한국어 음성 인식: Dolphin base (DataoceanAI, Apache-2.0, 동아시아 40개 언어) 약 105MB.
+     * 공개 한국어 평가 음성으로 재 보니 예전 기본 모델(Zipformer)보다 오류가 절반이고, 시끄럽고 먼 소리에 훨씬 강했다.
+     */
+    val dolphin = Pack(
+        "dolphin-base", "한국어 음성 인식 (105MB)",
+        listOf("model.int8.onnx", "tokens.txt")
+            .map { it to "https://huggingface.co/csukuangfj/sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02/resolve/main/$it" },
+        105,
+    )
+
+    /** 사람 목소리 감지 (Silero VAD, MIT) — 0.6MB, 음성 인식 모델과 함께 받는다. */
+    val vad = Pack(
+        "silero-vad", "말소리 감지 (0.6MB)",
+        listOf("silero_vad.onnx" to "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"),
+        1,
+    )
+
+    /**
+     * 고정밀 한국어 음성 인식: Qwen3-ASR 0.6B (Apache-2.0, sherpa-onnx 8비트) 약 1GB.
+     * 작은 모델보다 훨씬 정확하지만 받아쓰는 데 시간이 더 들고 메모리를 많이 쓴다 (최신 갤럭시 S 권장).
+     */
+    val qwen3 = Pack(
+        "qwen3-asr-0.6b", "고정밀 한국어 음성 인식 (약 1GB, 와이파이)",
+        listOf("conv_frontend.onnx", "encoder.int8.onnx", "decoder.int8.onnx", "tokenizer/merges.txt", "tokenizer/tokenizer_config.json", "tokenizer/vocab.json")
+            .map { it to "https://huggingface.co/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/main/$it" },
+        990,
+    )
+
     val llm = Pack(
         "qwen2.5-1.5b", "요약 AI (1.6GB, 와이파이 권장)",
         listOf(LLM_FILE to "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/$LLM_FILE"),
         1_600,
     )
 
-    private val states = mapOf(asr.id to MutableStateFlow(Progress()), llm.id to MutableStateFlow(Progress()))
+    private val states = listOf(asr, dolphin, vad, qwen3, llm).associate { it.id to MutableStateFlow(Progress()) }
     private val jobs = mutableMapOf<String, Job>()
 
     fun progress(pack: Pack): StateFlow<Progress> = states.getValue(pack.id)
@@ -65,7 +94,7 @@ class ModelManager(context: Context) {
                 val total = sizes.sum()
                 var before = 0L
                 pack.files.forEachIndexed { i, (name, url) ->
-                    val target = file(pack, name)
+                    val target = file(pack, name).also { it.parentFile?.mkdirs() }
                     if (target.exists() && (sizes[i] <= 0 || target.length() == sizes[i])) {
                         before += target.length()
                         state.value = Progress(true, before, total)

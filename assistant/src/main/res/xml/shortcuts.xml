@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 앱 아이콘을 길게 누르면 나오는 바로가기 -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_call"
+        android:shortcutId="call"
+        android:shortcutShortLabel="@string/sc_call">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="io.github.jgg113.gyeot.ui.MainActivity"
+            android:targetPackage="io.github.jgg113.gyeot">
+            <extra android:name="shortcut" android:value="call" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_pause"
+        android:shortcutId="pause"
+        android:shortcutShortLabel="@string/sc_pause">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="io.github.jgg113.gyeot.ui.MainActivity"
+            android:targetPackage="io.github.jgg113.gyeot">
+            <extra android:name="shortcut" android:value="pause" />
+        </intent>
+    </shortcut>
+</shortcuts>

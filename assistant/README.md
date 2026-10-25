@@ -70,20 +70,45 @@ TV를 켜 두면 드라마 대사도 약속처럼 들릴 수 있어서, **10분 
 
 API 키도, 요금도, 사용 한도도 없습니다. 모든 처리를 휴대폰 안에서 합니다.
 
-| 하는 일 | 쓰는 것 (모두 오픈소스) | 크기 |
+| 하는 일 | 쓰는 것 (모두 무료 공개 모델) | 크기 |
 |---|---|---|
-| 한국어 받아쓰기 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) + Zipformer 한국어 모델 (KsponSpeech 한국어 일상 대화 969시간으로 학습, Apache-2.0) | 처음 한 번 85MB |
+| 한국어 받아쓰기 (기본) | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) + [Dolphin](https://github.com/DataoceanAI/Dolphin) base (Apache-2.0) | 처음 한 번 105MB |
+| 한국어 받아쓰기 (고정밀, 선택) | sherpa-onnx + [Qwen3-ASR 0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) (Apache-2.0) — 중요한 말만 또는 모든 말 | 약 1GB |
+| 말소리 감지 | [Silero VAD](https://github.com/snakers4/silero-vad) (MIT) — 소리 크기가 아니라 사람 목소리인지로 판단 | 0.6MB |
 | 일정·할 일·중요한 숫자 찾기 | 앱에 들어 있는 한국어 날짜·시각 규칙 ("내일 오후 세 시", "다음 주 화요일 저녁 일곱 시 반", "삼십 분 뒤", "십일월 오일", "금요일까지", "네 시로 미뤄졌어") | 0 |
-| 요약 문장 다듬기 (선택, 실험 기능 — 기본 끔) | [MediaPipe LLM Inference](https://ai.google.dev/edge/mediapipe/solutions/genai/llm_inference/android) + [Qwen2.5-1.5B-Instruct](https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct) (Apache-2.0) | 1.6GB, 최신 갤럭시 S 권장 |
+| 요약 문장 다듬기 (선택, 실험 기능 — 기본 끔) | [MediaPipe LLM Inference](https://ai.google.dev/edge/mediapipe/solutions/genai/llm_inference/android) + [Qwen2.5-1.5B-Instruct](https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct) (Apache-2.0) | 1.6GB |
 | 묻기 탭 | 기록에서 낱말 찾기 (+ 요약 AI 가 있으면 답 문장으로) | 0 |
 
 더 똑똑한 정리가 필요하면 설정에서 받아쓰기를 **클라우드 API**(Groq·OpenAI), 정리를 **Claude**로 바꿀 수 있습니다 (유료·한도 있음).
+
+### 한국어 받아쓰기 정확도 (직접 잰 값)
+
+공개 한국어 평가 음성(Google FLEURS 한국어 60문장, Zeroth 한국어 80문장, 실제 사람 목소리)으로 휴대폰에 넣을 수 있는 모델을 비교했습니다.
+숫자는 **글자 오류율(CER, 낮을수록 좋음)**, 띄어쓰기·문장부호는 빼고 쟀습니다.
+
+| 모델 (휴대폰 안) | 크기 | 보통 | 전화 음질 | 멀리서 + 생활 소음 | Zeroth 보통 | 빠르기 |
+|---|---|---|---|---|---|---|
+| 예전 기본 Zipformer (소리 키우기 전) | 85MB | 58.8% | — | — | — | 아주 빠름 |
+| 예전 기본 Zipformer (소리 키운 뒤) | 85MB | 10.8% | 15.3% | 55.9% | 36.5% | 아주 빠름 |
+| Omnilingual 300M | 365MB | 9.5% | 11.2% | 12.1% | 12.7% | 보통 |
+| **Dolphin base (새 기본)** | 105MB | **5.8%** | **6.8%** | **11.8%** | **8.8%** | 아주 빠름 |
+| **Qwen3-ASR 0.6B (고정밀)** | 약 1GB | **3.0%** | **4.2%** | **4.7%** | — | 느림 (기본의 약 30배) |
+
+알게 된 것과 고친 것:
+- **작은 소리를 키우는 것만으로 오류가 58.8% → 10.8%** 로 줄었습니다. 받아쓰기용 마이크 경로는 자동 음량이 없어 1~2m 떨어진 말이 아주 작게 들어오는데, 휴대폰 안 모델은 작은 소리를 아예 받아쓰지 못했습니다. 이제 받아쓰기 전에 알맞은 크기로 키웁니다.
+- 말소리 감지도 소리 크기 기준이라 작은 말을 통째로 놓쳤습니다 → 사람 목소리를 알아보는 Silero VAD 로 바꿨습니다.
+- 기본 모델을 Dolphin 으로 바꿨습니다 (오류 절반, 시끄럽고 먼 소리에 훨씬 강함).
+- 고정밀 모델(Qwen3)을 받아 두면 **일정·약속 같은 중요한 말만** 고정밀로 한 번 더 받아쓰고, **통화 녹음은 전부** 고정밀로 받아씁니다. 배터리는 조금만 더 씁니다.
+- 잡음 제거 모델(GTCRN)도 시험했지만 오히려 오류가 늘어(11.2% → 13.9%) 넣지 않았습니다.
+
+직접 확인: **설정 → 1 → [🎤 받아쓰기 시험]** 을 누르고 6초 동안 말하면, 지금 모델이 어떻게 받아쓰는지와 들린 소리 크기를 보여 줍니다.
+잘못 받아쓴 말은 **기록 탭에서 그 줄을 눌러 고치면**, 바뀐 낱말을 기억해 다음부터 자동으로 바로잡습니다 (설정 → 1 → 자꾸 틀리는 말 고치기).
 
 ## 설치
 
 1. 최신 APK: <https://github.com/jgg113/jgg113/releases/download/gyeot-latest/gyeot.apk>
    (이 브랜치에 커밋이 올라가면 GitHub Actions 가 자동으로 빌드합니다. 갤럭시용 64비트 ARM 전용.)
-2. 설치 후 **설정 탭 → 1. 받아쓰기 → '한국어 음성 인식' [받기]** (85MB, 와이파이에서 한 번).
+2. 설치 후 **설정 탭 → 1. 받아쓰기 → '한국어 음성 인식' [받기]** (105MB, 와이파이에서 한 번). 고정밀 모델(약 1GB)도 받아 두면 중요한 말이 더 정확해집니다.
    요약 AI 도 쓰려면 **2. 정리 → '요약 AI' [받기]** (1.6GB). 그다음 [작동 확인].
 3. **오늘 탭 → [듣기 시작]** → 마이크·캘린더·알림 권한 허용.
 4. **갤럭시 필수 설정**: 설정 탭의 [배터리 최적화 제외]를 누르고, 휴대폰 설정 → 배터리 → 백그라운드 사용 제한 → **절전 예외 앱**에 곁비서를 추가합니다. 안 하면 몇 시간 뒤 삼성이 앱을 재웁니다.
@@ -92,7 +117,7 @@ API 키도, 요금도, 사용 한도도 없습니다. 모든 처리를 휴대폰
 ## 어떻게 동작하나
 
 ```
-마이크(16kHz) ─▶ 말소리 감지(VAD) ─▶ 말 구간만 모아 25초 단위로 ─▶ 받아쓰기(휴대폰 안 Zipformer / 클라우드 Whisper)
+마이크(16kHz) ─▶ 말소리 감지(Silero VAD) ─▶ 말 구간만 모아 25초 단위로 ─▶ 작은 소리 키우기 ─▶ 받아쓰기(휴대폰 안 Dolphin, 중요한 말은 Qwen3 로 한 번 더)
                  조용할 땐 아무것도 안 보냄                          │  방송 자막 같은 헛인식 걸러냄
                                                                        ▼
             휴대폰에 날짜별로 저장 ◀────────────────────────────── 받아쓴 글
@@ -139,7 +164,9 @@ API 키도, 요금도, 사용 한도도 없습니다. 모든 처리를 휴대폰
 | `audio/ListeningService.kt` | 마이크 포그라운드 서비스, 멈춤/재개, 웨이크락, 상태 알림 |
 | `audio/SpeechSegmenter.kt` | 주변 소음을 따라가는 에너지 기반 말소리 감지 (앞 0.3초 포함, 1.2초 침묵이면 끊음) |
 | `audio/Processor.kt` | 구간 묶기 → 받아쓰기 → 저장 → 정리 시점 판단 → 일정·알림 |
-| `stt/LocalTranscriber.kt` | 휴대폰 안 한국어 받아쓰기 (sherpa-onnx Zipformer) |
+| `stt/LocalTranscriber.kt` | 휴대폰 안 한국어 받아쓰기 (sherpa-onnx Dolphin·Qwen3-ASR, 이름 힌트) |
+| `audio/Gain.kt`, `audio/SileroSegmenter.kt` | 작은 소리 키우기, 사람 목소리 감지로 말 구간 자르기 |
+| `stt/Corrections.kt`, `stt/DictationTest.kt` | 자꾸 틀리는 말 고치기(사용자 수정에서 배움), 받아쓰기 시험 |
 | `stt/Transcriber.kt`, `stt/TranscriptFilter.kt` | OpenAI 호환 받아쓰기 API, 한국어 헛인식 거르기 |
 | `ai/KoreanTime.kt`, `ai/RuleBrain.kt` | 한국어 날짜·시각 해석(한글 숫자 포함), 일정·할 일·핵심 규칙, 묻기 검색 |
 | `ai/LocalLlm.kt` | 휴대폰 안 요약 AI (MediaPipe + Qwen2.5 1.5B), 쓸 때만 열고 닫음 |
@@ -157,7 +184,6 @@ API 키도, 요금도, 사용 한도도 없습니다. 모든 처리를 휴대폰
 
 ## 다음에 붙이면 좋은 것
 
-- **더 정확한 휴대폰 안 받아쓰기**: sherpa-onnx 가 지원하는 Qwen3-ASR 0.6B (한국어 포함 다국어, 약 880MB) 를 선택지로 추가.
 - **화자 구분**: 내 목소리를 몇 문장 등록해 두고 구분(speaker embedding), 또는 네이버 CLOVA Speech 같은 화자 분리 지원 API.
 - **갤럭시 워치**: 손목에서 일정 알림·멈춤 버튼.
 - **반복 일정**("매주 월요일 회의"), 취소 말("내일 약속 취소됐어")을 기존 일정에 반영. (시각 변경 "4시로 미뤄졌어"는 이미 반영)

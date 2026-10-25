@@ -18,10 +18,13 @@ class SpeechSegmenter(
     private val preRollMs: Int = 300,
     /** 소음보다 이 배수 이상 커야 말소리로 본다. */
     private val speechRatio: Double = 3.0,
-    /** 아주 조용한 방에서도 이 크기(16비트 RMS) 아래는 말소리로 보지 않는다. */
-    private val minSpeechRms: Double = 250.0,
-) {
-    val frameSamples = sampleRate * FRAME_MS / 1000
+    /**
+     * 아주 조용한 방에서도 이 크기(16비트 RMS) 아래는 말소리로 보지 않는다.
+     * 1~2m 떨어진 말소리는 RMS 60~100 정도로 아주 작아서, 너무 높게 잡으면 말을 통째로 놓친다.
+     */
+    private val minSpeechRms: Double = 70.0,
+) : Segmenter {
+    override val frameSamples = sampleRate * FRAME_MS / 1000
 
     private var noiseFloor = minSpeechRms / speechRatio
     private val preRoll = ArrayDeque<ShortArray>()
@@ -31,12 +34,12 @@ class SpeechSegmenter(
     private var silenceFrames = 0
 
     /** 말 구간이 막 시작됐거나 진행 중이면 true (상태 표시용). */
-    val inSpeech: Boolean get() = current != null
+    override val inSpeech: Boolean get() = current != null
 
     /**
      * 프레임 하나를 넣는다. 말 구간 하나가 끝나면 그 PCM 을 돌려주고, 아니면 null.
      */
-    fun push(frame: ShortArray): ShortArray? {
+    override fun push(frame: ShortArray): ShortArray? {
         val rms = rms(frame)
         val threshold = max(noiseFloor * speechRatio, minSpeechRms)
         val loud = rms >= threshold
@@ -68,7 +71,7 @@ class SpeechSegmenter(
     }
 
     /** 지금 듣고 있던 구간을 강제로 닫는다 (듣기를 멈출 때). */
-    fun flush(): ShortArray? = if (current != null) close() else null
+    override fun flush(): ShortArray? = if (current != null) close() else null
 
     private fun close(): ShortArray? {
         val segment = current ?: return null

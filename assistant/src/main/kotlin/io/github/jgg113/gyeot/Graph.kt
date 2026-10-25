@@ -27,7 +27,7 @@ class Graph private constructor(private val context: Context) {
     val events = EventRegistrar(context, store, settings, calendar, alarms)
     val models = ModelManager(context)
     val transcriber = Transcriber(settings)
-    val localTranscriber = LocalTranscriber(models)
+    val localTranscriber = LocalTranscriber(models, settings)
     val analyzer = Analyzer(settings)
 
     /** 휴대폰 안 작은 AI 로 요약 다듬기 — 켜 두었고 모델이 있을 때만. 쓸 때마다 열고 닫는다. */
@@ -42,12 +42,45 @@ class Graph private constructor(private val context: Context) {
     /** 삼성 자동 통화 녹음 가져오기 (처음 쓸 때 만든다). */
     val calls by lazy { io.github.jgg113.gyeot.calls.CallRecordingImporter(context) }
 
+    /**
+     * 말소리 구간 자르는 쪽: 사람 목소리 감지 모델(Silero)이 있으면 그것을, 없으면 소리 크기 기준을 쓴다.
+     * 모델이 없으면 뒤에서 조용히 받아 둔다 (0.6MB).
+     */
+    fun newSegmenter(maxSegmentSec: Float = 20f, minSilenceSec: Float = 0.6f): io.github.jgg113.gyeot.audio.Segmenter {
+        if (models.installed(models.vad)) {
+            runCatching { return io.github.jgg113.gyeot.audio.SileroSegmenter(models.file(models.vad, "silero_vad.onnx").path, maxSegmentSec, minSilenceSec) }
+        } else if (localTranscriber.available) {
+            models.download(models.vad)
+        }
+        return io.github.jgg113.gyeot.audio.SpeechSegmenter(endSilenceMs = (minSilenceSec * 1000).toInt() + 600, maxSegmentMs = (maxSegmentSec * 1000).toInt())
+    }
+
     /** 지금 설정에 맞는 정리 엔진. */
     val brain: Brain get() = if (settings.localBrain) ruleBrain else analyzer
 
-    /** 지금 설정에 맞는 받아쓰기. */
-    fun transcribe(pcm: ShortArray): String =
-        if (settings.localStt) localTranscriber.transcribe(pcm) else transcriber.transcribe(Wav.encode(pcm))
+    /**
+     * 지금 설정에 맞는 받아쓰기 + 내가 정한 고쳐 쓸 말 적용.
+     * '중요한 말만 클라우드로 한 번 더'를 켜 두면, 휴대폰 안에서 받아쓴 글에 일정·약속 냄새가 날 때만
+     * 그 구간을 클라우드(Groq Whisper 무료 한도)로 다시 받아써 더 정확한 쪽을 쓴다.
+     */
+    fun transcribe(pcm: ShortArray, preferBest: Boolean = false): String {
+        val best = preferBest && settings.localStt && localTranscriber.canBoost
+        var text = if (best) localTranscriber.transcribe(pcm, io.github.jgg113.gyeot.data.Settings.MODEL_QWEN3)
+        else if (settings.localStt) localTranscriber.transcribe(pcm) else transcriber.transcribe(Wav.encode(io.github.jgg113.gyeot.audio.Gain.normalize(pcm)))
+        val important = io.github.jgg113.gyeot.ai.ScheduleHints.mentionsSchedule(text)
+        // 휴대폰 안에서: 기본 모델 글에 일정 냄새가 나면 그 구간만 고정밀 모델로 다시 (무료).
+        if (!best && settings.localStt && important && settings.localBoost && localTranscriber.canBoost &&
+            localTranscriber.engine() != io.github.jgg113.gyeot.data.Settings.MODEL_QWEN3
+        ) {
+            runCatching { localTranscriber.transcribe(pcm, io.github.jgg113.gyeot.data.Settings.MODEL_QWEN3) }.getOrNull()
+                ?.takeIf { it.isNotBlank() }?.let { text = it }
+        } else if (settings.localStt && settings.cloudBoost && settings.sttApiKey.isNotBlank() && important) {
+            runCatching { transcriber.transcribe(Wav.encode(io.github.jgg113.gyeot.audio.Gain.normalize(pcm))) }.getOrNull()
+                ?.takeIf { it.isNotBlank() }?.let { text = it }
+        }
+        val rules = io.github.jgg113.gyeot.stt.Corrections.parse(settings.corrections)
+        return if (rules.isEmpty()) text else io.github.jgg113.gyeot.stt.Corrections.apply(text, rules)
+    }
 
     /** 기간 안의 일정: 휴대폰 캘린더 전체 + 앱 알림만 맞춘 것 + 추가할지 묻는 중인 것. */
     fun scheduleItems(from: java.time.LocalDate, to: java.time.LocalDate): List<ScheduleSummary.Item> {
@@ -119,7 +152,7 @@ class Graph private constructor(private val context: Context) {
 
     /** 듣기를 시작해도 되는지, 안 되면 이유. */
     fun notReadyReason(): String? = when {
-        settings.localStt && !models.installed(models.asr) -> "설정 탭에서 '한국어 음성 인식' 모델을 먼저 받아 주세요 (85MB, 한 번만)."
+        settings.localStt && !localTranscriber.available -> "설정 탭에서 '한국어 음성 인식' 모델을 먼저 받아 주세요 (105MB, 한 번만)."
         !settings.localStt && settings.sttApiKey.isBlank() -> "설정 탭에서 받아쓰기 API 키를 넣어 주세요."
         !settings.localBrain && settings.anthropicApiKey.isBlank() -> "설정 탭에서 Claude API 키를 넣어 주세요."
         else -> null

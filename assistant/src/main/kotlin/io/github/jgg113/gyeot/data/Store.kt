@@ -107,6 +107,21 @@ class Store(context: Context) {
         changed()
     }
 
+    /** 받아쓴 한 줄을 고친다 (기록 탭에서 사용자가 고칠 때). */
+    fun updateUtterance(old: Utterance, newText: String) {
+        if (newText.isBlank() || newText == old.text) return
+        synchronized(lock) {
+            val f = fileFor(dayOf(old.at))
+            if (!f.exists()) return
+            val lines = utterancesUnlocked(f).map { if (it.at == old.at && it.text == old.text) it.copy(text = newText) else it }
+            atomicWrite(f, lines.joinToString("") { json.encodeToString(it) + "\n" })
+        }
+        changed()
+    }
+
+    private fun utterancesUnlocked(f: File): List<Utterance> =
+        f.readLines().mapNotNull { line -> runCatching { json.decodeFromString<Utterance>(line) }.getOrNull() }
+
     fun utterances(day: LocalDate): List<Utterance> = synchronized(lock) {
         val f = fileFor(day)
         if (!f.exists()) emptyList()
