@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 테마 아이콘(단색)용: 말풍선 테두리 + 소리 막대 + 반짝임 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M41,36.5 H63 A11.5,11.5 0 0 1 74.5,48 V60 A11.5,11.5 0 0 1 63,71.5 H49.5 L39.5,78.5 L41.5,71.5 H41 A11.5,11.5 0 0 1 29.5,60 V48 A11.5,11.5 0 0 1 41,36.5 Z"
+        android:strokeWidth="3.2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M38.5,52 V56 M45,48.5 V59.5 M52,45 V63 M59,47.5 V60.5 M65.5,51 V57"
+        android:strokeWidth="3.6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M76,25.5 Q77,31 81.5,32 Q77,33 76,38.5 Q75,33 70.5,32 Q75,31 76,25.5 Z" />
+</vector>

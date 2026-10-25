@@ -70,7 +70,7 @@ object EventRules {
         if (e.heardAt > 0 || said.isEmpty()) return@map e
         val u = said.maxByOrNull { overlap(it.text, e.evidence) } ?: said.last()
         e.copy(
-            heardAt = u.at, source = u.source, mediaLikely = e.mediaLikely || u.media,
+            heardAt = u.at, source = u.source, mediaLikely = e.mediaLikely || (u.media && u.speaker != "me"),
             reasons = e.reasons.ifEmpty { listOf("Claude 가 대화를 읽고 일정으로 판단했어요 (확신도 ${(e.confidence * 100).toInt()}%)") } +
                 (if (u.media) listOf("앞뒤로 말소리가 거의 쉬지 않고 이어졌어요 — TV·영상 소리일 수 있어 바로 넣지 않고 물어봐요") else emptyList()),
         )

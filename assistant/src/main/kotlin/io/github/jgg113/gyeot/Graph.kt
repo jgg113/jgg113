@@ -26,6 +26,8 @@ class Graph private constructor(private val context: Context) {
     val alarms = AlarmScheduler(context)
     val events = EventRegistrar(context, store, settings, calendar, alarms)
     val models = ModelManager(context)
+    val audio = io.github.jgg113.gyeot.data.AudioArchive(context)
+    val voiceId = io.github.jgg113.gyeot.voice.VoiceId(context, models)
     val transcriber = Transcriber(settings)
     val localTranscriber = LocalTranscriber(models, settings)
     val analyzer = Analyzer(settings)
@@ -124,6 +126,13 @@ class Graph private constructor(private val context: Context) {
         return n.copy(summary = prefix + r.summary, importance = r.importance, keyPoints = r.keyPoints, todos = r.todos)
     }
     private val plainRules = RuleBrain()
+
+    /** 정리 노트가 없는 대화 묶음도 기록 탭에서 짧게 요약해 보여 준다 (규칙으로, 바로). */
+    fun quickSummary(lines: List<io.github.jgg113.gyeot.data.Utterance>): io.github.jgg113.gyeot.ai.Analysis {
+        if (lines.isEmpty()) return io.github.jgg113.gyeot.ai.Analysis()
+        val at = java.time.Instant.ofEpochMilli(lines.last().at).atZone(EventRules.SEOUL)
+        return runCatching { plainRules.analyze(emptyList(), lines, emptyList(), at) }.getOrDefault(io.github.jgg113.gyeot.ai.Analysis())
+    }
 
     /** 하루치 정리를 다시 한다 (기록 탭의 [정리 다시 하기]). */
     fun rebuildDay(day: java.time.LocalDate) =

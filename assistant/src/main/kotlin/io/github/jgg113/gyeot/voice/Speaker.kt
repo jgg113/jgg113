@@ -17,6 +17,7 @@ class Speaker(context: Context, private val settings: Settings, private val onRe
     var ready = false
         private set
     private val done = HashMap<String, () -> Unit>()
+    private val marks = HashMap<String, Any>()
     private var counter = 0
 
     init {
@@ -37,7 +38,12 @@ class Speaker(context: Context, private val settings: Settings, private val onRe
         t.setSpeechRate(settings.ttsRate)
         t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
-            override fun onDone(id: String?) { id?.let { synchronized(done) { done.remove(it) } }?.invoke() }
+            override fun onDone(id: String?) {
+                if (id == null) return
+                val (cb, mark) = synchronized(done) { done.remove(id) to marks.remove(id) }
+                mark?.let { SelfSpeech.finished(it) }
+                cb?.invoke()
+            }
             @Deprecated("old API") override fun onError(id: String?) { onDone(id) }
             override fun onError(id: String?, code: Int) { onDone(id) }
         })
@@ -54,13 +60,20 @@ class Speaker(context: Context, private val settings: Settings, private val onRe
         val t = tts
         if (t == null || !ready) { then(); return }
         val id = "subin-${counter++}"
-        synchronized(done) { done[id] = then }
+        // 듣기 기능이 이 말을 받아써 일정으로 넣지 않게 알려 둔다.
+        val mark = SelfSpeech.started(text)
+        synchronized(done) { done[id] = then; marks[id] = mark }
         t.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), id)
     }
 
-    fun stop() { tts?.stop(); synchronized(done) { done.clear() } }
+    fun stop() {
+        tts?.stop()
+        // 멈춘 말도 '다 말함'으로 표시해 둔다 (다음 할 일은 부르지 않음).
+        val left = synchronized(done) { done.clear(); marks.values.toList().also { marks.clear() } }
+        left.forEach { SelfSpeech.finished(it) }
+    }
 
-    fun shutdown() { tts?.shutdown(); tts = null; ready = false }
+    fun shutdown() { stop(); tts?.shutdown(); tts = null; ready = false }
 
     companion object {
         private val FEMALE_HINT = Regex("ism|kob|female|f0|-f-|sma|fem|여", RegexOption.IGNORE_CASE)

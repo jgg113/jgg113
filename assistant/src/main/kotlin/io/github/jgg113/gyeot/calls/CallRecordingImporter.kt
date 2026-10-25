@@ -107,7 +107,13 @@ class CallRecordingImporter(private val context: Context) {
         val utterances = segments.mapNotNull { (endMs, seg) ->
             // 통화는 짧고 중요해서, 고정밀 모델을 받아 두었으면 통화 전체를 고정밀로 받아쓴다.
             val text = runCatching { g.transcribe(seg, preferBest = true) }.getOrNull()?.let { TranscriptFilter.clean(it) } ?: return@mapNotNull null
-            Utterance(start + endMs, text, source = tag)
+            val at = start + endMs
+            val score = if (g.voiceId.enrolled) runCatching { g.voiceId.score(seg) }.getOrNull() else null
+            Utterance(
+                at, text, source = tag,
+                audio = if (g.settings.keepAudioDays > 0) g.audio.save(at, seg) else "",
+                speaker = g.voiceId.label(score), voiceScore = score ?: 0f,
+            )
         }
         if (utterances.isEmpty()) return
         utterances.forEach { g.store.appendUtterance(it) }

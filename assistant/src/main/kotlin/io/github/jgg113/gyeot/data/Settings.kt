@@ -104,6 +104,10 @@ class Settings(context: Context) {
     var digestHour: Int
         get() = int("digest_hour", 21)
         set(v) = putInt("digest_hour", v.coerceIn(-1, 23))
+    /** 말소리 녹음 보관 일수 (0 이면 녹음을 남기지 않는다). */
+    var keepAudioDays: Int
+        get() = int("keep_audio_days", 3)
+        set(v) = putInt("keep_audio_days", v.coerceIn(0, 30))
     /** 받아쓴 글 보관 일수. */
     var retentionDays: Int
         get() = int("retention_days", 30)

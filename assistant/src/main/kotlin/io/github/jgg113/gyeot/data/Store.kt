@@ -20,6 +20,12 @@ data class Utterance(
     val source: String = "",
     /** 앞뒤 10분 동안 말소리가 거의 쉬지 않았는지 (TV·영상 소리일 가능성). */
     val media: Boolean = false,
+    /** 그때 소리 녹음 (보관함 상대 경로, 보관 기간이 지나면 파일이 없어진다). */
+    val audio: String = "",
+    /** 누가 말했는지: "me"(등록한 내 목소리), "other", "" (모름). */
+    val speaker: String = "",
+    /** 내 목소리와 얼마나 비슷한지 (0~1, 목소리를 등록했을 때만). */
+    val voiceScore: Float = 0f,
 ) {
     val callWith: String? get() = source.removePrefix("call:").takeIf { source.startsWith("call:") }
 }

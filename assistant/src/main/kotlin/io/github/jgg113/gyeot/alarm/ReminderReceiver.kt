@@ -32,6 +32,7 @@ class ReminderReceiver : BroadcastReceiver() {
                 val events = g.store.upcomingEvents().filter { it.startMillis < tomorrowEnd }
                 Notifier.digest(context, notes, events)
                 g.store.purgeOlderThan(g.settings.retentionDays)
+                g.audio.purge(g.settings.keepAudioDays)
                 g.alarms.scheduleDigest(g.settings.digestHour)
             }
             KIND_BRIEFING -> {

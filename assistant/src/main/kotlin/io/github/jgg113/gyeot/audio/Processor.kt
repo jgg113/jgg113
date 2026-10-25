@@ -44,6 +44,7 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
     }
 
     fun start() {
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { g.audio.purge(g.settings.keepAudioDays) } }
         scope.launch { transcribeLoop() }
         scope.launch { analyzeLoop() }
     }
@@ -53,28 +54,48 @@ class Processor(private val context: Context, private val scope: CoroutineScope)
         scope.launch { analyze(force = true) }
     }
 
+    private class Seg(val end: Long, val pcm: ShortArray, val score: Float?)
+
+    /** 목소리를 등록했으면 구간마다 "나"인지 본다 (짧은 구간은 모름). */
+    private fun seg(p: Pair<Long, ShortArray>) =
+        Seg(p.first, p.second, if (g.voiceId.enrolled) runCatching { g.voiceId.score(p.second) }.getOrNull() else null)
+
     private suspend fun transcribeLoop() {
-        val batch = mutableListOf<ShortArray>()
-        var batchEnd = 0L
+        val batch = mutableListOf<Seg>()
+        var carry: Seg? = null
         while (scope.isActive) {
             // 첫 구간을 기다린 뒤, 이어지는 구간을 조금 더 모은다 (최대 25초 분량 또는 4초간 새 구간 없음).
-            val first = segments.receive()
-            batch += first.second
-            batchEnd = first.first
+            val first = carry ?: seg(segments.receive())
+            carry = null
+            batch += first
+            val who = g.voiceId.label(first.score)
             // 고정밀(Qwen3) 모델은 짧게 나눠 보내야 빠르고 잘리지 않는다.
             val maxBatch = if (g.settings.localStt && g.localTranscriber.engine() == io.github.jgg113.gyeot.data.Settings.MODEL_QWEN3) QWEN_BATCH_SAMPLES else MAX_BATCH_SAMPLES
-            while (batch.sumOf { it.size } < maxBatch) {
-                val next = withTimeoutOrNull(BATCH_WAIT_MS) { segments.receive() } ?: break
-                batch += next.second
-                batchEnd = next.first
+            while (batch.sumOf { it.pcm.size } < maxBatch) {
+                val next = seg(withTimeoutOrNull(BATCH_WAIT_MS) { segments.receive() } ?: break)
+                // 말한 사람이 바뀌면 거기서 끊는다 — 한 줄에는 한 사람 말만 (내 목소리를 등록한 경우).
+                if (g.voiceId.enrolled && g.voiceId.label(next.score) != who) { carry = next; break }
+                batch += next
             }
             val count = batch.size
-            val pcm = Wav.join(batch)
+            val batchEnd = batch.last().end
+            val pcm = Wav.join(batch.map { it.pcm })
+            val scores = batch.mapNotNull { it.score }
             batch.clear()
             val text = transcribeWithRetry(pcm)
             ListenState.update { it.copy(queued = (it.queued - count).coerceAtLeast(0)) }
             val clean = text?.let { TranscriptFilter.clean(it) } ?: continue
-            val u = Utterance(batchEnd, clean, media = noteSpeech(batchEnd, pcm.size / SpeechSegmenter.SAMPLE_RATE.toDouble()))
+            // 수빈이가 한 말을 다시 들은 것이면 버린다.
+            if (io.github.jgg113.gyeot.voice.SelfSpeech.isEcho(clean)) continue
+            // 그때 소리를 정한 날짜만큼 보관한다 (기록 탭에서 다시 듣기).
+            val audio = if (g.settings.keepAudioDays > 0) g.audio.save(batchEnd, pcm) else ""
+            val u = Utterance(
+                batchEnd, clean,
+                media = noteSpeech(batchEnd, pcm.size / SpeechSegmenter.SAMPLE_RATE.toDouble()),
+                audio = audio,
+                speaker = who,
+                voiceScore = if (scores.isEmpty()) 0f else scores.average().toFloat(),
+            )
             g.store.appendUtterance(u)
             synchronized(pending) {
                 pending += u

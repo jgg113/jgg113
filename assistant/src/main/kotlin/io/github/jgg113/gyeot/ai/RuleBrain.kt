@@ -31,8 +31,13 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
             for (clause in clauses(u.text)) {
                 val found = KoreanTime.parse(clause, spokenAt)
                 extractEvent(clause, found, spokenAt)?.let { raw ->
-                    var e = raw.copy(heardAt = u.at, source = u.source, mediaLikely = u.media)
-                    if (u.media) e = e.copy(
+                    // TV 는 내 목소리로 말하지 않는다 — 내 목소리면 TV 의심을 거둔다.
+                    var e = raw.copy(heardAt = u.at, source = u.source, mediaLikely = u.media && u.speaker != "me")
+                    when (u.speaker) {
+                        "me" -> e = e.copy(confidence = (e.confidence + 0.1).coerceAtMost(1.0), reasons = e.reasons + "등록한 내 목소리로 한 말이에요 (비슷함 ${(u.voiceScore * 100).toInt()}%)")
+                        "other" -> e = e.copy(reasons = e.reasons + "다른 사람 목소리예요")
+                    }
+                    if (e.mediaLikely) e = e.copy(
                         confidence = (e.confidence - 0.25).coerceAtLeast(0.0),
                         reasons = e.reasons + "앞뒤로 말소리가 거의 쉬지 않고 이어졌어요 — TV·영상 소리일 수 있어 바로 넣지 않고 물어봐요",
                     )

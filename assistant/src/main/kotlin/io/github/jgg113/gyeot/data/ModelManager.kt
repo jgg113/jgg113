@@ -49,6 +49,13 @@ class ModelManager(context: Context) {
         105,
     )
 
+    /** 내 목소리 알아보기: 3D-Speaker CAM++ (Apache-2.0) 약 28MB. */
+    val speaker = Pack(
+        "speaker-campplus", "내 목소리 알아보기 (28MB)",
+        listOf(io.github.jgg113.gyeot.voice.VoiceId.SPEAKER_MODEL to "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/${io.github.jgg113.gyeot.voice.VoiceId.SPEAKER_MODEL}"),
+        28,
+    )
+
     /** 사람 목소리 감지 (Silero VAD, MIT) — 0.6MB, 음성 인식 모델과 함께 받는다. */
     val vad = Pack(
         "silero-vad", "말소리 감지 (0.6MB)",
@@ -73,7 +80,7 @@ class ModelManager(context: Context) {
         1_600,
     )
 
-    private val states = listOf(asr, dolphin, vad, qwen3, llm).associate { it.id to MutableStateFlow(Progress()) }
+    private val states = listOf(asr, dolphin, vad, qwen3, llm, speaker).associate { it.id to MutableStateFlow(Progress()) }
     private val jobs = mutableMapOf<String, Job>()
 
     fun progress(pack: Pack): StateFlow<Progress> = states.getValue(pack.id)

@@ -101,7 +101,7 @@ class ListeningService : Service() {
             try {
                 while (scope.isActive) {
                     if (paused) {
-                        segmenter.flush()?.let { p.offer(System.currentTimeMillis(), it) }
+                        segmenter.flush()?.let { offer(p, it) }
                         break
                     }
                     var read = 0
@@ -115,7 +115,7 @@ class ListeningService : Service() {
                         segmenter.release(); segmenter = Graph.get(this).newSegmenter()
                     }
                     val wasHearing = segmenter.inSpeech
-                    segmenter.push(frame.copyOf())?.let { p.offer(System.currentTimeMillis(), it) }
+                    segmenter.push(frame.copyOf())?.let { offer(p, it) }
                     if (segmenter.inSpeech != wasHearing) ListenState.update { it.copy(hearing = segmenter.inSpeech) }
                 }
             } catch (e: Exception) {
@@ -129,6 +129,14 @@ class ListeningService : Service() {
             // 멈춘 동안은 마이크를 아예 놓아 준다 (상태 표시줄의 마이크 표시도 꺼진다).
             while (paused && scope.isActive) delay(500)
         }
+    }
+
+    /** 수빈이(앱)가 스피커로 말하던 때 들어온 소리는 받아쓰지 않는다 — 자기 말을 일정으로 넣지 않게. */
+    private fun offer(p: Processor, pcm: ShortArray) {
+        val end = System.currentTimeMillis()
+        val start = end - pcm.size * 1000L / SpeechSegmenter.SAMPLE_RATE
+        if (io.github.jgg113.gyeot.voice.SelfSpeech.overlaps(start, end)) return
+        p.offer(end, pcm)
     }
 
     /**

@@ -1,20 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 108dp 적응형 아이콘: 안전영역(가운데 66dp) 안에 말풍선과 달력 점 -->
+<!--
+  클로드비서 아이콘 (108dp 적응형, 안전영역 = 가운데 지름 66dp 원).
+  코랄 바탕 위 크림색 말풍선, 그 안에 듣고 있는 소리 막대, 오른쪽 위에 수빈이 반짝임.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- 말풍선 그림자 -->
+    <path
+        android:fillColor="#26000000"
+        android:pathData="M41,37 H63 A13,13 0 0 1 76,50 V62 A13,13 0 0 1 63,75 H50 L38,83.5 L40.5,75 H41 A13,13 0 0 1 28,62 V50 A13,13 0 0 1 41,37 Z" />
     <!-- 말풍선 -->
     <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M34,34 L74,34 Q80,34 80,40 L80,62 Q80,68 74,68 L52,68 L42,77 L43,68 L34,68 Q28,68 28,62 L28,40 Q28,34 34,34 Z" />
+        android:fillColor="#FFFFF8F0"
+        android:pathData="M41,35 H63 A13,13 0 0 1 76,48 V60 A13,13 0 0 1 63,73 H50 L38,81.5 L40.5,73 H41 A13,13 0 0 1 28,60 V48 A13,13 0 0 1 41,35 Z" />
     <!-- 소리 막대 -->
-    <path android:fillColor="#FF2E7D6B" android:pathData="M39,47 L43,47 L43,55 L39,55 Z" />
-    <path android:fillColor="#FF2E7D6B" android:pathData="M47,42 L51,42 L51,60 L47,60 Z" />
-    <path android:fillColor="#FF2E7D6B" android:pathData="M55,45 L59,45 L59,57 L55,57 Z" />
-    <!-- 일정 점 -->
     <path
-        android:fillColor="#FFFFC83D"
-        android:pathData="M68,46 A5,5 0 1,1 67.99,46 Z" />
+        android:pathData="M38,51.5 V56.5 M45,47.5 V60.5 M52,43.5 V64.5 M59,46.5 V61.5 M66,50.5 V57.5"
+        android:strokeWidth="4.4"
+        android:strokeColor="#FFC96442"
+        android:strokeLineCap="round" />
+    <!-- 반짝임 테두리 (바탕과 말풍선 사이를 또렷하게) -->
+    <path
+        android:pathData="M74,25.5 Q75,32 80.5,33 Q75,34 74,40.5 Q73,34 67.5,33 Q73,32 74,25.5 Z"
+        android:strokeWidth="3"
+        android:strokeColor="#FFC96442"
+        android:strokeLineJoin="round" />
+    <!-- 반짝임 -->
+    <path
+        android:fillColor="#FFFFD27A"
+        android:pathData="M74,25.5 Q75,32 80.5,33 Q75,34 74,40.5 Q73,34 67.5,33 Q73,32 74,25.5 Z" />
 </vector>
