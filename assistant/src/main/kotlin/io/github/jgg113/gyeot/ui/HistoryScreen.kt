@@ -15,9 +15,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.HorizontalDivider
@@ -83,14 +86,30 @@ fun HistoryScreen() {
     }
     var editing by remember { mutableStateOf<Utterance?>(null) }
     editing?.let { u -> EditUtterance(u, g) { editing = null } }
+    var deleteDay by remember { mutableStateOf(false) }
+    var deleteSession by remember { mutableStateOf<Sessions.Session?>(null) }
     DisposableEffect(Unit) { onDispose { Player.stop() } }
     val keep = g.settings.keepAudioDays
+
+    if (deleteDay) ConfirmDelete(
+        "${longDay(day)} 기록을 모두 지울까요?",
+        "이 날 받아쓴 글, 녹음, 요약을 모두 지워요. 캘린더에 넣은 일정은 그대로 둬요. 지우면 되돌릴 수 없어요.",
+        onCancel = { deleteDay = false },
+    ) { Player.stop(); scope.launch(Dispatchers.IO) { g.deleteDay(day) }; deleteDay = false }
+    deleteSession?.let { s ->
+        ConfirmDelete(
+            "이 ${if (s.callWith != null) "통화" else "대화"} 기록을 지울까요?",
+            "${koSpan(s.from, s.to)}에 받아쓴 글 ${s.lines.size}줄과 그때 녹음, 요약을 지워요. 캘린더에 넣은 일정은 그대로 둬요.",
+            onCancel = { deleteSession = null },
+        ) { Player.stop(); scope.launch(Dispatchers.IO) { g.deleteRecords(s.lines, s.notes.map { it.id }) }; deleteSession = null }
+    }
 
     LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             ScreenHeader("기록", subtitle = longDay(day)) {
                 IconButton(onClick = { scope.launch(Dispatchers.IO) { g.rebuildDay(day) } }) { Icon(Icons.Filled.Refresh, "정리 다시 하기") }
                 IconButton(onClick = { share(ctx, day, sessions) }, enabled = sessions.isNotEmpty()) { Icon(Icons.Filled.Share, "이 날 기록 내보내기") }
+                IconButton(onClick = { deleteDay = true }, enabled = sessions.isNotEmpty()) { Icon(Icons.Filled.Delete, "이 날 기록 지우기") }
             }
         }
         item {
@@ -122,14 +141,14 @@ fun HistoryScreen() {
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
                 Text(
-                    if (keep > 0) "🎧 녹음은 최근 ${keep}일치를 보관해요. [전문 보기]에서 줄을 누르면 그때 소리를 들을 수 있어요. 길게 누르면 받아쓴 글을 고쳐요."
+                    if (keep > 0) "🎧 녹음은 최근 ${keep}일치를 보관해요. [전문 보기]에서 줄을 누르면 그때 소리를 들을 수 있어요. 길게 누르면 고치거나 지워요."
                     else "🎧 녹음 보관이 꺼져 있어요. 설정 → 녹음 보관에서 켜면 그때 소리를 다시 들을 수 있어요.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
             }
         }
-        items(sessions, key = { it.key }) { s -> SessionCard(s, g) { editing = it } }
+        items(sessions, key = { it.key }) { s -> SessionCard(s, g, onDelete = { deleteSession = s }) { editing = it } }
     }
 }
 
@@ -178,7 +197,7 @@ private fun digestOf(a: Analysis): Digest = Digest(a.summary, a.keyPoints, a.tod
  */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun SessionCard(s: Sessions.Session, g: Graph, onEdit: (Utterance) -> Unit) {
+fun SessionCard(s: Sessions.Session, g: Graph, onDelete: (() -> Unit)? = null, onEdit: (Utterance) -> Unit) {
     var open by rememberSaveable(s.key) { mutableStateOf(false) }
     val playing by Player.playing.collectAsState()
     // 정리 노트가 아직 없는 묶음(정리 전이거나 중요하지 않다고 본 대화)은 규칙으로 바로 요약한다.
@@ -188,6 +207,26 @@ fun SessionCard(s: Sessions.Session, g: Graph, onEdit: (Utterance) -> Unit) {
     val audioLines = remember(s.key, s.lines.size) { s.lines.filter { g.audio.file(it.audio) != null } }
     val thisPlaying = playing != null && s.lines.any { it.audio == playing }
     val call = s.callWith != null
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var redoing by remember { mutableStateOf(false) }
+    var askRedo by remember { mutableStateOf(false) }
+    if (askRedo) AlertDialog(
+        onDismissRequest = { askRedo = false },
+        title = { Text("이 통화를 다시 받아쓸까요?") },
+        text = { Text("원래 통화 녹음 파일을 지금 받아쓰기 모델과 목소리 나누기로 다시 처리해요. 지금 기록·요약과, 이 통화에서 저절로 넣은 일정은 지우고 새로 만들어요 (직접 승인한 일정은 그대로). 1~2분 걸려요.") },
+        confirmButton = {
+            TextButton(onClick = {
+                askRedo = false; redoing = true; Player.stop()
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) { runCatching { g.calls.redo(s.lines, s.notes.map { it.id }) }.getOrDefault(false) }
+                    redoing = false
+                    android.widget.Toast.makeText(ctx, if (ok) "다시 받아썼어요" else "원래 통화 녹음 파일을 찾지 못했어요 (삼성 통화 녹음 폴더)", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }) { Text("다시 받아쓰기") }
+        },
+        dismissButton = { TextButton(onClick = { askRedo = false }) { Text("그만두기") } },
+    )
 
     AppCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -238,16 +277,30 @@ fun SessionCard(s: Sessions.Session, g: Graph, onEdit: (Utterance) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { open = !open }) { Text(if (open) "전문 접기 ⌃" else "전문 보기 ⌄ (${s.lines.size}줄)") }
             Spacer(Modifier.weight(1f))
+            if (call && onDelete != null && g.calls.hasPermission()) {
+                if (redoing) Text("다시 받아쓰는 중…", style = TextStyles.caption)
+                else IconButton(onClick = { askRedo = true }) { Icon(Icons.Filled.Refresh, "이 통화 다시 받아쓰기", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, "이 대화 지우기", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (audioLines.isNotEmpty()) TextButton(onClick = { if (thisPlaying) Player.stop() else playLines(g, audioLines) }) {
                 Text(if (thisPlaying) "■ 멈춤" else "▶ 전체 듣기")
             }
         }
         AnimatedVisibility(open) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                if (audioLines.isNotEmpty()) Hint("줄을 누르면 그때 소리를 들어요 · 길게 누르면 받아쓴 글을 고쳐요")
-                else Hint("녹음 보관 기간이 지났거나 녹음을 남기지 않은 대화예요 · 줄을 누르면 받아쓴 글을 고쳐요")
+                if (audioLines.isNotEmpty()) Hint("줄을 누르면 그때 소리를 들어요 · 길게 누르면 고치거나 지워요")
+                else Hint("녹음 보관 기간이 지났거나 녹음을 남기지 않은 대화예요 · 줄을 누르면 고치거나 지워요")
                 s.lines.forEach { u -> TranscriptLine(u, g) { onEdit(it) } }
             }
         }
     }
 }
+
+@Composable
+fun ConfirmDelete(title: String, text: String, onCancel: () -> Unit, onConfirm: () -> Unit) = AlertDialog(
+    onDismissRequest = onCancel,
+    title = { Text(title) },
+    text = { Text(text) },
+    confirmButton = { TextButton(onClick = onConfirm) { Text("지우기", color = MaterialTheme.colorScheme.error) } },
+    dismissButton = { TextButton(onClick = onCancel) { Text("그만두기") } },
+)

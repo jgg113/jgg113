@@ -31,6 +31,15 @@ class AudioArchive(context: Context) {
 
     fun file(rel: String): File? = rel.takeIf { it.isNotBlank() }?.let { File(root, it) }?.takeIf { it.exists() }
 
+    fun delete(rel: String) {
+        file(rel)?.delete()
+    }
+
+    /** 하루치 녹음을 지운다. */
+    fun deleteDay(day: LocalDate) {
+        File(root, day.toString()).deleteRecursively()
+    }
+
     /** [days] 일보다 오래된 녹음을 지운다. 0 이면 모두 지운다. */
     fun purge(days: Int) {
         val cutoff = LocalDate.now(EventRules.SEOUL).minusDays((days - 1).coerceAtLeast(0).toLong())

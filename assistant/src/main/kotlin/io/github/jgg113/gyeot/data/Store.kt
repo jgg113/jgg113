@@ -116,11 +116,46 @@ class Store(context: Context) {
     /** 받아쓴 한 줄을 고친다 (기록 탭에서 사용자가 고칠 때). */
     fun updateUtterance(old: Utterance, newText: String) {
         if (newText.isBlank() || newText == old.text) return
+        updateUtterance(old) { it.copy(text = newText) }
+    }
+
+    fun updateUtterance(old: Utterance, change: (Utterance) -> Utterance) {
         synchronized(lock) {
             val f = fileFor(dayOf(old.at))
             if (!f.exists()) return
-            val lines = utterancesUnlocked(f).map { if (it.at == old.at && it.text == old.text) it.copy(text = newText) else it }
+            val lines = utterancesUnlocked(f).map { if (it.at == old.at && it.text == old.text) change(it) else it }
             atomicWrite(f, lines.joinToString("") { json.encodeToString(it) + "\n" })
+        }
+        changed()
+    }
+
+    /** 받아쓴 줄들을 지운다 (기록 탭의 [지우기]). 녹음 파일은 [AudioArchive.delete] 로 따로 지운다. */
+    fun deleteUtterances(gone: Collection<Utterance>) {
+        if (gone.isEmpty()) return
+        val keys = gone.map { it.at to it.text }.toHashSet()
+        synchronized(lock) {
+            gone.map { dayOf(it.at) }.distinct().forEach { day ->
+                val f = fileFor(day)
+                if (!f.exists()) return@forEach
+                val left = utterancesUnlocked(f).filter { (it.at to it.text) !in keys }
+                if (left.isEmpty()) f.delete() else atomicWrite(f, left.joinToString("") { json.encodeToString(it) + "\n" })
+            }
+        }
+        changed()
+    }
+
+    fun deleteNotes(ids: Collection<Long>) {
+        if (ids.isEmpty()) return
+        val set = ids.toHashSet()
+        synchronized(lock) { writeNotes(readNotes().filter { it.id !in set }) }
+        changed()
+    }
+
+    /** 하루치 받아쓴 글과 그날 정리를 모두 지운다. */
+    fun deleteDay(day: LocalDate) {
+        synchronized(lock) {
+            fileFor(day).delete()
+            writeNotes(readNotes().filter { dayOf(it.from) != day && dayOf(it.at) != day })
         }
         changed()
     }

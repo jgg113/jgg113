@@ -25,28 +25,46 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
         val events = mutableListOf<ExtractedEvent>()
         val todos = mutableListOf<Todo>()
         val points = mutableListOf<String>()
+        // 앞에서 말한 날짜("화요일 날")를 뒤의 시각만 있는 말("한 시 조금 전에", "열두 시에서 한 시 사이")에 이어 쓴다.
+        var carryDate: java.time.LocalDate? = null
+        var carryWord = ""
+        var carryAt = 0L
         for (u in fresh) {
             // 말한 시각 기준으로 "이따 3시"를 풀어야 맞다 (정리는 몇 분 늦게 돌 수 있다).
             val spokenAt = Instant.ofEpochMilli(u.at).atZone(EventRules.SEOUL).let { if (it.isAfter(now)) now else it }
             for (clause in clauses(u.text)) {
-                val found = KoreanTime.parse(clause, spokenAt)
-                extractEvent(clause, found, spokenAt)?.let { raw ->
+                var found = KoreanTime.parse(clause, spokenAt)
+                var carried = ""
+                if (found.dateExplicit && found.date != null && !found.roughDate) {
+                    carryDate = found.date; carryAt = u.at
+                    carryWord = found.spans.firstOrNull()?.let { r -> clause.substring(r.first.coerceAtLeast(0), (r.last + 1).coerceAtMost(clause.length)).trim() }.orEmpty()
+                } else if (!found.dateExplicit && found.time != null && carryDate != null && u.at - carryAt <= CARRY_MS) {
+                    found = KoreanTime.parse(clause, spokenAt, carryDate).copy(dateExplicit = true)
+                    carried = carryWord
+                }
+                extractEvent(clause, found, spokenAt, u.callWith, carried)?.let { raw ->
                     // TV 는 내 목소리로 말하지 않는다 — 내 목소리면 TV 의심을 거둔다.
                     var e = raw.copy(heardAt = u.at, source = u.source, mediaLikely = u.media && u.speaker != "me")
                     when (u.speaker) {
                         "me" -> e = e.copy(confidence = (e.confidence + 0.1).coerceAtMost(1.0), reasons = e.reasons + "등록한 내 목소리로 한 말이에요 (비슷함 ${(u.voiceScore * 100).toInt()}%)")
-                        "other" -> e = e.copy(reasons = e.reasons + "다른 사람 목소리예요")
+                        "other" -> e = if (JOINT.containsMatchIn(clause)) e.copy(reasons = e.reasons + "다른 사람 목소리지만 같이 하는 일로 들려요")
+                        else if (e.timeUnknown || OWN.containsMatchIn(clause) || OWN_PLAN.containsMatchIn(clause)) e.copy(confidence = 0.0, reasons = e.reasons + "다른 사람이 자기 일정을 말한 것 같아요")
+                        else e.copy(confidence = (e.confidence - 0.3).coerceAtLeast(0.0), reasons = e.reasons + "다른 사람 목소리예요 — 그 사람 일정일 수 있어 바로 넣지 않아요")
                     }
                     if (e.mediaLikely) e = e.copy(
                         confidence = (e.confidence - 0.25).coerceAtLeast(0.0),
                         reasons = e.reasons + "앞뒤로 말소리가 거의 쉬지 않고 이어졌어요 — TV·영상 소리일 수 있어 바로 넣지 않고 물어봐요",
                     )
-                    if (events.none { it.start == e.start && similar(it.title, e.title) }) events += e
+                    if (e.confidence > 0.0 && events.none { it.start == e.start && similar(it.title, e.title) }) events += e
                 }
-                extractTodo(clause, found)?.let { t -> if (todos.none { it.text == t.text }) todos += t }
+                // 상대가 "내가 …해야 돼" 하는 건 그 사람 할 일이다.
+                val othersOwn = u.speaker == "other" && !JOINT.containsMatchIn(clause) && (OWN.containsMatchIn(clause) || OWN_PLAN.containsMatchIn(clause))
+                if (!othersOwn) extractTodo(clause, found)?.let { t -> if (todos.none { it.text == t.text }) todos += t }
                 if (isKeyPoint(clause)) KoreanText.tidy(clause).takeIf { it.length >= 4 }?.let { points += it }
             }
         }
+        val merged = mergePlans(events)
+        events.clear(); events += merged
         val polished = runCatching { polisher?.summarize(fresh.joinToString("\n") { u -> "[${clock(u.at)}] ${u.text}" }) }.getOrNull()
         val keyPoints = (polished?.keyPoints.orEmpty() + points).distinct().take(8)
         val money = points.any { MONEY.containsMatchIn(it) || ACCOUNT.containsMatchIn(it) }
@@ -81,7 +99,48 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
 
     // ---------------- 규칙 ----------------
 
-    private fun extractEvent(clause: String, f: KoreanTime.Found, now: ZonedDateTime): ExtractedEvent? {
+    /**
+     * 한 대화 안에서 같은 날 몇 시간 안쪽으로 여러 번 나온 시각은 대개 한 약속을 맞춰 가는 말이다
+     * ("점심쯤부터 놀기로", "한 시 조금 전에는 오겠네", "열두 시에서 한 시 사이일 것 같은데") — 하나로 합친다.
+     * 시각은 마지막으로 말한 것(대화 끝에 정해진 것)을, 제목은 무엇인지 드러나는 것을 쓴다.
+     */
+    private fun mergePlans(events: List<ExtractedEvent>): List<ExtractedEvent> {
+        val groups = mutableListOf<MutableList<ExtractedEvent>>()
+        for (e in events) {
+            if (e.timeUnknown) { groups += mutableListOf(e); continue }
+            val g = groups.firstOrNull { g -> g.first().let { f -> !f.timeUnknown && f.start.take(10) == e.start.take(10) && close(f, e) } }
+            if (g != null) g += e else groups += mutableListOf(e)
+        }
+        return groups.map { g ->
+            if (g.size == 1) return@map g.first()
+            val best = g.maxByOrNull { it.confidence }!!
+            val timed = g.lastOrNull { !it.allDay }
+            val titled = g.firstOrNull { e -> TITLE_NOUNS.any { e.title.contains(it) } && !e.title.startsWith("마감") }
+            // 통화에서 여러 번 맞춰 간 약속은 통화 상대와의 약속이다.
+            val callWith = g.first().source.takeIf { src -> src.startsWith("call:") && g.all { it.source == src } }?.removePrefix("call:")
+            // 나와 상대가 둘 다 말한 약속이면 "상대 일정일 수 있다"는 이유는 맞지 않는다.
+            val both = g.any { e -> e.reasons.any { it.startsWith("등록한 내 목소리") } } && g.any { e -> e.reasons.any { it.startsWith("다른 사람 목소리") } }
+            val why = (timed ?: best).reasons.filterNot { both && it.startsWith("다른 사람 목소리예요") } + (if (both) listOf("나와 상대가 함께 정한 약속 같아요") else emptyList())
+            best.copy(
+                title = callWith?.let { "$it 약속" } ?: titled?.title ?: best.title,
+                start = timed?.start ?: best.start,
+                allDay = timed == null,
+                location = g.firstOrNull { it.location.isNotBlank() }?.location.orEmpty(),
+                confidence = (g.maxOf { it.confidence } + 0.05 * (g.size - 1) + if (both) 0.1 else 0.0).coerceAtMost(1.0),
+                evidence = (timed ?: best).evidence,
+                isChange = g.any { it.isChange },
+                reasons = why + ("같은 대화에서 ${g.size}번 나온 약속 말을 하나로 합쳤어요: " + g.joinToString(" / ") { "'${it.evidence.take(24)}'" }),
+            )
+        }
+    }
+
+    private fun close(a: ExtractedEvent, b: ExtractedEvent): Boolean {
+        if (a.allDay || b.allDay) return true
+        val ta = java.time.LocalTime.parse(a.start.substring(11)); val tb = java.time.LocalTime.parse(b.start.substring(11))
+        return kotlin.math.abs(java.time.Duration.between(ta, tb).toMinutes()) <= 180
+    }
+
+    private fun extractEvent(clause: String, f: KoreanTime.Found, now: ZonedDateTime, callWith: String? = null, carried: String = ""): ExtractedEvent? {
         if (PAST_DAY.containsMatchIn(clause)) return null
         val cue = EVENT_CUES.firstOrNull { clause.contains(it) }
         val date = f.date ?: return implicitEvent(clause, now)
@@ -91,6 +150,7 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
         val reasons = mutableListOf<String>()
         val phrases = f.spans.sortedBy { it.first }.mapNotNull { r -> clause.substring(r.first.coerceAtLeast(0), (r.last + 1).coerceAtMost(clause.length)).trim().takeIf { it.isNotBlank() } }
         if (phrases.isNotEmpty()) reasons += "날짜·시각 말: " + phrases.joinToString(", ") { "'$it'" }
+        if (carried.isNotBlank()) reasons += "날짜는 앞에서 말한 '$carried' 로 이어 봤어요"
         var confidence = 0.45
         if (f.time != null) confidence += 0.2
         if (f.dateExplicit && !f.roughDate) confidence += 0.1
@@ -104,7 +164,7 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
         VAGUE.find(clause)?.let { confidence -= 0.35; reasons += "제안·질문처럼 들려요: '${it.value.trim()}'" }
         BROADCAST.find(clause)?.let { confidence -= 0.3; reasons += "방송·영상에서 자주 나오는 말이 섞였어요: '${it.value}'" }
         val start = if (f.time == null) date.toString() else date.atTime(f.time).format(MINUTE)
-        val title = (if (deadline && cue == null) "마감: " else "") + title(clause, f)
+        val title = (if (deadline && cue == null) "마감: " else "") + title(clause, f, callWith, keepWords = deadline)
         return ExtractedEvent(
             title = title.take(30),
             start = start,
@@ -170,7 +230,7 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
         MONEY.containsMatchIn(clause) || ACCOUNT.containsMatchIn(clause) || DECISION.containsMatchIn(clause) || LONG_NUMBER.containsMatchIn(clause)
 
     /** 말에서 날짜·시각을 빼고, 누구와(…랑) + 무엇(치과·회의…)으로 짧은 제목을 만든다. */
-    private fun title(clause: String, f: KoreanTime.Found): String {
+    private fun title(clause: String, f: KoreanTime.Found, callWith: String? = null, keepWords: Boolean = true): String {
         val rest = strip(clause, f.spans)
         val tokens = rest.split(' ').filter { it.isNotBlank() }
         val nounWord = TITLE_NOUNS.firstOrNull { rest.contains(it) }
@@ -185,7 +245,10 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
             who != null && noun != null -> "$who $noun"
             who != null -> "$who 약속"
             noun != null -> listOfNotNull(location(clause).takeIf { it.isNotBlank() && noun != it }, noun).joinToString(" ")
-            else -> tokens.dropLastWhile { ENDING_WORD.matches(it) }.take(5).joinToString(" ")
+            // 통화 중 약속은 누구와인지가 가장 알맞은 제목이다 ("에서 1시 사이일 것 같은데" 같은 말 토막 대신).
+            callWith != null -> "$callWith 약속"
+            keepWords -> tokens.dropLastWhile { ENDING_WORD.matches(it) }.take(5).joinToString(" ")
+            else -> location(clause).takeIf { it.isNotBlank() }?.let { "$it 약속" } ?: "약속"
         }.ifBlank { "약속" }
     }
 
@@ -206,6 +269,14 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
 
     companion object {
         private val MINUTE = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm")
+        /** 날짜를 뒤의 말에 이어 쓰는 시간 (한 대화). */
+        private const val CARRY_MS = 10 * 60_000L
+        /** 상대가 "내가 …" 하고 자기 일을 말할 때 (같이 하는 말이 없으면 내 일정이 아니다). */
+        private val OWN = Regex("(^|\\s)(내가|나는|난|저는|제가)\\s")
+        /** 상대가 자기 일정이 있다고 말할 때: "내일도 약속 있어", "회의 있거든". */
+        private val OWN_PLAN = Regex("(약속|일정|회의|미팅|일)\\s*(이|도|은|가)?\\s*있(어|거든|어서|는데|다|어요|습니다)")
+        /** 같이 하는 일로 들리는 말 (상대가 말해도 내 일정일 수 있다). */
+        private val JOINT = Regex("우리|같이|함께|너도|너랑|나랑|만나|만날|보자|봐요|볼까|놀기로|오겠네|올래|와\\s|오면|갈게|가자|데리러|픽업해\\s*줄")
         private val HM = DateTimeFormatter.ofPattern("HH:mm")
         private fun clock(at: Long) = Instant.ofEpochMilli(at).atZone(EventRules.SEOUL).format(HM)
 
@@ -265,7 +336,7 @@ class RuleBrain(private val polisher: Polisher? = null) : Brain {
             spans.sortedByDescending { it.first }.forEach { r ->
                 if (r.first in 0..sb.length && r.last < sb.length) sb.replace(r.first, r.last + 1, " ")
             }
-            return sb.toString().replace(Regex("(^|\\s)(에|에는|은|는|이|가|부터|까지|쯤|정도)(?=\\s|$)"), " ")
+            return sb.toString().replace(Regex("(^|\\s)(에|에는|은|는|이|가|부터|까지|쯤|정도|날|날에)(?=\\s|$)"), " ")
                 .replace(Regex("\\s+"), " ").trim()
         }
 

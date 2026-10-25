@@ -30,10 +30,10 @@ class VoiceId(context: Context, private val models: ModelManager) {
     val modelReady: Boolean get() = models.installed(models.speaker)
     val samples: Int get() = runCatching { json.decodeFromString<Print>(file.readText()).vectors.size }.getOrDefault(0)
 
-    /** 소리 한 조각의 목소리 특징 (길이 1로 맞춤). 너무 짧으면 null. */
+    /** 소리 한 조각의 목소리 특징 (길이 1로 맞춤). [minSeconds] 보다 짧으면 null. */
     @Synchronized
-    fun embed(pcm: ShortArray): FloatArray? {
-        if (pcm.size < SpeechSegmenter.SAMPLE_RATE * 1.2 || !modelReady) return null
+    fun embed(pcm: ShortArray, minSeconds: Double = 1.2): FloatArray? {
+        if (pcm.size < SpeechSegmenter.SAMPLE_RATE * minSeconds || !modelReady) return null
         val ex = extractor ?: SpeakerEmbeddingExtractor(
             config = SpeakerEmbeddingExtractorConfig(model = models.file(models.speaker, SPEAKER_MODEL).path, numThreads = 1),
         ).also { extractor = it }
@@ -54,6 +54,9 @@ class VoiceId(context: Context, private val models: ModelManager) {
         val v = embed(pcm) ?: return null
         return dot(me, v).coerceIn(0f, 1f)
     }
+
+    /** 목소리 특징 [v] 가 등록한 내 목소리와 비슷한 정도 (-1~1). 등록 안 했으면 null. */
+    fun similarity(v: FloatArray): Float? = mine?.let { dot(it, v) }
 
     /** "me" · "other" · "" (모름) */
     fun label(score: Float?): String = when {

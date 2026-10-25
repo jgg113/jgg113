@@ -60,14 +60,41 @@ class CallRecordingImporter(private val context: Context) {
         count
     }
 
-    private fun newRecordings(): List<Recording> {
+    /**
+     * 기록 탭의 [다시 받아쓰기]: 이 통화의 받아쓴 글·녹음·정리와, 그 통화에서 저절로 넣은(직접 승인·수정하지 않은) 일정을 지우고
+     * 원래 통화 녹음 파일을 지금 모델로 다시 처리한다. 원래 녹음 파일을 못 찾으면 false (지운 것도 없다).
+     */
+    suspend fun redo(lines: List<Utterance>, noteIds: List<Long>): Boolean = lock.withLock {
+        val who = lines.firstOrNull()?.callWith ?: return@withLock false
+        val from = lines.first().at
+        val to = lines.last().at
+        val r = recordingsBetween(from - 24L * 60 * 60 * 1000, to + 24L * 60 * 60 * 1000).firstOrNull { rec ->
+            val info = RecordingName.parse(rec.name)
+            val start = info.startMillis ?: (rec.addedMillis - rec.durationMs)
+            info.who == who && from >= start - 60_000 && from <= start + rec.durationMs + 60_000
+        } ?: return@withLock false
+        val tag = "call:$who"
+        g.store.events().filter { e ->
+            e.source == tag && e.heardAt in (from - 60_000)..(to + 60_000) && e.addedBy !in setOf("approved", "voice", "edited")
+        }.forEach { e -> if (e.asking) g.events.dismiss(e.id) else if (e.active) g.events.cancel(e.id) }
+        g.deleteRecords(lines, noteIds)
+        process(r)
+        markDone(r.id)
+        true
+    }
+
+    private fun recordingsBetween(fromMillis: Long, toMillis: Long): List<Recording> = query(fromMillis, toMillis, skipDone = false)
+
+    private fun newRecordings(): List<Recording> = query(since, Long.MAX_VALUE, skipDone = true)
+
+    private fun query(fromMillis: Long, toMillis: Long, skipDone: Boolean): List<Recording> {
         val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
             MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DISPLAY_NAME, MediaStore.Audio.Media.DATE_ADDED,
             MediaStore.Audio.Media.DURATION, MediaStore.Audio.Media.RELATIVE_PATH,
         )
-        val sel = "${MediaStore.Audio.Media.DATE_ADDED} >= ?"
-        val args = arrayOf((since / 1000).toString())
+        val sel = "${MediaStore.Audio.Media.DATE_ADDED} >= ? AND ${MediaStore.Audio.Media.DATE_ADDED} <= ?"
+        val args = arrayOf((fromMillis / 1000).toString(), (minOf(toMillis, Long.MAX_VALUE / 2) / 1000).toString())
         val out = mutableListOf<Recording>()
         context.contentResolver.query(uri, projection, sel, args, "${MediaStore.Audio.Media.DATE_ADDED} ASC")?.use { c ->
             while (c.moveToNext()) {
@@ -75,7 +102,7 @@ class CallRecordingImporter(private val context: Context) {
                 val name = c.getString(1).orEmpty()
                 val path = c.getString(4)
                 if (!RecordingName.isCallFolder(path) && !name.startsWith("통화") && !name.startsWith("Call recording", ignoreCase = true)) continue
-                if (done(id)) continue
+                if (skipDone && done(id)) continue
                 out += Recording(id, name, c.getLong(2) * 1000, c.getLong(3))
             }
         }
@@ -104,15 +131,21 @@ class CallRecordingImporter(private val context: Context) {
         }
         segmenter.flush()?.let { segments += (samples * 1000 / SpeechSegmenter.SAMPLE_RATE) to it }
         segmenter.release()
-        val utterances = segments.mapNotNull { (endMs, seg) ->
-            // 통화는 짧고 중요해서, 고정밀 모델을 받아 두었으면 통화 전체를 고정밀로 받아쓴다.
-            val text = runCatching { g.transcribe(seg, preferBest = true) }.getOrNull()?.let { TranscriptFilter.clean(it) } ?: return@mapNotNull null
-            val at = start + endMs
-            val score = if (g.voiceId.enrolled) runCatching { g.voiceId.score(seg) }.getOrNull() else null
+        // 두 사람 목소리로 나눈 뒤(말이 빨리 오가면 한 구간도 사람별로 자른다) 조각마다 받아쓴다.
+        val parts = runCatching { io.github.jgg113.gyeot.voice.CallSpeakers(g.voiceId).split(segments.map { it.second }) }
+            .getOrElse { segments.indices.map { i -> io.github.jgg113.gyeot.voice.CallSpeakers.Part(i, 0, segments[i].second.size, "", 0f) } }
+        val utterances = parts.mapNotNull { part ->
+            val (endMs, seg) = segments[part.seg]
+            val pcm = if (part.from == 0 && part.to == seg.size) seg else seg.copyOfRange(part.from, part.to)
+            if (pcm.size < SpeechSegmenter.SAMPLE_RATE * 3 / 10) return@mapNotNull null
+            // 통화는 한 번만 받아쓰는 중요한 소리라, 받아 둔 모델 중 가장 정확한 것으로 받아쓴다.
+            val text = runCatching { g.transcribe(pcm, preferBest = true) }.getOrNull()?.let { TranscriptFilter.clean(it) } ?: return@mapNotNull null
+            val segStartMs = endMs - seg.size * 1000L / SpeechSegmenter.SAMPLE_RATE
+            val at = start + segStartMs + part.to * 1000L / SpeechSegmenter.SAMPLE_RATE
             Utterance(
                 at, text, source = tag,
-                audio = if (g.settings.keepAudioDays > 0) g.audio.save(at, seg) else "",
-                speaker = g.voiceId.label(score), voiceScore = score ?: 0f,
+                audio = if (g.settings.keepAudioDays > 0) g.audio.save(at, pcm) else "",
+                speaker = part.speaker, voiceScore = part.score,
             )
         }
         if (utterances.isEmpty()) return

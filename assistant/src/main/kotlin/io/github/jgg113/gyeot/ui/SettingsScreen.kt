@@ -113,6 +113,7 @@ fun SettingsScreen() {
     val asrProgress by g.models.progress(g.models.asr).collectAsState()
     val qwenProgress by g.models.progress(g.models.qwen3).collectAsState()
     val dolphinProgress by g.models.progress(g.models.dolphin).collectAsState()
+    val kozipProgress by g.models.progress(g.models.kozip).collectAsState()
     val llmProgress by g.models.progress(g.models.llm).collectAsState()
     var localModel by remember { mutableStateOf(s.localModel) }
     var corrections by remember { mutableStateOf(s.corrections) }
@@ -154,9 +155,10 @@ fun SettingsScreen() {
         // ---- 받아쓰기 ----
         SettingGroup("🎙", "받아쓰기 (음성 인식)", "지금: " + when {
             sttEngine != AppSettings.ENGINE_LOCAL -> "클라우드"
-            g.localTranscriber.engine() == AppSettings.MODEL_QWEN3 -> "고정밀 모델 · 휴대폰 안"
+            g.localTranscriber.engine() == AppSettings.MODEL_KOZIP -> "한국어 대화 모델 · 휴대폰 안"
+            g.localTranscriber.engine() == AppSettings.MODEL_QWEN3 -> "Qwen3 · 휴대폰 안"
             g.localTranscriber.engine() == AppSettings.MODEL_ZIPFORMER -> "예전 모델 — 새 모델을 받아 주세요"
-            else -> "기본 모델 · 휴대폰 안" + if (g.models.installed(g.models.qwen3) && localBoost) " + 중요한 말 고정밀" else ""
+            else -> "Dolphin · 휴대폰 안 — 한국어 대화 모델을 받아 주세요"
         }) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Choice(sttEngine == AppSettings.ENGINE_LOCAL, "휴대폰 안 (무료·무제한)") { sttEngine = AppSettings.ENGINE_LOCAL; s.sttEngine = sttEngine }
@@ -165,23 +167,30 @@ fun SettingsScreen() {
             if (sttEngine == AppSettings.ENGINE_LOCAL) {
                 Hint("인터넷 없이 휴대폰 안에서 한국어를 받아써요. 작은 목소리는 자동으로 키워서 받아써요.")
                 Label("받아쓰기 모델")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Choice(localModel != AppSettings.MODEL_QWEN3, "기본 (105MB)") { localModel = AppSettings.MODEL_DOLPHIN; s.localModel = localModel; g.localTranscriber.close() }
-                    Choice(localModel == AppSettings.MODEL_QWEN3, "고정밀 (약 1GB)") { localModel = AppSettings.MODEL_QWEN3; s.localModel = localModel; g.localTranscriber.close() }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Choice(localModel == AppSettings.MODEL_KOZIP, "한국어 대화 (추천)") { localModel = AppSettings.MODEL_KOZIP; s.localModel = localModel; g.localTranscriber.close() }
+                    Choice(localModel == AppSettings.MODEL_DOLPHIN, "Dolphin") { localModel = AppSettings.MODEL_DOLPHIN; s.localModel = localModel; g.localTranscriber.close() }
+                    Choice(localModel == AppSettings.MODEL_QWEN3, "Qwen3") { localModel = AppSettings.MODEL_QWEN3; s.localModel = localModel; g.localTranscriber.close() }
                 }
-                if (localModel != AppSettings.MODEL_QWEN3) {
-                    Hint("Dolphin (무료 공개 모델). 한국어 평가 음성에서 예전 모델보다 오류가 절반이고, 시끄럽고 먼 소리에 훨씬 강해요. 빠르고 가벼워요.")
-                    ModelRow(g.models.installed(g.models.dolphin) && !dolphinProgress.running, dolphinProgress, g.models.dolphin.label, onGet = { g.models.download(g.models.dolphin); g.models.download(g.models.vad) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.dolphin) })
-                    Hint("더 정확하게: 고정밀 모델도 받아 두면 일정·약속 같은 중요한 말만 고정밀로 한 번 더 받아써요 (휴대폰 안, 무료).")
-                    ModelRow(g.models.installed(g.models.qwen3) && !qwenProgress.running, qwenProgress, "고정밀 모델 (약 1GB, 와이파이)", onGet = { g.models.download(g.models.qwen3) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.qwen3) })
-                    if (g.models.installed(g.models.qwen3)) ToggleRow("중요한 말은 고정밀로 한 번 더", null, localBoost) { localBoost = it; s.localBoost = it }
-                } else {
-                    Hint("Qwen3-ASR (무료 공개 모델). 아래 '자주 나오는 이름'을 힌트로 써서 이름을 더 잘 알아들어요. 시간이 더 걸리고 메모리를 1.5GB 안팎 써요 (갤럭시 S·폴드급 권장). 받기 전까지는 기본 모델로 받아써요.")
-                    ModelRow(g.models.installed(g.models.qwen3) && !qwenProgress.running, qwenProgress, g.models.qwen3.label, onGet = { g.models.download(g.models.qwen3); g.models.download(g.models.vad) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.qwen3) })
+                when (localModel) {
+                    AppSettings.MODEL_KOZIP -> {
+                        Hint("한국어 대화 6,500시간으로 학습한 무료 공개 모델이에요. 일상 대화 오류 8.1%·전화 음질 12.6%로, Dolphin(14.8%·17.9%)·Qwen3(12.7%·17.0%)보다 정확하고 빨라요. 통화 녹음도 이 모델로 받아써요.")
+                        ModelRow(g.models.installed(g.models.kozip) && !kozipProgress.running, kozipProgress, g.models.kozip.label, onGet = { g.models.download(g.models.kozip); g.models.download(g.models.vad) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.kozip) })
+                    }
+                    AppSettings.MODEL_DOLPHIN -> {
+                        Hint("Dolphin (예전 기본). 가볍지만 대화체·전화에서는 한국어 대화 모델보다 많이 틀려요.")
+                        ModelRow(g.models.installed(g.models.dolphin) && !dolphinProgress.running, dolphinProgress, g.models.dolphin.label, onGet = { g.models.download(g.models.dolphin); g.models.download(g.models.vad) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.dolphin) })
+                        if (g.models.installed(g.models.qwen3)) ToggleRow("일정 같은 중요한 말은 Qwen3로 한 번 더", null, localBoost) { localBoost = it; s.localBoost = it }
+                    }
+                    else -> {
+                        Hint("Qwen3-ASR 0.6B. 또박또박 읽은 말은 잘 알아듣지만 대화체·전화에서는 한국어 대화 모델보다 틀려요. 느리고 메모리를 1.5GB 안팎 써요. 한국어로 고정해서 받아써요.")
+                        ModelRow(g.models.installed(g.models.qwen3) && !qwenProgress.running, qwenProgress, g.models.qwen3.label, onGet = { g.models.download(g.models.qwen3); g.models.download(g.models.vad) }, onDelete = { g.localTranscriber.close(); g.models.delete(g.models.qwen3) })
+                    }
                 }
-                if (g.models.installed(g.models.asr) && !asrProgress.running && (g.models.installed(g.models.dolphin) || g.models.installed(g.models.qwen3))) {
-                    TextButton(onClick = { g.localTranscriber.close(); g.models.delete(g.models.asr) }) { Text("예전 모델(85MB) 지우기") }
-                }
+                // 안 쓰는 모델은 지워 저장공간을 돌려받는다.
+                val unused = listOf(g.models.dolphin to "Dolphin(105MB)", g.models.qwen3 to "Qwen3(약 1GB)", g.models.asr to "예전 모델(85MB)")
+                    .filter { (pack, _) -> g.models.installed(pack) && g.localTranscriber.engine() == AppSettings.MODEL_KOZIP && !(pack == g.models.qwen3 && localModel == AppSettings.MODEL_QWEN3) && !(pack == g.models.dolphin && localModel == AppSettings.MODEL_DOLPHIN) }
+                unused.forEach { (pack, name) -> TextButton(onClick = { g.localTranscriber.close(); g.models.delete(pack) }) { Text("안 쓰는 $name 지우기") } }
                 Label("자꾸 틀리는 말 고치기")
                 OutlinedTextField(corrections, { corrections = it }, Modifier.fillMaxWidth(), label = { Text("한 줄에 하나, 틀린말=바른말 (예: 민스=민수)") }, minLines = 2)
                 Hint("기록 탭에서 받아쓴 줄을 길게 눌러 고쳐도 여기에 자동으로 더해져요.")
@@ -212,6 +221,7 @@ fun SettingsScreen() {
             }
             OutlinedTextField(myName, { myName = it }, Modifier.fillMaxWidth(), label = { Text("내 이름·호칭 (예: 김지훈, 지훈 씨, 과장님)") }, singleLine = true)
             OutlinedTextField(vocab, { vocab = it }, Modifier.fillMaxWidth(), label = { Text("자주 나오는 이름 (쉼표로: 사람, 회사, 장소)") })
+            Hint("이름은 Claude 정리에만 참고해요. 받아쓰기 모델에는 주지 않아요 — 알아듣기 어려운 소리에 이 이름들을 그대로 받아 적는 문제가 있었어요. 자꾸 틀리는 이름은 기록 탭에서 그 줄을 고치면 다음부터 자동으로 바로잡아요.")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { save(); test = "저장했어요" }) { Text("저장") }
                 OutlinedButton(onClick = {

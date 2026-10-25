@@ -6,6 +6,11 @@ import com.k2fsa.sherpa.onnx.OfflineQwen3AsrModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
+import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OnlineModelConfig
+import com.k2fsa.sherpa.onnx.OnlineRecognizer
+import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
 import io.github.jgg113.gyeot.audio.Gain
 import io.github.jgg113.gyeot.audio.SpeechSegmenter
 import io.github.jgg113.gyeot.data.ModelManager
@@ -13,24 +18,30 @@ import io.github.jgg113.gyeot.data.Settings
 
 /**
  * 휴대폰 안에서 한국어를 받아쓴다 (sherpa-onnx). 인터넷·요금·한도 없음.
- * - dolphin (기본): Dolphin base CTC, 빠르고 정확
- * - qwen3 (고정밀): Qwen3-ASR 0.6B, 이름(자주 나오는 말)을 힌트로 줄 수 있음, 대신 느리고 무거움
- * - zipformer: 예전 기본 모델 — 새 모델을 받기 전까지만 쓴다
+ * - ko_conv (기본): 한국어 대화 전용 Zipformer 174M — 일상 대화·통화 모두 가장 정확하고 빠르다. 띄어쓰기는 [KoreanSpacing] 으로 넣는다.
+ * - dolphin: Dolphin base CTC (예전 기본)
+ * - qwen3: Qwen3-ASR 0.6B — 한국어로 고정해서 쓴다 (안 그러면 가끔 중국어로 받아쓴다). 이름 힌트는 주지 않는다:
+ *   알아듣기 어려운 짧은 소리에 힌트 낱말 목록을 그대로 뱉었다 ("홍길동 길동 길동이 길동아 …").
+ * - zipformer: 아주 예전 기본 모델 — 새 모델을 받기 전까지만 쓴다
  * 받아쓰기 전에 작은 목소리를 키운다 ([Gain]) — 이것만으로도 오류가 크게 준다.
  */
-class LocalTranscriber(private val models: ModelManager, private val settings: Settings) {
+class LocalTranscriber(private val models: ModelManager, private val settings: Settings, private val spacing: () -> KoreanSpacing? = { null }) {
 
     /** 받아 둔 모델이 하나라도 있는지. */
-    val available get() = models.installed(models.dolphin) || models.installed(models.qwen3) || models.installed(models.asr)
+    val available get() = listOf(models.kozip, models.dolphin, models.qwen3, models.asr).any { models.installed(it) }
 
     /** 고른 모델을 아직 안 받았으면, 받아 둔 것 중 가장 좋은 것으로. */
     fun engine(): String {
         val want = settings.localModel
-        val order = listOf(want, Settings.MODEL_DOLPHIN, Settings.MODEL_QWEN3, Settings.MODEL_ZIPFORMER).distinct()
-        return order.firstOrNull { installed(it) } ?: Settings.MODEL_DOLPHIN
+        val order = listOf(want, Settings.MODEL_KOZIP, Settings.MODEL_DOLPHIN, Settings.MODEL_QWEN3, Settings.MODEL_ZIPFORMER).distinct()
+        return order.firstOrNull { installed(it) } ?: Settings.MODEL_KOZIP
     }
 
-    private fun installed(model: String) = when (model) {
+    /** 통화 녹음처럼 한 번만 받아쓰는 중요한 소리에 쓸 모델: 받아 둔 것 중 가장 정확한 것. */
+    fun best(): String = listOf(Settings.MODEL_KOZIP, Settings.MODEL_QWEN3, Settings.MODEL_DOLPHIN, Settings.MODEL_ZIPFORMER).firstOrNull { installed(it) } ?: engine()
+
+    fun installed(model: String) = when (model) {
+        Settings.MODEL_KOZIP -> models.installed(models.kozip)
         Settings.MODEL_QWEN3 -> models.installed(models.qwen3)
         Settings.MODEL_ZIPFORMER -> models.installed(models.asr)
         else -> models.installed(models.dolphin)
@@ -38,21 +49,22 @@ class LocalTranscriber(private val models: ModelManager, private val settings: S
 
 
 
-    // 모델마다 하나씩 열어 둔다 (기본 + 중요한 말 다시 받아쓰기용 고정밀).
+    // 모델마다 하나씩 열어 둔다 (기본 + 중요한 말 다시 받아쓰기용).
     private val open = HashMap<String, OfflineRecognizer>()
+    private var online: OnlineRecognizer? = null
     private val used = HashMap<String, Long>()
 
     /** 지금 고른 모델로 받아쓴다. [model] 을 주면 그 모델로 (받아 둔 경우). */
     @Synchronized
     fun transcribe(pcm: ShortArray, model: String = engine()): String {
         val use = if (installed(model)) model else engine()
-        val key = use + "|" + hotwords(use)
-        // 이름 힌트가 바뀌었으면 그 모델을 다시 연다.
-        open.keys.filter { it.startsWith("$use|") && it != key }.forEach { open.remove(it)?.release() }
-        val r = open.getOrPut(key) { open(key) }
-        used[key] = System.currentTimeMillis()
+        used[use] = System.currentTimeMillis()
+        if (use == Settings.MODEL_KOZIP) return transcribeConversational(pcm)
+        val r = open.getOrPut(use) { open(use) }
         val stream = r.createStream()
         try {
+            // Qwen3-ASR 는 언어를 정해 주지 않으면 한국어 대화를 가끔 중국어로 받아쓴다 ("12点到1点").
+            if (use == Settings.MODEL_QWEN3) stream.setOption("language", "Korean")
             stream.acceptWaveform(Gain.toFloat(pcm), SpeechSegmenter.SAMPLE_RATE)
             r.decode(stream)
             val result = r.getResult(stream)
@@ -64,13 +76,55 @@ class LocalTranscriber(private val models: ModelManager, private val settings: S
         }
     }
 
-    /** 고정밀 모델을 받아 두었는지 (중요한 말 다시 받아쓰기에 쓸 수 있는지). */
-    val canBoost get() = installed(Settings.MODEL_QWEN3)
+    /** 한국어 대화 모델은 스트리밍 모델이라, 구간 뒤에 조용한 소리를 2.56초 붙여야 끝말까지 나온다 (0.64초면 오류가 두 배). */
+    private fun transcribeConversational(pcm: ShortArray): String {
+        val r = online ?: openConversational().also { online = it }
+        val stream = r.createStream()
+        try {
+            stream.acceptWaveform(Gain.toFloat(pcm), SpeechSegmenter.SAMPLE_RATE)
+            stream.acceptWaveform(FloatArray(SpeechSegmenter.SAMPLE_RATE * 256 / 100), SpeechSegmenter.SAMPLE_RATE)
+            stream.inputFinished()
+            while (r.isReady(stream)) r.decode(stream)
+            val text = r.getResult(stream).text.trim()
+            return spacing()?.apply(text) ?: text
+        } finally {
+            stream.release()
+        }
+    }
+
+    private fun openConversational(): OnlineRecognizer {
+        val p = models.kozip
+        return OnlineRecognizer(
+            config = OnlineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SpeechSegmenter.SAMPLE_RATE, featureDim = 80),
+                modelConfig = OnlineModelConfig(
+                    transducer = OnlineTransducerModelConfig(
+                        encoder = models.file(p, ModelManager.KOZIP_ENCODER).path,
+                        decoder = models.file(p, ModelManager.KOZIP_DECODER).path,
+                        joiner = models.file(p, ModelManager.KOZIP_JOINER).path,
+                    ),
+                    tokens = models.file(p, "tokens.txt").path,
+                    numThreads = 2,
+                ),
+                enableEndpoint = false,
+                decodingMethod = "modified_beam_search",
+                maxActivePaths = 4,
+            ),
+        )
+    }
+
+    /**
+     * 기본 모델 글에 일정 냄새가 나면 그 구간을 더 정확한 모델로 다시 받아쓸 수 있는지.
+     * 한국어 대화 모델이 Qwen3 0.6B 보다 대화·통화 모두 정확해서, 지금 모델이 Dolphin·예전 모델일 때만 쓴다.
+     */
+    val canBoost get() = installed(Settings.MODEL_QWEN3) && engine() in setOf(Settings.MODEL_DOLPHIN, Settings.MODEL_ZIPFORMER)
 
     @Synchronized
     fun close() {
         open.values.forEach { it.release() }
         open.clear()
+        online?.release()
+        online = null
         used.clear()
     }
 
@@ -78,17 +132,10 @@ class LocalTranscriber(private val models: ModelManager, private val settings: S
     @Synchronized
     fun closeIfIdle(idleMs: Long = 10 * 60_000L) {
         val now = System.currentTimeMillis()
-        open.keys.filter { it.startsWith(Settings.MODEL_QWEN3) && now - (used[it] ?: 0) > idleMs }.forEach { open.remove(it)?.release(); used.remove(it) }
+        open.keys.filter { it == Settings.MODEL_QWEN3 && now - (used[it] ?: 0) > idleMs }.forEach { open.remove(it)?.release(); used.remove(it) }
     }
 
-    /** 내 이름·자주 나오는 이름을 고정밀 모델에 힌트로 준다 (쉼표로). */
-    private fun hotwords(model: String): String =
-        if (model != Settings.MODEL_QWEN3) ""
-        else (listOf(settings.myName) + settings.vocabulary.split(',', '、', '\n'))
-            .map { it.trim().replace(",", "") }.filter { it.isNotEmpty() }.distinct().take(30).joinToString(",")
-
-    private fun open(key: String): OfflineRecognizer {
-        val engine = key.substringBefore("|")
+    private fun open(engine: String): OfflineRecognizer {
         if (engine == Settings.MODEL_QWEN3) {
             val p = models.qwen3
             val config = OfflineRecognizerConfig(
@@ -98,7 +145,6 @@ class LocalTranscriber(private val models: ModelManager, private val settings: S
                         encoder = models.file(p, "encoder.int8.onnx").path,
                         decoder = models.file(p, "decoder.int8.onnx").path,
                         tokenizer = models.dir(p).resolve("tokenizer").path,
-                        hotwords = key.substringAfter("|"),
                         // 기본 한도(128)면 빠르게 말한 15초 한국어가 잘린다.
                         maxNewTokens = 400,
                         maxTotalLen = 1024,

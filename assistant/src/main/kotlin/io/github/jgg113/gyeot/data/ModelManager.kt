@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 휴대폰 안에서 돌릴 모델 파일을 처음 한 번 내려받아 앱 저장공간에 둔다. 끊겨도 받은 데까지 이어 받는다.
- * - 한국어 음성 인식: sherpa-onnx Zipformer (KsponSpeech 한국어 대화로 학습, Apache-2.0) 약 85MB
+ * - 한국어 음성 인식: 한국어 대화 전용 Zipformer 174M (KsponSpeech+AIHub 6,500시간, Apache-2.0) 약 160MB
  * - 요약 다듬기(선택): Qwen2.5-1.5B-Instruct (Apache-2.0, MediaPipe 용 8비트) 약 1.6GB
  */
 class ModelManager(context: Context) {
@@ -47,6 +47,19 @@ class ModelManager(context: Context) {
         listOf("model.int8.onnx", "tokens.txt")
             .map { it to "https://huggingface.co/csukuangfj/sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02/resolve/main/$it" },
         105,
+    )
+
+    /**
+     * 한국어 대화 전용 음성 인식 (새 기본): icefall Zipformer 174M (kangkyu, Apache-2.0), KsponSpeech+AIHub 한국어 6,500시간으로 학습.
+     * 일상 대화체 한국어(KsponSpeech) 150문장에서 오류 8.1% (Dolphin 14.8%, Qwen3 0.6B 12.7%),
+     * 전화 음질로 바꿔도 12.6% (Dolphin 17.9%, Qwen3 17.0%). 사용자의 실제 통화 녹음에서도 가장 잘 알아들었다. 띄어쓰기는 [KoreanSpacing] 이 넣는다.
+     */
+    val kozip = Pack(
+        "ko-conv-zipformer-174m", "한국어 대화 모델 (160MB)",
+        listOf(
+            KOZIP_ENCODER, KOZIP_DECODER, KOZIP_JOINER, "tokens.txt",
+        ).map { it to "https://huggingface.co/kangkyu/icefall-asr-ko-streaming-zipformer-174m/resolve/main/$it" },
+        160,
     )
 
     /** 내 목소리 알아보기: 3D-Speaker CAM++ (Apache-2.0) 약 28MB. */
@@ -80,7 +93,7 @@ class ModelManager(context: Context) {
         1_600,
     )
 
-    private val states = listOf(asr, dolphin, vad, qwen3, llm, speaker).associate { it.id to MutableStateFlow(Progress()) }
+    private val states = listOf(asr, dolphin, kozip, vad, qwen3, llm, speaker).associate { it.id to MutableStateFlow(Progress()) }
     private val jobs = mutableMapOf<String, Job>()
 
     fun progress(pack: Pack): StateFlow<Progress> = states.getValue(pack.id)
@@ -153,5 +166,8 @@ class ModelManager(context: Context) {
 
     companion object {
         const val LLM_FILE = "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.task"
+        const val KOZIP_ENCODER = "encoder-epoch-99-avg-1-chunk-64-left-128.int8.onnx"
+        const val KOZIP_DECODER = "decoder-epoch-99-avg-1-chunk-64-left-128.int8.onnx"
+        const val KOZIP_JOINER = "joiner-epoch-99-avg-1-chunk-64-left-128.int8.onnx"
     }
 }

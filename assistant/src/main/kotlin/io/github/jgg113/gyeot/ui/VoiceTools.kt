@@ -89,7 +89,9 @@ private fun Recorder(recording: Boolean, level: Int, left: Int) {
 }
 
 private fun modelName(m: String) = when (m) {
-    AppSettings.MODEL_QWEN3 -> "고정밀 모델"
+    AppSettings.MODEL_KOZIP -> "한국어 대화 모델"
+    AppSettings.MODEL_DOLPHIN -> "Dolphin"
+    AppSettings.MODEL_QWEN3 -> "Qwen3"
     AppSettings.MODEL_ZIPFORMER -> "예전 모델"
     "cloud" -> "클라우드"
     else -> "기본 모델"
@@ -176,7 +178,7 @@ fun DictationTestDialog(close: () -> Unit) {
                     }
                 }
                 Hint("잘못 들은 낱말은 기록 탭에서 그 줄을 길게 눌러 고치면, 다음부터 자동으로 바로잡아요." +
-                    if (r.model != AppSettings.MODEL_QWEN3 && !g.models.installed(g.models.qwen3)) " 더 정확하게 하려면 설정 → 받아쓰기에서 고정밀 모델을 받아 보세요." else "")
+                    if (r.model != AppSettings.MODEL_KOZIP) " 더 정확하게 하려면 오늘 탭·설정 → 받아쓰기에서 '한국어 대화 모델'을 받아 주세요." else "")
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = ::start, modifier = Modifier.weight(1f)) { Text("다시 해 보기") }

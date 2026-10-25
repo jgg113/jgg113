@@ -172,13 +172,14 @@ private fun ListenCard(g: Graph, activity: MainActivity, state: ListenState.Stat
         if (state.error.isNotBlank()) Text("⚠ ${state.error}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         val why = remember(state.running, version) { g.notReadyReason() }
         if (why != null) Text(why, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-        if (g.settings.localStt && g.localTranscriber.engine() == AppSettings.MODEL_ZIPFORMER) {
-            val p by g.models.progress(g.models.dolphin).collectAsState()
+        if (g.settings.localStt && !g.models.installed(g.models.kozip) && g.settings.localModel == AppSettings.MODEL_KOZIP) {
+            val p by g.models.progress(g.models.kozip).collectAsState()
             AppCard(color = MaterialTheme.colorScheme.primaryContainer) {
-                Text("✨ 더 정확한 한국어 인식 모델이 나왔어요", style = MaterialTheme.typography.titleMedium)
-                Hint("오류가 절반으로 줄어요. 105MB, 와이파이에서 받아 주세요.")
+                Text("✨ 한국어 대화 전용 모델을 받아 주세요", style = MaterialTheme.typography.titleMedium)
+                Hint("한국어 대화 6,500시간으로 학습한 무료 모델이에요. 일상 대화·통화에서 지금 모델보다 훨씬 덜 틀려요. 160MB, 와이파이에서 한 번만.")
                 if (p.running) LinearProgressIndicator(progress = { p.percent / 100f }, modifier = Modifier.fillMaxWidth())
-                else Button(onClick = { g.models.download(g.models.dolphin); g.models.download(g.models.vad) }) { Text(if (p.error.isNotBlank()) "다시 받기" else "지금 받기") }
+                else Button(onClick = { g.models.download(g.models.kozip); g.models.download(g.models.vad) }) { Text(if (p.error.isNotBlank()) "다시 받기" else "지금 받기") }
+                if (p.error.isNotBlank()) Text(p.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {

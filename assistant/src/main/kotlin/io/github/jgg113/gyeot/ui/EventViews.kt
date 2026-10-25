@@ -168,19 +168,30 @@ internal fun whyLine(e: SavedEvent): String = when (e.addedBy) {
 }
 
 /**
- * 받아쓴 줄 고치기. 낱말이 바뀐 곳은 "틀린말=바른말" 규칙으로 저장해 다음부터 자동으로 고친다.
+ * 받아쓴 한 줄: 글 고치기(바뀐 낱말은 "틀린말=바른말" 규칙으로 저장해 다음부터 자동으로 고친다),
+ * 누가 말했는지 고르기(내 말이면 그때 녹음으로 내 목소리를 더 배운다), 이 줄 지우기.
  */
 @Composable
 fun EditUtterance(u: Utterance, g: Graph, close: () -> Unit) {
+    val scope = rememberCoroutineScope()
     var text by remember { mutableStateOf(u.text) }
     var learn by remember { mutableStateOf(true) }
+    var speaker by remember { mutableStateOf(u.speaker) }
+    var note by remember { mutableStateOf("") }
+    var confirmDelete by remember { mutableStateOf(false) }
     val learned = remember(text) { Corrections.learn(u.text, text) }
+    if (confirmDelete) {
+        ConfirmDelete("이 줄을 지울까요?", "“${u.text.take(40)}” 와 그때 녹음을 지워요.", onCancel = { confirmDelete = false }) {
+            Player.stop(); scope.launch(Dispatchers.IO) { g.deleteRecords(listOf(u)) }; confirmDelete = false; close()
+        }
+        return
+    }
     AlertDialog(
         onDismissRequest = close,
-        title = { Text("받아쓴 말 고치기") },
+        title = { Text("받아쓴 말") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("${koClock(u.at)}에 들은 말", style = MaterialTheme.typography.labelMedium)
+                Text("${koClock(u.at)}에 들은 말" + (u.callWith?.let { " · 📞 $it 통화" } ?: ""), style = MaterialTheme.typography.labelMedium)
                 OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), minLines = 2)
                 g.audio.file(u.audio)?.let { f ->
                     TextButton(onClick = { Player.play(listOf(u.audio to f)) }) { Text("▶ 그때 소리 다시 듣기") }
@@ -189,6 +200,25 @@ fun EditUtterance(u: Utterance, g: Graph, close: () -> Unit) {
                     Checkbox(learn, { learn = it })
                     Text("다음부터 자동으로 고치기: " + learned.joinToString(", ") { "${it.wrong}→${it.right}" }, style = MaterialTheme.typography.bodySmall)
                 }
+                Text("누가 말했나요?", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("me" to "🙋 나", "other" to "👤 ${u.callWith ?: "상대"}").forEach { (who, label) ->
+                        androidx.compose.material3.FilterChip(
+                            selected = speaker == who,
+                            onClick = {
+                                speaker = who
+                                note = if (who == "me") "내 목소리를 배우는 중…" else ""
+                                scope.launch(Dispatchers.IO) {
+                                    val learnedVoice = g.teachSpeaker(u, me = who == "me")
+                                    if (who == "me") note = if (learnedVoice) "✓ 이 소리로 내 목소리를 더 배웠어요" else "꼬리표만 바꿨어요 (녹음이 없거나 목소리 모델이 없어요)"
+                                }
+                            },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+                if (note.isNotBlank()) Hint(note)
+                TextButton(onClick = { confirmDelete = true }) { Text("🗑 이 줄 지우기", color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
@@ -199,7 +229,7 @@ fun EditUtterance(u: Utterance, g: Graph, close: () -> Unit) {
                     g.settings.corrections = rules.distinctBy { it.wrong }.joinToString("\n") { "${it.wrong}=${it.right}" }
                 }
                 close()
-            }) { Text("고치기") }
+            }) { Text(if (text.trim() != u.text) "고치기" else "닫기") }
         },
         dismissButton = { TextButton(onClick = close) { Text("그만두기") } },
     )

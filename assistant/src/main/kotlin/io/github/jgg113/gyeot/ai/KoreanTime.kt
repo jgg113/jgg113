@@ -30,7 +30,8 @@ object KoreanTime {
         val any get() = date != null || time != null
     }
 
-    private const val NATIVE = "열한|열두|하나|다섯|여섯|일곱|여덟|아홉|한|두|세|네|열|둘|셋|넷"
+    // "열 두 시"처럼 띄어 받아써도 12시로 읽는다 (그냥 두면 "두 시"=2시로 읽힌다).
+    private const val NATIVE = "열\\s?한|열\\s?두|하나|다섯|여섯|일곱|여덟|아홉|한|두|세|네|열|둘|셋|넷"
     private const val SINO = "[일이삼사오육칠팔구십]{1,4}"
     private val HOUR = Regex("""(오전|오후|아침|점심|저녁|밤|새벽|낮)?\s*(\d{1,2}|$NATIVE)\s*시(?![간작장청험계키켜민설점선각])(\s*(반|(\d{1,2}|$SINO)\s*분))?""")
     private val NOON = Regex("정오|자정")
@@ -49,7 +50,10 @@ object KoreanTime {
     private val NEXT_MONTH = Regex("""다음\s*달\s*(에|초|중|쯤|말)?""")
     private val BARE_DAY = Regex("""(\d{1,2}|[일이삼]?십[일이삼사오육칠팔구]?)\s*일\s*(에|날|까지|부터|쯤|정도)""")
 
-    fun parse(text: String, now: ZonedDateTime): Found {
+    /**
+     * @param contextDate 말에 날짜가 없을 때 쓸 날짜 (앞에서 말한 "화요일 날" 등). 없으면 오늘 — 이미 지난 시각이면 오후·내일로 본다.
+     */
+    fun parse(text: String, now: ZonedDateTime, contextDate: LocalDate? = null): Found {
         val spans = mutableListOf<IntRange>()
         val today = now.toLocalDate()
         var date: LocalDate? = null
@@ -166,7 +170,9 @@ object KoreanTime {
                 if (hour == 24) hour = 0
                 time = LocalTime.of(hour % 24, min)
                 spans += hm.range
-                // 날짜 없이 시각만: 오늘, 이미 지났으면 (오전으로 추측했던 건 오후로) 아니면 내일.
+                // 날짜 없이 시각만: 앞에서 말한 날짜가 있으면 그날 그대로.
+                if (date == null && contextDate != null) date = contextDate
+                // 그것도 없으면 오늘, 이미 지났으면 (오전으로 추측했던 건 오후로) 아니면 내일.
                 if (date == null) {
                     date = today
                     if (!today.atTime(time).atZone(now.zone).isAfter(now)) {
@@ -202,7 +208,7 @@ object KoreanTime {
 
     /** "15", "세", "이십오", "십" → 수. 못 읽으면 null. */
     fun number(word: String): Int? {
-        val w = word.trim()
+        val w = word.trim().replace(" ", "")
         w.toIntOrNull()?.let { return it }
         NATIVE_VALUES[w]?.let { return it }
         if (w.isEmpty() || w.any { it != '십' && it != '백' && it !in SINO_DIGIT }) return null

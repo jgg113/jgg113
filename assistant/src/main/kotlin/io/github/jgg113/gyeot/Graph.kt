@@ -29,7 +29,11 @@ class Graph private constructor(private val context: Context) {
     val audio = io.github.jgg113.gyeot.data.AudioArchive(context)
     val voiceId = io.github.jgg113.gyeot.voice.VoiceId(context, models)
     val transcriber = Transcriber(settings)
-    val localTranscriber = LocalTranscriber(models, settings)
+    /** 한국어 대화 모델 글에 띄어쓰기를 넣는 작은 모델 (앱에 들어 있음, 2MB). */
+    private val spacing: io.github.jgg113.gyeot.stt.KoreanSpacing? by lazy {
+        runCatching { io.github.jgg113.gyeot.stt.KoreanSpacing.load(context.assets.open("ko_spacing.bin")) }.getOrNull()
+    }
+    val localTranscriber = LocalTranscriber(models, settings) { spacing }
     val analyzer = Analyzer(settings)
 
     /** 휴대폰 안 작은 AI 로 요약 다듬기 — 켜 두었고 모델이 있을 때만. 쓸 때마다 열고 닫는다. */
@@ -66,14 +70,12 @@ class Graph private constructor(private val context: Context) {
      * 그 구간을 클라우드(Groq Whisper 무료 한도)로 다시 받아써 더 정확한 쪽을 쓴다.
      */
     fun transcribe(pcm: ShortArray, preferBest: Boolean = false): String {
-        val best = preferBest && settings.localStt && localTranscriber.canBoost
-        var text = if (best) localTranscriber.transcribe(pcm, io.github.jgg113.gyeot.data.Settings.MODEL_QWEN3)
+        val best = preferBest && settings.localStt
+        var text = if (best) localTranscriber.transcribe(pcm, localTranscriber.best())
         else if (settings.localStt) localTranscriber.transcribe(pcm) else transcriber.transcribe(Wav.encode(io.github.jgg113.gyeot.audio.Gain.normalize(pcm)))
         val important = io.github.jgg113.gyeot.ai.ScheduleHints.mentionsSchedule(text)
         // 휴대폰 안에서: 기본 모델 글에 일정 냄새가 나면 그 구간만 고정밀 모델로 다시 (무료).
-        if (!best && settings.localStt && important && settings.localBoost && localTranscriber.canBoost &&
-            localTranscriber.engine() != io.github.jgg113.gyeot.data.Settings.MODEL_QWEN3
-        ) {
+        if (!best && settings.localStt && important && settings.localBoost && localTranscriber.canBoost) {
             runCatching { localTranscriber.transcribe(pcm, io.github.jgg113.gyeot.data.Settings.MODEL_QWEN3) }.getOrNull()
                 ?.takeIf { it.isNotBlank() }?.let { text = it }
         } else if (settings.localStt && settings.cloudBoost && settings.sttApiKey.isNotBlank() && important) {
@@ -134,6 +136,35 @@ class Graph private constructor(private val context: Context) {
         return runCatching { plainRules.analyze(emptyList(), lines, emptyList(), at) }.getOrDefault(io.github.jgg113.gyeot.ai.Analysis())
     }
 
+    /** 기록 지우기: 받아쓴 줄과 그때 녹음, 이 대화를 정리한 노트. 캘린더에 넣은 일정은 그대로 둔다. */
+    fun deleteRecords(lines: List<io.github.jgg113.gyeot.data.Utterance>, noteIds: List<Long> = emptyList()) {
+        lines.forEach { audio.delete(it.audio) }
+        store.deleteUtterances(lines)
+        store.deleteNotes(noteIds)
+    }
+
+    /**
+     * 기록 탭에서 "이 줄은 내가 / 상대가 말했어요"를 고를 때: 줄의 꼬리표를 바꾸고,
+     * 내 말이면 그때 녹음으로 내 목소리를 더 배운다 (휴대폰을 둔 실제 자리의 소리라 알아보는 힘이 는다).
+     * @return 목소리를 배웠는지
+     */
+    fun teachSpeaker(u: io.github.jgg113.gyeot.data.Utterance, me: Boolean): Boolean {
+        store.updateUtterance(u) { it.copy(speaker = if (me) "me" else "other") }
+        val file = audio.file(u.audio) ?: return false
+        if (!me || !voiceId.modelReady) return false
+        val pcm = runCatching {
+            val parts = mutableListOf<ShortArray>()
+            io.github.jgg113.gyeot.calls.AudioDecoder.decode(context, android.net.Uri.fromFile(file)) { parts += it }
+            io.github.jgg113.gyeot.audio.Wav.join(parts, gapMs = 0)
+        }.getOrNull() ?: return false
+        return runCatching { voiceId.enroll(listOf(pcm), append = voiceId.enrolled) > 0 }.getOrDefault(false)
+    }
+
+    fun deleteDay(day: java.time.LocalDate) {
+        audio.deleteDay(day)
+        store.deleteDay(day)
+    }
+
     /** 하루치 정리를 다시 한다 (기록 탭의 [정리 다시 하기]). */
     fun rebuildDay(day: java.time.LocalDate) =
         store.rewriteNotes { n -> if (io.github.jgg113.gyeot.data.Store.dayOf(n.at) == day) rebuildNote(n) else n }
@@ -161,7 +192,7 @@ class Graph private constructor(private val context: Context) {
 
     /** 듣기를 시작해도 되는지, 안 되면 이유. */
     fun notReadyReason(): String? = when {
-        settings.localStt && !localTranscriber.available -> "설정 탭에서 '한국어 음성 인식' 모델을 먼저 받아 주세요 (105MB, 한 번만)."
+        settings.localStt && !localTranscriber.available -> "오늘 탭에서 '한국어 대화 모델'을 먼저 받아 주세요 (160MB, 한 번만)."
         !settings.localStt && settings.sttApiKey.isBlank() -> "설정 탭에서 받아쓰기 API 키를 넣어 주세요."
         !settings.localBrain && settings.anthropicApiKey.isBlank() -> "설정 탭에서 Claude API 키를 넣어 주세요."
         else -> null

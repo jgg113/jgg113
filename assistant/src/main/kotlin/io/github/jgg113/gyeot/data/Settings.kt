@@ -17,10 +17,13 @@ class Settings(context: Context) {
     var sttEngine: String
         get() = str("stt_engine", ENGINE_LOCAL)
         set(v) = put("stt_engine", v)
-    /** 휴대폰 안 받아쓰기 모델: "dolphin"(기본, 105MB) 또는 "qwen3"(고정밀, 약 1GB). 예전 "zipformer"는 받아 둔 경우에만. */
+    /**
+     * 휴대폰 안 받아쓰기 모델: "ko_conv"(한국어 대화 모델, 기본), "dolphin", "qwen3"(Qwen3-ASR), 예전 "zipformer".
+     * 1.0.10 에서 한국어 대화 모델이 대화·통화 모두 가장 정확해, 저장 이름을 바꿔 모두 새 기본으로 옮겼다.
+     */
     var localModel: String
-        get() = str("local_model", MODEL_DOLPHIN)
-        set(v) = put("local_model", v)
+        get() = str("local_model_v2", MODEL_KOZIP)
+        set(v) = put("local_model_v2", v)
     /**
      * 받아쓴 뒤 고쳐 쓸 말 (한 줄에 하나, "틀린말=바른말"). 자주 틀리는 이름·낱말을 바로잡는다.
      * 예) "민스=민수", "토닉 워터=토닉워터"
@@ -158,6 +161,7 @@ class Settings(context: Context) {
         const val MODEL_ZIPFORMER = "zipformer"
         const val MODEL_DOLPHIN = "dolphin"
         const val MODEL_QWEN3 = "qwen3"
+        const val MODEL_KOZIP = "ko_conv"
         const val ENGINE_LOCAL = "local"
         const val ENGINE_CLOUD = "cloud"
         const val ENGINE_CLAUDE = "claude"
