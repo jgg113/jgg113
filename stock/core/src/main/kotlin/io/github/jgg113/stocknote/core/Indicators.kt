@@ -401,6 +401,74 @@ object Indicators {
     fun returns(close: DoubleArray): DoubleArray = DoubleArray(close.size) { i ->
         if (i == 0 || close[i - 1] == 0.0) Double.NaN else close[i] / close[i - 1] - 1
     }
+
+    /** 스토캐스틱 RSI: RSI 값이 최근 기간 RSI 범위의 어디쯤인지 (0~100), %K·%D */
+    fun stochRsi(close: DoubleArray, rsiN: Int = 14, stochN: Int = 14, k: Int = 3, d: Int = 3): Stoch {
+        val r = rsi(close, rsiN)
+        val raw = DoubleArray(close.size) { i ->
+            if (i < stochN - 1) return@DoubleArray Double.NaN
+            var hi = Double.NEGATIVE_INFINITY; var lo = Double.POSITIVE_INFINITY
+            for (j in i - stochN + 1..i) { val v = r[j]; if (v.isNaN()) return@DoubleArray Double.NaN; hi = max(hi, v); lo = min(lo, v) }
+            if (hi == lo) 50.0 else (r[i] - lo) / (hi - lo) * 100
+        }
+        val kk = sma(raw, k)
+        return Stoch(kk, sma(kk, d))
+    }
+
+    /** 누적 분산선 (A/D line) */
+    fun adLine(high: DoubleArray, low: DoubleArray, close: DoubleArray, volume: DoubleArray): DoubleArray {
+        val out = DoubleArray(close.size)
+        var acc = 0.0
+        for (i in close.indices) {
+            val w = high[i] - low[i]
+            if (w > 0) acc += ((close[i] - low[i]) - (high[i] - close[i])) / w * volume[i]
+            out[i] = acc
+        }
+        return out
+    }
+
+    /** 차이킨 오실레이터: A/D 선의 3일 지수이평 − 10일 지수이평 */
+    fun chaikinOsc(high: DoubleArray, low: DoubleArray, close: DoubleArray, volume: DoubleArray, fast: Int = 3, slow: Int = 10): DoubleArray {
+        val ad = adLine(high, low, close, volume)
+        val f = ema(ad, fast); val s = ema(ad, slow)
+        return DoubleArray(close.size) { f[it] - s[it] }
+    }
+
+    data class Sonar(val line: DoubleArray, val signal: DoubleArray)
+
+    /** SONAR: 지수이동평균이 [m] 봉 전보다 얼마나 변했는지 (%), 시그널은 그 이동평균 */
+    fun sonar(close: DoubleArray, n: Int = 9, m: Int = 9, signal: Int = 9): Sonar {
+        val e = ema(close, n)
+        val line = DoubleArray(close.size) { i -> if (i < m || e[i - m].isNaN() || e[i - m] == 0.0) Double.NaN else (e[i] - e[i - m]) / e[i - m] * 100 }
+        return Sonar(line, sma(line, signal))
+    }
+
+    /** 거래량 비율 VR: (오른 날 거래량 + 보합의 절반) / (내린 날 거래량 + 보합의 절반) × 100 */
+    fun volumeRatioVR(close: DoubleArray, volume: DoubleArray, n: Int = 20): DoubleArray = DoubleArray(close.size) { i ->
+        if (i < n) return@DoubleArray Double.NaN
+        var up = 0.0; var down = 0.0; var flat = 0.0
+        for (j in i - n + 1..i) when {
+            close[j] > close[j - 1] -> up += volume[j]
+            close[j] < close[j - 1] -> down += volume[j]
+            else -> flat += volume[j]
+        }
+        val den = down + flat / 2
+        if (den == 0.0) 500.0 else (up + flat / 2) / den * 100
+    }
+
+    /** 일봉 위치마다 그 달의 월봉 순번을 준다 (월봉 지표를 일봉에 옮길 때). */
+    fun monthIndex(candles: List<Candle>): IntArray {
+        val out = IntArray(candles.size)
+        var idx = -1
+        var prev = -1
+        candles.forEachIndexed { i, c ->
+            val d = c.date
+            val key = d.year * 12 + d.monthValue
+            if (key != prev) { idx++; prev = key }
+            out[i] = idx
+        }
+        return out
+    }
 }
 
 /** 두 선의 교차 판정 */
@@ -459,4 +527,27 @@ class PriceData(val candles: List<Candle>) {
     fun volumeRatio(n: Int = 20) = memo("vr$n") { Indicators.volumeRatio(volume, n) }
     fun highest(n: Int) = memo("hh$n") { Indicators.highest(high, n) }
     fun lowest(n: Int) = memo("ll$n") { Indicators.lowest(low, n) }
+    fun stochFast(n: Int = 14, d: Int = 3) = memo("stf$n/$d") { Indicators.stochastic(high, low, close, n, 1, d) }
+    fun stochRsi() = memo("strsi") { Indicators.stochRsi(close) }
+    fun chaikin() = memo("chaikin") { Indicators.chaikinOsc(high, low, close, volume) }
+    fun sonar() = memo("sonar") { Indicators.sonar(close) }
+    fun vr(n: Int = 20) = memo("vr$n") { Indicators.volumeRatioVR(close, volume, n) }
+    fun volatility(n: Int) = memo("vol$n") { Indicators.stdDev(Indicators.returns(close), n) }
+
+    /** 각 봉이 그 달의 첫 거래일인지 */
+    val monthStart: BooleanArray by lazy {
+        val m = Indicators.monthIndex(candles)
+        BooleanArray(size) { i -> i > 0 && m[i] != m[i - 1] }
+    }
+
+    /** 월봉 종가로 계산한 RSI 를 일봉 위치에 옮긴 값 (그 봉 시점까지 끝난 달 기준) */
+    fun monthlyRsi(n: Int = 14) = memo("mrsi$n") {
+        val m = Indicators.monthIndex(candles)
+        val months = (m.lastOrNull() ?: -1) + 1
+        val monthClose = DoubleArray(months)
+        for (i in 0 until size) monthClose[m[i]] = close[i]
+        val r = Indicators.rsi(monthClose, n)
+        // 달이 끝나야 값이 정해지므로 지난달 값까지만 쓴다.
+        DoubleArray(size) { i -> if (m[i] >= 1) r[m[i] - 1] else Double.NaN }
+    }
 }

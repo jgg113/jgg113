@@ -105,7 +105,8 @@ fun DetailScreen(vm: AppViewModel) {
                 Text("${Fmt.signedPrice(q.change, cur)} ${Fmt.signedRate(q.changeRate)}", color = PriceColors.color(q.change), modifier = Modifier.padding(bottom = 4.dp))
             }
             SmallLabel(
-                (if (q.realtime) "실시간 · ${q.source}" else "기준일 ${Fmt.date(q.time)} 종가 · ${q.source}") + (d.forecast?.let { " · AI 예측 ${it.score}점 ${it.opinion.label}" } ?: ""),
+                (if (q.realtime) "실시간 · ${q.source}" else "기준일 ${Fmt.date(q.time)} 종가 · ${q.source}") +
+                    (vm.ai[vm.aiHorizon]?.result?.let { " · AI ${it.horizon.period} ${it.opinion.label}" } ?: ""),
                 Modifier.padding(horizontal = 16.dp),
             )
         }
@@ -119,7 +120,7 @@ fun DetailScreen(vm: AppViewModel) {
             d.error?.let { ErrorNotice(it) { vm.loadDetail(asset) } }
             when (tab) {
                 DetailTab.CHART -> ChartTab(vm, onEditIndicators = { indicatorDialog = true })
-                DetailTab.FORECAST -> ForecastTab(vm)
+                DetailTab.FORECAST -> AiForecastTab(vm)
                 DetailTab.STRATEGY -> StrategyTab(vm) { tab = DetailTab.CHART }
                 DetailTab.FINANCE -> FinanceTab(vm)
                 DetailTab.ISSUES -> IssuesTab(vm)
@@ -161,172 +162,6 @@ private fun ChartTab(vm: AppViewModel, onEditIndicators: () -> Unit) {
     } else if (!d.loading) {
         Notice("차트 자료가 없습니다.")
     }
-}
-
-@Composable
-private fun ForecastTab(vm: AppViewModel) {
-    val d = vm.detail ?: return
-    val cur = d.asset.market.currency
-    val context = LocalContext.current
-    if (d.analyzing) Loading("과거 비슷한 장면을 찾는 중…")
-    val f = d.forecast
-    if (f == null && !d.analyzing && !d.loading) {
-        Notice("예측하려면 일봉이 160개(약 8개월) 이상 있어야 합니다.")
-    }
-    if (f != null) {
-        SectionCard("AI 예측 종합") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("${f.score}", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = opinionColor(f.opinion))
-                Text(" / 100", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.width(12.dp))
-                Pill(f.opinion.label, opinionColor(f.opinion))
-            }
-            ScoreBar(f.score.toDouble(), color = opinionColor(f.opinion))
-            Spacer(Modifier.height(8.dp))
-            f.items.forEach { item ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                    Text(item.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(76.dp))
-                    Text((if (item.score > 0) "+" else "") + item.score, color = PriceColors.color(item.score.toDouble()), modifier = Modifier.width(36.dp))
-                    Text(item.reason, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                }
-            }
-        }
-        SectionCard("예상 주가 범위") {
-            f.horizons.forEach { h ->
-                Text("${h.bars}거래일 뒤", fontWeight = FontWeight.Bold)
-                InfoRow("가운데 값", "${Fmt.priceWithUnit(h.price(f.lastPrice, h.medianPct), cur)} (${Fmt.signedRate(h.medianPct)})", PriceColors.color(h.medianPct))
-                InfoRow("절반이 든 범위", "${Fmt.price(h.price(f.lastPrice, h.p25Pct), cur)} ~ ${Fmt.price(h.price(f.lastPrice, h.p75Pct), cur)}")
-                InfoRow("넓은 범위 (80%)", "${Fmt.price(h.price(f.lastPrice, h.p10Pct), cur)} ~ ${Fmt.price(h.price(f.lastPrice, h.p90Pct), cur)}")
-                InfoRow("오를 확률", "${Fmt.decimal(h.upProbPct)}% (평소 ${Fmt.decimal(h.baseUpProbPct)}%)")
-                InfoRow("과거 적중률", if (h.hitRatePct.isNaN()) "검증 자료 부족" else "${Fmt.decimal(h.hitRatePct)}% (${h.tested}번)")
-                Spacer(Modifier.height(8.dp))
-            }
-            SmallLabel("지금과 지표 상태(수익률·RSI·볼린저·MACD·거래량·변동성 등)가 가장 비슷했던 과거 ${f.neighbors}번을 이 종목 기록에서 찾아, 그 뒤 실제 움직임을 모은 값입니다.")
-        }
-        SectionCard("읽을 때 주의") { f.notes.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) } }
-        AiBox(vm, StockPrompt.Mode.SUMMARY, "AI 해설 받기", context)
-    }
-}
-
-@Composable
-fun opinionColor(o: Opinion) = when (o.tone) {
-    2, 1 -> PriceColors.up
-    -1, -2 -> PriceColors.down
-    else -> MaterialTheme.colorScheme.onSurfaceVariant
-}
-
-@Composable
-private fun StrategyTab(vm: AppViewModel, showChart: () -> Unit) {
-    val d = vm.detail ?: return
-    val r = d.report
-    var sort by rememberSaveable { mutableStateOf(0) }
-    var group by rememberSaveable { mutableStateOf<String?>(null) }
-    var settings by remember { mutableStateOf(false) }
-    if (d.analyzing) Loading("전략 ${io.github.jgg113.stocknote.core.Strategies.all.size}개를 과거 자료로 시험하는 중…")
-    if (r == null) return
-    SectionCard("지금 신호 비율") {
-        val ratio = r.buyRatioPct
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("매수 쪽 ${Fmt.decimal(ratio)}%", fontWeight = FontWeight.Bold, color = if (ratio >= 50) PriceColors.up else PriceColors.down, modifier = Modifier.weight(1f))
-            SmallLabel("최근 5일 매수 ${r.recentBuy} · 매도 ${r.recentSell}")
-        }
-        ScoreBar(ratio, color = if (ratio >= 50) PriceColors.up else PriceColors.down)
-        SmallLabel("전략 ${r.total}개 중 지금 보유 상태이거나 최근 5일 안에 매수 신호를 낸 전략의 비율입니다. 각 전략은 신호 다음 날 시가에 사고팔며, 수수료·세금(왕복 ${Fmt.decimal(vm.store.fees.roundTripPct(d.asset.market))}%)을 뺐습니다.")
-        TextButton(onClick = { settings = true }) {
-            val bt = vm.store.backtest
-            Text("손절·익절: " + (bt.stopLossPct?.let { "-$it%" } ?: "없음") + " / " + (bt.takeProfitPct?.let { "+$it%" } ?: "없음") + "  (바꾸기)")
-        }
-    }
-    ChipRow(listOf("종합 점수", "누적 수익률", "승률", "지금 보유"), { it == listOf("종합 점수", "누적 수익률", "승률", "지금 보유")[sort] }, { it }) { sort = listOf("종합 점수", "누적 수익률", "승률", "지금 보유").indexOf(it) }
-    ChipRow(listOf<String?>(null) + StrategyGroup.entries.map { it.label }, { it == group }, { it ?: "전체" }, Modifier.padding(top = 4.dp)) { group = it }
-    val list = when (sort) {
-        1 -> r.byReturn
-        2 -> r.results.sortedWith(compareByDescending<BacktestResult> { it.closedTrades >= 3 }.thenByDescending { it.winRatePct })
-        3 -> r.results.filter { it.holding || it.recentBuy(5) }.sortedByDescending { it.score }
-        else -> r.byScore
-    }.filter { group == null || it.strategy.group.label == group }
-    SectionCard {
-        if (list.isEmpty()) SmallLabel("해당하는 전략이 없습니다.")
-        list.forEachIndexed { i, res ->
-            if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            StrategyRow(res, selected = d.selected?.strategy?.id == res.strategy.id) { vm.selectStrategy(res) }
-            if (d.selected?.strategy?.id == res.strategy.id) StrategyDetail(vm, res, showChart)
-        }
-    }
-    if (settings) StopDialog(vm) { settings = false }
-}
-
-@Composable
-private fun StrategyRow(r: BacktestResult, selected: Boolean, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(r.strategy.name, fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold)
-                Spacer(Modifier.width(6.dp))
-                val last = r.lastSignal
-                when {
-                    r.signalOnLastBar && last != null -> Pill("오늘 ${last.label}", if (last == io.github.jgg113.stocknote.core.Signal.BUY) PriceColors.up else PriceColors.down)
-                    r.holding -> Pill("보유 중", PriceColors.up)
-                }
-            }
-            SmallLabel("${r.strategy.group.label} · 거래 ${r.closedTrades}회 · 승률 ${Fmt.decimal(r.winRatePct)}% · 최대낙폭 -${Fmt.decimal(r.maxDrawdownPct)}%")
-        }
-        Column(horizontalAlignment = Alignment.End) {
-            ChangeText(r.totalReturnPct, bold = true)
-            SmallLabel("보유만 ${Fmt.signedRate(r.buyHoldReturnPct)}")
-        }
-    }
-}
-
-@Composable
-private fun StrategyDetail(vm: AppViewModel, r: BacktestResult, showChart: () -> Unit) {
-    val d = vm.detail ?: return
-    val cur = d.asset.market.currency
-    Column(Modifier.padding(bottom = 10.dp)) {
-        Text(r.strategy.description, style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(6.dp))
-        LineChart(listOf(r.equity.map { (it - 1) * 100 }.toDoubleArray() to MaterialTheme.colorScheme.primary), height = 110.dp, baseline = 0.0, format = { Fmt.decimal(it) + "%" })
-        InfoRow("평균 수익", "${Fmt.signedRate(r.avgReturnPct)} / 거래")
-        InfoRow("손익비", Fmt.decimal(r.profitFactor))
-        InfoRow("평균 보유", "${Fmt.decimal(r.avgHoldBars)}봉")
-        InfoRow("마지막 신호", r.lastSignal?.let { "${it.label} · ${Fmt.date(d.daily.getOrNull(r.lastSignalIndex)?.time ?: 0)}" } ?: "-")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = showChart) { Text("차트에서 보기") }
-            val on = vm.hasSignalAlert(d.asset, r.strategy.id)
-            OutlinedButton(onClick = { vm.toggleSignalAlert(d.asset, r.strategy.id) }) { Text(if (on) "신호 알림 끄기" else "다음 신호 알림") }
-        }
-        if (r.trades.isNotEmpty()) {
-            Spacer(Modifier.height(6.dp))
-            SmallLabel("최근 거래")
-            r.trades.takeLast(8).reversed().forEach { t ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                    Text("${Fmt.shortDate(t.entryTime)} → ${if (t.open) "보유 중" else Fmt.shortDate(t.exitTime)}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                    Text("${Fmt.price(t.entryPrice, cur)} → ${Fmt.price(t.exitPrice, cur)}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1.4f))
-                    Text(Fmt.signedRate(t.returnPct), color = PriceColors.color(t.returnPct), style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun StopDialog(vm: AppViewModel, onDismiss: () -> Unit) {
-    val bt = vm.store.backtest
-    var sl by remember { mutableStateOf(bt.stopLossPct?.toString().orEmpty()) }
-    var tp by remember { mutableStateOf(bt.takeProfitPct?.toString().orEmpty()) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("손절·익절 (모든 전략)") },
-        text = {
-            Column {
-                NumberField("손절 (%)", sl, { sl = it }, suffix = "%")
-                NumberField("익절 (%)", tp, { tp = it }, suffix = "%")
-                SmallLabel("비워 두면 쓰지 않습니다. 장중에 그 가격에 닿으면 판 것으로 계산합니다.")
-            }
-        },
-        confirmButton = { TextButton(onClick = { vm.rerunBacktest(sl.toDoubleOrNull()?.takeIf { it > 0 }, tp.toDoubleOrNull()?.takeIf { it > 0 }); onDismiss() }) { Text("다시 계산") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } },
-    )
 }
 
 @Composable

@@ -65,6 +65,7 @@ fun AppRoot(vm: AppViewModel) {
                     is Screen.ThemeDetail -> ThemeDetailScreen(vm, top.theme)
                     is Screen.Search -> SearchScreen(vm, null)
                     is Screen.Pick -> SearchScreen(vm, top.purpose)
+                    is Screen.StrategyDetail -> StrategyDetailScreen(vm, top.asset, top.strategyId)
                 }
             }
         }

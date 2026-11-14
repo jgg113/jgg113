@@ -55,6 +55,11 @@ enum class IndicatorType(
     PSYCHOLOGICAL("심리도", IndicatorKind.PANEL, listOf("기간"), listOf(12.0), "기간 중 오른 날의 비율 (75 과열, 25 침체)"),
     CMF("차이킨 머니플로", IndicatorKind.PANEL, listOf("기간"), listOf(20.0), "0 위면 매수세 우위"),
     VOLATILITY("변동성(표준편차)", IndicatorKind.PANEL, listOf("기간"), listOf(20.0), "일간 수익률 표준편차를 연환산한 값 (%)"),
+    STOCH_FAST("스토캐스틱 패스트", IndicatorKind.PANEL, listOf("기간", "%D"), listOf(14.0, 3.0), "평활하지 않은 %K 와 그 평균 %D"),
+    STOCH_RSI("스토캐스틱 RSI", IndicatorKind.PANEL, listOf("RSI 기간", "스토캐스틱 기간"), listOf(14.0, 14.0), "RSI 가 최근 RSI 범위의 어디쯤인지 (0~100)"),
+    CHAIKIN("차이킨 오실레이터", IndicatorKind.PANEL, listOf("단기", "장기"), listOf(3.0, 10.0), "누적 분산선의 단기·장기 지수이평 차이"),
+    SONAR("SONAR", IndicatorKind.PANEL, listOf("기간", "비교 봉", "시그널"), listOf(9.0, 9.0, 9.0), "지수이평이 몇 봉 전보다 얼마나 변했는지 (%)"),
+    VR("거래량 비율(VR)", IndicatorKind.PANEL, listOf("기간"), listOf(20.0), "오른 날 거래량 / 내린 날 거래량 × 100 (70 아래 침체, 450 위 과열)"),
     ;
 
     fun compute(d: PriceData, params: List<Double>): IndicatorOutput {
@@ -127,6 +132,17 @@ enum class IndicatorType(
             VOLATILITY -> Indicators.stdDev(Indicators.returns(c), pi(0)).let { s ->
                 IndicatorOutput(listOf(ChartSeries("변동성", DoubleArray(s.size) { s[it] * kotlin.math.sqrt(250.0) * 100 })))
             }
+            STOCH_FAST -> Indicators.stochastic(d.high, d.low, c, pi(0), 1, pi(1)).let {
+                IndicatorOutput(listOf(ChartSeries("%K", it.k, colorIndex = 0), ChartSeries("%D", it.d, colorIndex = 1)), listOf(20.0, 80.0), 0.0 to 100.0)
+            }
+            STOCH_RSI -> Indicators.stochRsi(c, pi(0), pi(1)).let {
+                IndicatorOutput(listOf(ChartSeries("%K", it.k, colorIndex = 0), ChartSeries("%D", it.d, colorIndex = 1)), listOf(20.0, 80.0), 0.0 to 100.0)
+            }
+            CHAIKIN -> IndicatorOutput(listOf(ChartSeries("차이킨", Indicators.chaikinOsc(d.high, d.low, c, d.volume, pi(0), pi(1)), SeriesStyle.HISTOGRAM, 2)), listOf(0.0))
+            SONAR -> Indicators.sonar(c, pi(0), pi(1), pi(2)).let {
+                IndicatorOutput(listOf(ChartSeries("SONAR", it.line, colorIndex = 0), ChartSeries("시그널", it.signal, colorIndex = 1)), listOf(0.0))
+            }
+            VR -> IndicatorOutput(listOf(ChartSeries("VR", Indicators.volumeRatioVR(c, d.volume, pi(0)))), listOf(70.0, 150.0, 450.0))
         }
     }
 }

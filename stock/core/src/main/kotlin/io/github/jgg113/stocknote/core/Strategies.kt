@@ -6,6 +6,13 @@ import kotlin.math.min
 
 enum class Signal(val label: String) { BUY("매수"), SELL("매도") }
 
+/** 투자 기간: 한 번 사서 보통 얼마나 들고 있는 전략인지 */
+enum class StrategyHorizon(val label: String, val period: String) {
+    SHORT("단기", "한 달 안"),
+    MID("중기", "6개월 안"),
+    LONG("장기", "1년 이상"),
+}
+
 enum class StrategyGroup(val label: String) {
     TREND("추세 추종"),
     MOMENTUM("모멘텀"),
@@ -29,6 +36,10 @@ class Strategy(
     private val buy: (PriceData, Int) -> Boolean,
     private val sell: (PriceData, Int) -> Boolean,
 ) {
+    /** 단기·중기·장기 (아래 목록에서 정한다) */
+    var horizon: StrategyHorizon = StrategyHorizon.MID
+        internal set
+
     fun signals(d: PriceData): Array<Signal?> = Array(d.size) { i ->
         if (i < minBars) return@Array null
         val b = runCatching { buy(d, i) }.getOrDefault(false)
@@ -47,6 +58,47 @@ class Strategy(
 object Strategies {
     private fun DoubleArray.at(i: Int) = if (i in indices) this[i] else Double.NaN
     private fun finite(vararg v: Double) = v.none { it.isNaN() }
+
+    private val SHORT_IDS = setOf(
+        "ma5_20", "price_ma20", "rsi50", "roc_zero", "cci_zero", "macd_hist", "rsi30", "rsi2", "bb_lower", "stoch20", "stoch_cross",
+        "williams", "cci100", "mfi20", "disparity", "envelope", "psych", "rebound3", "gap_up", "volume_spike", "hammer", "engulfing",
+        "stoch_fast", "stoch_rsi", "vr",
+    )
+    private val LONG_IDS = setOf(
+        "ma60_120", "golden50_200", "sma200_trend", "faber10m", "mom12_1", "near52w", "weekly_macd", "ma120_250", "channel250",
+        "lowvol_trend", "monthly_rsi",
+    )
+    private val HORIZON: Map<String, StrategyHorizon> by lazy {
+        (SHORT_IDS.map { it to StrategyHorizon.SHORT } + LONG_IDS.map { it to StrategyHorizon.LONG }).toMap()
+    }
+
+    /**
+     * 매달 첫 거래일에만 조건을 보고, 조건이 바뀐 달에 +1(매수)·-1(매도)을 표시한다.
+     * [cond] 는 그 봉 위치를 받아 지난달 말 기준 조건을 돌려준다 (모르면 null).
+     */
+    private fun monthlySwitch(d: PriceData, key: String, cond: (Int) -> Boolean?): IntArray = d.memo("monthly_$key") {
+        val out = IntArray(d.size)
+        var state: Boolean? = null
+        for (i in 1 until d.size) {
+            if (!d.monthStart[i]) continue
+            val s = cond(i) ?: continue
+            if (s != state) {
+                if (state != null || s) out[i] = if (s) 1 else -1
+                state = s
+            }
+        }
+        out
+    }
+
+    private fun lowVolState(d: PriceData): BooleanArray = d.memo("lowvol_state") {
+        val vol = d.volatility(60)
+        val m = d.sma(200)
+        BooleanArray(d.size) { i ->
+            if (i < 270 || vol[i].isNaN() || m[i].isNaN() || m[i - 20].isNaN()) return@BooleanArray false
+            val window = (i - 249..i).map { vol[it] }.filterNot { it.isNaN() }.sorted()
+            window.isNotEmpty() && vol[i] < window[window.size / 2] && d.close[i] > m[i] && m[i] > m[i - 20]
+        }
+    }
 
     private fun maCross(id: String, fast: Int, slow: Int, group: StrategyGroup = StrategyGroup.TREND) = Strategy(
         id, "이동평균 $fast/$slow 교차", group,
@@ -392,9 +444,125 @@ object Strategies {
                     d.open[i] >= d.close[i - 1] && d.close[i] <= d.open[i - 1] && d.close[i] > d.sma(20)[i]
             },
         ),
-    )
+
+        // ── 단기 추가 ──
+        Strategy(
+            "stoch_fast", "스토캐스틱 패스트 교차", StrategyGroup.REVERSAL,
+            "패스트 %K 가 30 아래에서 %D 를 위로 넘으면 사고, 70 위에서 아래로 넘으면 팝니다. 슬로우보다 빠르게 반응합니다.",
+            20,
+            buy = { d, i -> val s = d.stochFast(); Cross.up(s.k, s.d, i) && s.k[i] < 30 },
+            sell = { d, i -> val s = d.stochFast(); Cross.down(s.k, s.d, i) && s.k[i] > 70 },
+        ),
+        Strategy(
+            "stoch_rsi", "스토캐스틱 RSI", StrategyGroup.REVERSAL,
+            "RSI 가 최근 범위의 바닥(20)에서 올라오면 사고, 꼭대기(80)에서 내려오면 팝니다.",
+            35,
+            buy = { d, i -> Cross.upLevel(d.stochRsi().k, 20.0, i) },
+            sell = { d, i -> Cross.downLevel(d.stochRsi().k, 80.0, i) },
+        ),
+        Strategy(
+            "vr", "거래량 비율(VR) 반등", StrategyGroup.VOLUME,
+            "20일 VR 이 70(매도 거래 우세) 위로 올라오면 사고, 과열권에서 150 아래로 내려오면 팝니다.",
+            25,
+            buy = { d, i -> Cross.upLevel(d.vr(), 70.0, i) },
+            sell = { d, i -> Cross.downLevel(d.vr(), 150.0, i) },
+        ),
+
+        // ── 중기 추가 ──
+        Strategy(
+            "chaikin", "차이킨 오실레이터 0선", StrategyGroup.VOLUME,
+            "누적 분산선의 단기·장기 차이(차이킨 오실레이터)가 0 위로 올라서면 사고, 0 아래로 내려가면 팝니다.",
+            15,
+            buy = { d, i -> Cross.upLevel(d.chaikin(), 0.0, i) },
+            sell = { d, i -> Cross.downLevel(d.chaikin(), 0.0, i) },
+        ),
+        Strategy(
+            "sonar", "SONAR 시그널 교차", StrategyGroup.MOMENTUM,
+            "지수이평 변화율(SONAR)이 시그널 선을 위로 넘으면 사고, 아래로 내려가면 팝니다.",
+            30,
+            buy = { d, i -> val s = d.sonar(); Cross.up(s.line, s.signal, i) && s.line[i] < 0 },
+            sell = { d, i -> val s = d.sonar(); Cross.down(s.line, s.signal, i) && s.line[i] > 0 },
+        ),
+
+        // ── 장기 (1년 이상 보유를 노리는 추세·모멘텀 전략) ──
+        Strategy(
+            "golden50_200", "50/200일 골든크로스", StrategyGroup.TREND,
+            "50일선이 200일선을 위로 뚫으면 사고, 아래로 뚫으면 팝니다. 가장 널리 쓰이는 장기 추세 신호입니다.",
+            201,
+            buy = { d, i -> Cross.up(d.sma(50), d.sma(200), i) },
+            sell = { d, i -> Cross.down(d.sma(50), d.sma(200), i) },
+        ),
+        Strategy(
+            "sma200_trend", "200일선 추세 추종", StrategyGroup.TREND,
+            "200일선이 오르는 중에 종가가 그 위로 올라서면 사고, 200일선보다 3% 넘게 내려가면 팝니다.",
+            221,
+            buy = { d, i -> Cross.up(d.close, d.sma(200), i) && d.sma(200)[i] > d.sma(200)[i - 20] },
+            sell = { d, i -> val m = d.sma(200); finite(m[i], m[i - 1]) && d.close[i] < m[i] * 0.97 && d.close[i - 1] >= m[i - 1] * 0.97 },
+        ),
+        Strategy(
+            "faber10m", "10개월 이동평균 (월말 점검)", StrategyGroup.TREND,
+            "매달 첫 거래일에 지난달 종가가 10개월(210일) 이동평균 위로 바뀌었으면 사고, 아래로 바뀌었으면 팝니다. 자산배분 연구에서 하락장을 피하는 방법으로 알려진 규칙입니다.",
+            212,
+            buy = { d, i -> monthlySwitch(d, "faber") { k -> val m = d.sma(210)[k - 1]; if (m.isNaN()) null else d.close[k - 1] > m }[i] > 0 },
+            sell = { d, i -> monthlySwitch(d, "faber") { k -> val m = d.sma(210)[k - 1]; if (m.isNaN()) null else d.close[k - 1] > m }[i] < 0 },
+        ),
+        Strategy(
+            "mom12_1", "12-1 모멘텀", StrategyGroup.MOMENTUM,
+            "매달 첫 거래일에 최근 1개월을 뺀 12개월 수익률이 플러스로 바뀌면 사고, 마이너스로 바뀌면 팝니다. 학계에서 가장 오래 확인된 모멘텀 효과를 쓴 전략입니다.",
+            253,
+            buy = { d, i -> monthlySwitch(d, "mom") { k -> if (k < 253) null else d.close[k - 22] / d.close[k - 252] - 1 > 0 }[i] > 0 },
+            sell = { d, i -> monthlySwitch(d, "mom") { k -> if (k < 253) null else d.close[k - 22] / d.close[k - 252] - 1 > 0 }[i] < 0 },
+        ),
+        Strategy(
+            "near52w", "52주 고점 근접", StrategyGroup.MOMENTUM,
+            "주가가 200일선 위에서 1년 최고가의 95% 안으로 들어오면 사고, 1년 최고가보다 15% 넘게 내려가면 팝니다.",
+            251,
+            buy = { d, i ->
+                fun on(k: Int): Boolean { val h = d.highest(250)[k]; val m = d.sma(200)[k]; return finite(h, m) && d.close[k] >= h * 0.95 && d.close[k] > m }
+                on(i) && !on(i - 1)
+            },
+            sell = { d, i -> val h = d.highest(250); finite(h[i], h[i - 1]) && d.close[i] < h[i] * 0.85 && d.close[i - 1] >= h[i - 1] * 0.85 },
+        ),
+        Strategy(
+            "weekly_macd", "주봉 MACD 교차", StrategyGroup.MOMENTUM,
+            "주봉 기준 MACD(일봉 60·130·45)가 시그널을 위로 넘으면 사고, 아래로 넘으면 팝니다.",
+            180,
+            buy = { d, i -> val m = d.macd(60, 130, 45); Cross.up(m.line, m.signal, i) },
+            sell = { d, i -> val m = d.macd(60, 130, 45); Cross.down(m.line, m.signal, i) },
+        ),
+        Strategy(
+            "ma120_250", "120/250일선 교차", StrategyGroup.TREND,
+            "120일선(반년)이 250일선(1년)을 위로 뚫으면 사고, 아래로 뚫으면 팝니다.",
+            251,
+            buy = { d, i -> Cross.up(d.sma(120), d.sma(250), i) },
+            sell = { d, i -> Cross.down(d.sma(120), d.sma(250), i) },
+        ),
+        Strategy(
+            "channel250", "1년 신고가 돌파 (장기 채널)", StrategyGroup.BREAKOUT,
+            "종가가 지난 1년 최고가를 넘으면 사고, 지난 6개월 최저가 아래로 내려가면 팝니다.",
+            252,
+            buy = { d, i -> val h = d.highest(250); finite(h[i - 1], h[i - 2]) && d.close[i] > h[i - 1] && d.close[i - 1] <= h[i - 2] },
+            sell = { d, i -> val l = d.lowest(120); finite(l[i - 1], l[i - 2]) && d.close[i] < l[i - 1] && d.close[i - 1] >= l[i - 2] },
+        ),
+        Strategy(
+            "lowvol_trend", "저변동 상승 추세", StrategyGroup.TREND,
+            "60일 변동성이 지난 1년 중간값보다 낮고 200일선이 오르는 중에 주가가 그 위에 있으면 사고, 200일선보다 3% 넘게 내려가면 팝니다.",
+            330,
+            buy = { d, i -> lowVolState(d)[i] && !lowVolState(d)[i - 1] },
+            sell = { d, i -> val m = d.sma(200); finite(m[i], m[i - 1]) && d.close[i] < m[i] * 0.97 && d.close[i - 1] >= m[i - 1] * 0.97 },
+        ),
+        Strategy(
+            "monthly_rsi", "월봉 RSI 과매도 반등", StrategyGroup.REVERSAL,
+            "월봉 RSI(14개월)가 35 아래에서 위로 올라오면 사고, 65 위에서 아래로 내려오면 팝니다. 몇 년에 한 번 나오는 장기 바닥 신호입니다.",
+            320,
+            buy = { d, i -> Cross.upLevel(d.monthlyRsi(), 35.0, i) },
+            sell = { d, i -> Cross.downLevel(d.monthlyRsi(), 65.0, i) },
+        ),
+    ).onEach { it.horizon = HORIZON[it.id] ?: StrategyHorizon.MID }
 
     private val byId = all.associateBy { it.id }
+
+    fun of(horizon: StrategyHorizon?): List<Strategy> = if (horizon == null) all else all.filter { it.horizon == horizon }
 
     fun find(id: String): Strategy? = byId[id]
 }

@@ -74,7 +74,30 @@ sealed interface Screen {
     data class ThemeDetail(val theme: Theme) : Screen
     data object Search : Screen
     data class Pick(val purpose: PickPurpose) : Screen
+    data class StrategyDetail(val asset: Asset, val strategyId: String) : Screen
 }
+
+/** 종목 화면의 AI 예측 한 기간 */
+data class AiUiState(
+    val loading: Boolean = false,
+    val progress: String = "",
+    val result: io.github.jgg113.stocknote.core.AiForecastResult? = null,
+    val error: String? = null,
+)
+
+/** 발굴 → AI 순위 */
+data class AiRankState(
+    val market: Market = Market.KR,
+    val horizon: io.github.jgg113.stocknote.core.AiHorizon = io.github.jgg113.stocknote.core.AiHorizon.SHORT,
+    val size: Int = 40,
+    val running: Boolean = false,
+    val progress: String = "",
+    val rows: List<io.github.jgg113.stocknote.core.AiRankRow> = emptyList(),
+    val reliability: io.github.jgg113.stocknote.core.Reliability? = null,
+    val models: List<io.github.jgg113.stocknote.core.ModelReport> = emptyList(),
+    val effectiveSamples: Int = 0,
+    val error: String? = null,
+)
 
 /** 검색 화면을 고르기용으로 열 때 */
 sealed interface PickPurpose {
@@ -126,8 +149,17 @@ data class DetailState(
 
 data class SignalsState(
     val market: Market = Market.KR,
+    /** 관심종목만 (시장 무관) */
+    val watchOnly: Boolean = false,
     val size: Int = 50,
     val strategyIds: Set<String> = emptySet(),
+    /** 참이면 고른 전략만, 거짓이면 아래 기간의 전략 전부 */
+    val useCustom: Boolean = false,
+    val horizon: io.github.jgg113.stocknote.core.StrategyHorizon? = null,
+    /** 결과 보기: null 전체, 매수, 매도 */
+    val side: io.github.jgg113.stocknote.core.Signal? = null,
+    /** 0 누적수익률, 1 승률, 2 신뢰도 */
+    val sort: Int = 0,
     val includeWatch: Boolean = true,
     val running: Boolean = false,
     val progress: Pair<Int, Int>? = null,
@@ -205,6 +237,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var checks by mutableStateOf<List<SourceStatus>?>(null); private set
     var checking by mutableStateOf(false); private set
     var searchResults by mutableStateOf<List<Asset>>(emptyList()); private set
+    var aiHorizon by mutableStateOf(io.github.jgg113.stocknote.core.AiHorizon.SHORT)
+    var ai by mutableStateOf<Map<io.github.jgg113.stocknote.core.AiHorizon, AiUiState>>(emptyMap()); private set
+    var aiShowOnChart by mutableStateOf(true)
+    var aiRank by mutableStateOf(AiRankState()); private set
+    /** 시장·기간별로 학습한 모델 (하루 동안 다시 쓴다) */
+    private val ensembles = java.util.concurrent.ConcurrentHashMap<String, Pair<io.github.jgg113.stocknote.core.AiEnsemble, java.time.LocalDate>>()
     var searching by mutableStateOf(false); private set
 
     private var detailJob: Job? = null
@@ -361,10 +399,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun loadDetail(asset: Asset) {
         detailJob?.cancel()
         detail = DetailState(asset)
+        ai = emptyMap()
         detailJob = viewModelScope.launch {
             val quote = withContext(Dispatchers.IO) { runCatching { data.quote(asset) } }
             quote.getOrNull()?.let { q -> update(asset) { it.copy(quote = q, asset = if (it.asset.name.isBlank() || it.asset.name == it.asset.code) q.asset else it.asset) } }
-            val daily = withContext(Dispatchers.IO) { runCatching { data.daily(asset, 600) } }
+            val daily = withContext(Dispatchers.IO) { runCatching { data.daily(asset, 1500) } }
             update(asset) {
                 it.copy(
                     loading = false,
@@ -457,7 +496,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun askAi(mode: StockPrompt.Mode, question: String = "", handoff: (AiProvider, String) -> Unit) {
         val d = detail ?: return
         val provider = store.aiProvider
-        val prompt = StockPrompt.build(d.asset, d.quote, d.daily, d.forecast, d.report, d.financials, d.disclosures + d.news, mode, question)
+        val prompt = StockPrompt.build(d.asset, d.quote, d.daily, d.forecast, d.report, d.financials, d.disclosures + d.news, mode, question, ai[aiHorizon]?.result)
         if (provider == AiProvider.NONE) {
             update(d.asset) { it.copy(aiError = "[설정] → AI 해설에서 Gemini 무료 키 등을 고르면 AI 해설을 받을 수 있습니다.") }
             return
@@ -473,6 +512,81 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (mode != StockPrompt.Mode.SUMMARY && d.news.isEmpty()) loadIssues()
             val r = withContext(Dispatchers.IO) { runCatching { engine.generate(prompt) } }
             update(d.asset) { it.copy(aiLoading = false, aiText = r.getOrNull()?.let { a -> AiText.plain(a.text) + "\n\n(${a.model})" }, aiError = r.exceptionOrNull()?.let(::err)) }
+        }
+    }
+
+    // ───────── AI 예측 ─────────
+
+    private fun aiPoolSize(m: Market) = when (m) { Market.KR -> 25; Market.CRYPTO -> 20; Market.US -> if (keys.hasKis) 20 else 8 }
+
+    /** 같은 시장 대표 종목들의 일봉(약 6년)을 모아 학습 자료로 쓴다. 저장해 둔 것은 다시 받지 않는다. */
+    private fun buildPool(market: Market, size: Int, extra: List<Pair<Asset, List<Candle>>>, progress: (String) -> Unit): List<Pair<Asset, List<Candle>>> {
+        val assets = data.universe(market, size).filter { a -> extra.none { it.first.key == a.key } }
+        val got = data.dailyMany(assets, 1500) { d, t -> progress("학습할 종목 시세 받는 중 $d/$t") }
+        return extra + got.map { it.key to it.value }.filter { it.second.size >= io.github.jgg113.stocknote.core.AiFeatures.WARMUP + 60 }
+    }
+
+    private fun ensemble(market: Market, h: io.github.jgg113.stocknote.core.AiHorizon, pool: () -> List<Pair<Asset, List<Candle>>>, progress: (String) -> Unit): io.github.jgg113.stocknote.core.AiEnsemble? {
+        val key = "${market.name}:${h.name}"
+        val today = java.time.LocalDate.now(io.github.jgg113.stocknote.core.KST)
+        ensembles[key]?.let { (e, day) -> if (day == today) return e }
+        val p = pool()
+        progress("AI 모델 학습 중 (${p.size}종목)")
+        val e = io.github.jgg113.stocknote.core.AiForecaster.train(p, h) { progress(it) } ?: return null
+        ensembles[key] = e to today
+        return e
+    }
+
+    /** 종목 화면의 AI 예측 (기간별) */
+    fun loadAi(h: io.github.jgg113.stocknote.core.AiHorizon = aiHorizon, force: Boolean = false) {
+        aiHorizon = h
+        val d = detail ?: return
+        val cur = ai[h]
+        if (!force && (cur?.loading == true || cur?.result != null)) return
+        if (d.daily.size < io.github.jgg113.stocknote.core.AiFeatures.WARMUP + 20) {
+            ai = ai + (h to AiUiState(error = "AI 예측에는 일봉이 1년 넘게(${io.github.jgg113.stocknote.core.AiFeatures.WARMUP + 20}개 이상) 있어야 합니다. 지금 ${d.daily.size}개입니다."))
+            return
+        }
+        if (force) ensembles.remove("${d.asset.market.name}:${h.name}")
+        val asset = d.asset
+        ai = ai + (h to AiUiState(loading = true, progress = "준비 중"))
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.Default) {
+                runCatching {
+                    val progress = { text: String -> if (detail?.asset?.key == asset.key) ai = ai + (h to AiUiState(loading = true, progress = text)) }
+                    val e = ensemble(asset.market, h, { buildPool(asset.market, aiPoolSize(asset.market), listOf(asset to d.daily), progress) }, progress)
+                        ?: throw io.github.jgg113.stocknote.core.DataException("학습할 자료가 모자랍니다. ${h.label} 예측은 종목마다 ${io.github.jgg113.stocknote.core.AiFeatures.WARMUP + h.bars}봉 넘는 일봉이 필요합니다.")
+                    progress("예측하는 중")
+                    io.github.jgg113.stocknote.core.AiForecaster.predict(e, asset, d.daily, d.quote?.price ?: d.daily.last().close)
+                        ?: throw io.github.jgg113.stocknote.core.DataException("이 종목의 최근 지표를 계산하지 못했습니다.")
+                }
+            }
+            if (detail?.asset?.key == asset.key) ai = ai + (h to AiUiState(result = r.getOrNull(), error = r.exceptionOrNull()?.let(::err)))
+        }
+    }
+
+    fun updateAiRank(s: AiRankState) { aiRank = s }
+
+    /** 발굴 → AI 순위: 같은 모델로 대표 종목 전체를 점수 매긴다. */
+    fun runAiRank() {
+        val s = aiRank
+        if (s.running) return
+        aiRank = s.copy(running = true, progress = "준비 중", error = null)
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.Default) {
+                runCatching {
+                    val progress = { text: String -> aiRank = aiRank.copy(progress = text) }
+                    val pool = buildPool(s.market, s.size, emptyList(), progress)
+                    if (pool.size < 3) throw io.github.jgg113.stocknote.core.DataException("종목 시세를 충분히 받지 못했습니다. " + noDataHint(s.market))
+                    val e = ensemble(s.market, s.horizon, { pool }, progress) ?: throw io.github.jgg113.stocknote.core.DataException("학습할 자료가 모자랍니다.")
+                    e to io.github.jgg113.stocknote.core.AiForecaster.rank(e, pool)
+                }
+            }
+            val (e, rows) = r.getOrNull() ?: (null to emptyList())
+            aiRank = aiRank.copy(
+                running = false, progress = "", rows = rows, reliability = e?.reliability, models = e?.reports.orEmpty(),
+                effectiveSamples = e?.effectiveSamples ?: 0, error = r.exceptionOrNull()?.let(::err),
+            )
         }
     }
 
@@ -572,19 +686,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun runSignals() {
         val s = signals
         if (s.running) return
-        val strategies = s.strategyIds.mapNotNull { Strategies.find(it) }
+        val strategies = if (s.useCustom && s.strategyIds.isNotEmpty()) s.strategyIds.mapNotNull { Strategies.find(it) } else Strategies.of(s.horizon)
         if (strategies.isEmpty()) { message("전략을 하나 이상 고르세요."); return }
         signals = s.copy(running = true, progress = 0 to s.size, error = null)
         viewModelScope.launch {
             val r = withContext(Dispatchers.IO) {
                 runCatching {
-                    val extra = if (s.includeWatch) watchlists.flatMap { it.assets } else emptyList()
-                    val universe = data.universe(s.market, s.size, extra)
-                    if (universe.isEmpty()) throw io.github.jgg113.stocknote.core.DataException(noDataHint(s.market))
-                    val candles = data.dailyMany(universe, 500) { done, total -> signals = signals.copy(progress = done to total) }
+                    val universe = if (s.watchOnly) watchlists.flatMap { it.assets }.distinctBy { it.key } else {
+                        val extra = if (s.includeWatch) watchlists.flatMap { it.assets } else emptyList()
+                        data.universe(s.market, s.size, extra)
+                    }
+                    if (universe.isEmpty()) throw io.github.jgg113.stocknote.core.DataException(if (s.watchOnly) "관심종목이 없습니다. 먼저 관심종목을 넣으세요." else noDataHint(s.market))
+                    val candles = data.dailyMany(universe, 1000) { done, total -> signals = signals.copy(progress = done to total) }
                     if (candles.isEmpty()) throw io.github.jgg113.stocknote.core.DataException("일봉을 받지 못했습니다. " + noDataHint(s.market))
                     withContext(Dispatchers.Default) {
-                        SignalScanner.scan(candles, strategies, { backtestConfig(it) }, lookback = 3, minTrades = 3, portfolioBars = 250)
+                        SignalScanner.scan(candles, strategies, { backtestConfig(it) }, lookback = 3, signal = null, minTrades = 3, portfolioBars = 250)
                     }
                 }
             }

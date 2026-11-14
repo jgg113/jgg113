@@ -9,6 +9,12 @@ import androidx.activity.ComponentActivity
 import android.graphics.Canvas
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.swipeUp
+import io.github.jgg113.stocknote.core.AiHorizon
+import io.github.jgg113.stocknote.ui.Screen
 import androidx.test.core.app.ApplicationProvider
 import io.github.jgg113.stocknote.core.Asset
 import io.github.jgg113.stocknote.core.Market
@@ -66,6 +72,17 @@ class ScreensTest {
         println("기다림 시간 초과: $what")
     }
 
+    /** 화면 가운데를 손가락으로 밀어 내용을 스크롤한다 (탭 줄을 누르지 않게 가운데에서 시작). */
+    private fun swipe() {
+        compose.onRoot().performTouchInput { swipeUp(startY = height * 0.75f, endY = height * 0.25f, durationMillis = 400) }
+        repeat(20) { pump() }
+    }
+
+    private fun swipeDown() {
+        repeat(5) { compose.onRoot().performTouchInput { swipeDown(startY = height * 0.3f, endY = height * 0.85f, durationMillis = 300) } }
+        repeat(20) { pump() }
+    }
+
     private fun click(text: String) {
         compose.onAllNodesWithText(text)[0].performClick()
         repeat(5) { pump() }
@@ -85,11 +102,26 @@ class ScreensTest {
         vm.openAsset(btc)
         waitFor(120, "detail") { vm.detail?.report != null && vm.detail?.forecast != null }
         shot("02_detail_chart")
-        click("AI 예측"); shot("03_detail_forecast")
-        click("지표분석"); shot("04_detail_strategies")
-        click("이슈"); waitFor(30, "issues") { vm.detail?.news?.isNotEmpty() == true }; shot("05_detail_issues")
-        click("정보·AI"); shot("06_detail_info")
-        click("모의 매수"); shot("07_order_dialog")
+        click("AI 예측")
+        waitFor(300, "ai short") { vm.ai[AiHorizon.SHORT]?.let { it.result != null || it.error != null } == true }
+        println("AI 단기: " + (vm.ai[AiHorizon.SHORT]?.error ?: vm.ai[AiHorizon.SHORT]?.result?.let { "${it.opinion.label} ${it.reliability.label}" }))
+        shot("03_ai_short_top")
+        swipe(); shot("03_ai_short_mid")
+        swipe(); shot("03_ai_short_models")
+        swipe(); shot("03_ai_short_patterns")
+        vm.loadAi(AiHorizon.LONG)
+        waitFor(300, "ai long") { vm.ai[AiHorizon.LONG]?.let { it.result != null || it.error != null } == true }
+        swipeDown(); shot("03_ai_long_top")
+        click("지표분석"); swipeDown(); shot("04_strategy_summary")
+        swipe(); shot("04_strategy_summary_rank")
+        click("전체결과"); shot("04_strategy_results")
+        val first = vm.detail?.report?.byReturn?.first()
+        if (first != null) {
+            vm.open(Screen.StrategyDetail(btc, first.strategy.id))
+            shot("05_strategy_detail")
+            swipe(); shot("05_strategy_trades")
+            vm.back()
+        }
         vm.trade(vm.accounts.first().id, btc, true, 0.05, vm.detail?.quote?.price ?: 1.0)
         vm.back()
         compose.waitForIdle()
@@ -97,8 +129,12 @@ class ScreensTest {
         vm.tab = Tab.DISCOVER
         vm.updateSignals(vm.signals.copy(market = Market.CRYPTO, size = 20))
         vm.runSignals()
-        waitFor(240, "signals") { !vm.signals.running && vm.signals.result != null }
+        waitFor(300, "signals") { !vm.signals.running && vm.signals.result != null }
         shot("08_signals")
+        vm.updateSignals(vm.signals.copy(side = io.github.jgg113.stocknote.core.Signal.BUY)); repeat(5) { pump() }; shot("08_signals_buy")
+        click("AI 순위"); vm.updateAiRank(vm.aiRank.copy(market = Market.CRYPTO, size = 20)); vm.runAiRank()
+        waitFor(300, "ai rank") { !vm.aiRank.running }
+        shot("09_ai_rank")
         click("특징종목"); vm.loadFeatured(Market.CRYPTO); waitFor(30, "featured") { !vm.featured.loading }; shot("09_featured")
         click("테마"); vm.loadThemes(Market.CRYPTO); waitFor(30, "themes") { !vm.themes.loading }; shot("10_themes")
         click("종목필터"); vm.updateScreener(vm.screener.copy(market = Market.CRYPTO)); vm.runScreener(); waitFor(30, "screener") { !vm.screener.running }; shot("11_screener")

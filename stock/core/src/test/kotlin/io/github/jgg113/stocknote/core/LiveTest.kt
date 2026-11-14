@@ -9,6 +9,28 @@ class LiveTest {
     private fun live() = assumeTrue(System.getenv("LIVE") == "1")
 
     @Test
+    fun aiOnRealCoins() {
+        live()
+        val md = MarketData(DataKeys(), MemoryCache())
+        val uni = md.universe(Market.CRYPTO, 15)
+        val pool = md.dailyMany(uni, 1500).map { it.key to it.value }
+        println("학습 종목 ${pool.size}개, 평균 ${pool.map { it.second.size }.average().toInt()}봉")
+        for (h in AiHorizon.entries) {
+            val t0 = System.currentTimeMillis()
+            val ens = AiForecaster.train(pool, h)
+            val t1 = System.currentTimeMillis()
+            if (ens == null) { println("${h.label}: 자료 부족"); continue }
+            println("${h.label} (${h.period}) 학습 ${(t1 - t0) / 1000.0}초, 학습표본 ${ens.trainSamples}, 검증 ${ens.validSamples} (겹침 제외 ${ens.effectiveSamples}), 신뢰도 ${ens.reliability.label} z=${"%.2f".format(ens.bestZ)}")
+            ens.reports.forEach { println("   ${it.name}: AUC ${"%.3f".format(it.auc)} ±${"%.3f".format(it.aucSe)} 적중 ${"%.3f".format(it.accuracy)} IC ${"%.3f".format(it.ic)} 가중 ${"%.2f".format(it.weight)}") }
+            val btc = pool.first { it.first.code == "KRW-BTC" }
+            val f = AiForecaster.predict(ens, btc.first, btc.second)!!
+            println("   BTC: ${f.opinion.label} ${"%.1f".format(f.score)}점, 상승확률 ${"%.1f".format(f.upProb * 100)}% (평소 ${"%.1f".format(f.baseUpProb * 100)}%), 예상 ${Fmt.signedRate(f.expectedReturn * 100)}, 목표 ${Fmt.signedRate(f.pct(f.target1))}/${Fmt.signedRate(f.pct(f.target2))}, 손절 ${Fmt.signedRate(f.pct(f.stop))}, 주요 특징 ${f.topFeatures}")
+            f.matches.take(3).forEach { println("     패턴 ${it.asset.name} ${Fmt.date(it.candles.first().time)}~ 비슷함 ${"%.0f".format(it.similarity * 100)}% 이후 ${Fmt.signedRate(it.forwardReturn * 100)}") }
+            println("   예측 ${(System.currentTimeMillis() - t1) / 1000.0}초, 순위 1위 ${AiForecaster.rank(ens, pool).firstOrNull()?.asset?.name}")
+        }
+    }
+
+    @Test
     fun upbitEndToEnd() {
         live()
         val md = MarketData(DataKeys(), MemoryCache())

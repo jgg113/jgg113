@@ -172,6 +172,7 @@ object StockPrompt {
         news: List<NewsItem>,
         mode: Mode,
         question: String = "",
+        ai: AiForecastResult? = null,
     ): String = buildString {
         val cur = asset.market.currency
         appendLine("너는 개인 투자자를 돕는 차분한 한국어 주식 분석 도우미야. 아래 자료만 근거로 답하고, 자료에 없는 숫자는 지어내지 마.")
@@ -198,6 +199,10 @@ object StockPrompt {
                     if (!h.hitRatePct.isNaN()) ", 과거 적중률 ${Fmt.decimal(h.hitRatePct)}%" else "")
             }
             forecast.items.forEach { appendLine("- ${it.name} (${if (it.score >= 0) "+" else ""}${it.score}): ${it.reason}") }
+        }
+        if (ai != null) {
+            appendLine("[AI 앙상블 예측 (${ai.horizon.period})] 의견 ${ai.opinion.label} (${"%.0f".format(ai.score)}점), 상승확률 ${Fmt.decimal(ai.upProb * 100)}% (평소 ${Fmt.decimal(ai.baseUpProb * 100)}%), 예상수익률 ${Fmt.signedRate(ai.expectedReturn * 100)}, 목표 ${Fmt.price(ai.target1, cur)}/${Fmt.price(ai.target2, cur)}, 손절 ${Fmt.price(ai.stop, cur)}, 검증 신뢰도 ${ai.reliability.label}")
+            ai.models.forEach { m -> appendLine("- ${m.name}: 검증 AUC ${Fmt.decimal(m.auc)} (±${Fmt.decimal(m.aucSe)}), 가중치 ${Fmt.decimal(m.weight)}") }
         }
         if (report != null) {
             appendLine("[전략 신호] ${report.total}개 전략 중 매수 쪽 ${Fmt.decimal(report.buyRatioPct)}%, 최근 5일 매수 신호 ${report.recentBuy}개·매도 신호 ${report.recentSell}개")

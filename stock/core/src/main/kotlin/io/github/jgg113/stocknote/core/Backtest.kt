@@ -68,7 +68,25 @@ data class BacktestResult(
     val lastSignal: Signal?,
     val lastSignalIndex: Int,
     val bars: Int,
+    /** 매수 신호가 난 횟수 (진입 여부와 관계없이) */
+    val buySignals: Int = 0,
+    /** 전략이 실제로 돌아간 봉 수 (지표 준비 기간 제외) */
+    val activeBars: Int = bars,
 ) {
+    /** 마지막 신호가 몇 봉 전인지 (없으면 -1) */
+    val barsSinceSignal: Int get() = if (lastSignalIndex < 0) -1 else bars - 1 - lastSignalIndex
+
+    /** 한 달(21거래일)에 매수 신호가 평균 몇 번 나는지 */
+    val signalsPerMonth: Double get() = if (activeBars <= 0) 0.0 else buySignals / (activeBars / 21.0)
+
+    /** "월 2회", "월 1회 미만" 같은 신호 주기 글 */
+    val frequencyText: String get() = signalsPerMonth.let {
+        when {
+            it < 1 -> if (it < 1.0 / 12) "연 1회 미만" else if (it < 0.25) "연 ${kotlin.math.round(it * 12).toInt()}회" else "월 1회 미만"
+            else -> "월 ${kotlin.math.round(it).toInt()}회"
+        }
+    }
+
     /** 마지막 봉에서 신호가 났는지 (다음 거래일 시가 진입·청산 대기) */
     val signalOnLastBar: Boolean get() = lastSignalIndex == bars - 1
 
@@ -182,6 +200,8 @@ object Backtester {
             lastSignal = lastSignal,
             lastSignalIndex = lastSignalIndex,
             bars = n,
+            buySignals = signals.count { it == Signal.BUY },
+            activeBars = (n - strategy.minBars).coerceAtLeast(1),
         )
     }
 
@@ -199,6 +219,18 @@ data class IndicatorReport(
     val recentSell: Int,
 ) {
     val total: Int get() = results.size
+
+    /** 마지막 신호가 매수인 전략 / 매도인 전략의 비율 (%) — 신호가 없던 전략은 빼고 센다 */
+    val lastBuySharePct: Double get() {
+        val withSignal = results.filter { it.lastSignal != null }
+        return if (withSignal.isEmpty()) 50.0 else withSignal.count { it.lastSignal == Signal.BUY } * 100.0 / withSignal.size
+    }
+
+    fun of(horizon: StrategyHorizon?): IndicatorReport = if (horizon == null) this else {
+        val r = results.filter { it.strategy.horizon == horizon }
+        val last = r.firstOrNull()?.bars ?: 0
+        IndicatorReport(r, r.count { it.holding }, r.count { it.lastSignal == Signal.BUY && it.lastSignalIndex >= last - 5 }, r.count { it.lastSignal == Signal.SELL && it.lastSignalIndex >= last - 5 })
+    }
 
     /** 매수 쪽 신호 비율 (%) — 보유 중이거나 최근 매수 신호를 낸 전략의 비율 */
     val buyRatioPct: Double get() = if (total == 0) 0.0 else results.count { it.holding || it.recentBuy(5) } * 100.0 / total

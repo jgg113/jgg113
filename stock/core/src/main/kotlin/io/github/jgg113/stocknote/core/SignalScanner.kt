@@ -49,7 +49,8 @@ object SignalScanner {
         strategies: List<Strategy>,
         config: (Asset) -> BacktestConfig,
         lookback: Int = 1,
-        signal: Signal = Signal.BUY,
+        /** null 이면 매수·매도 신호를 모두 모은다 */
+        signal: Signal? = Signal.BUY,
         minTrades: Int = 3,
         portfolioBars: Int = 250,
     ): ScanResult {
@@ -63,9 +64,10 @@ object SignalScanner {
                 if (candles.size <= s.minBars + 5) continue
                 val r = Backtester.run(s, data, cfg)
                 perStrategy.getOrPut(s.id) { ArrayList() } += data to r
-                if (r.lastSignal == signal && r.lastSignalIndex >= data.size - lookback && r.closedTrades >= minTrades) {
+                val last = r.lastSignal
+                if (last != null && (signal == null || last == signal) && r.lastSignalIndex >= data.size - lookback && r.closedTrades >= minTrades) {
                     val c = candles[r.lastSignalIndex]
-                    hits += SignalHit(asset, s, signal, c.time, c.close, r, data.size - 1 - r.lastSignalIndex)
+                    hits += SignalHit(asset, s, last, c.time, c.close, r, data.size - 1 - r.lastSignalIndex)
                 }
             }
         }

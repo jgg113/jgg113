@@ -1,6 +1,9 @@
 package io.github.jgg113.stocknote.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.lazy.itemsIndexed
+import io.github.jgg113.stocknote.core.Signal
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,21 +49,23 @@ import io.github.jgg113.stocknote.core.ScreenerFilter
 import io.github.jgg113.stocknote.core.ScreenerSort
 import io.github.jgg113.stocknote.core.Strategies
 import io.github.jgg113.stocknote.core.StrategyGroup
+import io.github.jgg113.stocknote.core.StrategyHorizon
 import io.github.jgg113.stocknote.core.Theme
 import io.github.jgg113.stocknote.ui.theme.PriceColors
 
-private enum class DiscoverTab(val label: String) { SIGNALS("매매신호"), FEATURED("특징종목"), THEMES("테마"), SCREENER("종목필터") }
+private enum class DiscoverTab(val label: String) { SIGNALS("매매신호"), AI("AI 순위"), FEATURED("특징종목"), THEMES("테마"), SCREENER("종목필터") }
 
 @Composable
 fun DiscoverScreen(vm: AppViewModel) {
     var tab by rememberSaveable { mutableStateOf(DiscoverTab.SIGNALS) }
     Column(Modifier.fillMaxSize()) {
         Text("종목 발굴", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp))
-        TabRow(selectedTabIndex = tab.ordinal) {
+        androidx.compose.material3.ScrollableTabRow(selectedTabIndex = tab.ordinal, edgePadding = 8.dp) {
             DiscoverTab.entries.forEach { t -> Tab(selected = tab == t, onClick = { tab = t }, text = { Text(t.label) }) }
         }
         when (tab) {
             DiscoverTab.SIGNALS -> SignalsTab(vm)
+            DiscoverTab.AI -> AiRankTab(vm)
             DiscoverTab.FEATURED -> FeaturedTab(vm)
             DiscoverTab.THEMES -> ThemesTab(vm)
             DiscoverTab.SCREENER -> ScreenerTab(vm)
@@ -72,80 +77,151 @@ fun DiscoverScreen(vm: AppViewModel) {
 private fun SignalsTab(vm: AppViewModel) {
     val s = vm.signals
     var pickStrategies by remember { mutableStateOf(false) }
+    var showOptions by rememberSaveable { mutableStateOf(false) }
+    var showPortfolio by rememberSaveable { mutableStateOf(false) }
+    val r = s.result
+    val hits = r?.hits.orEmpty()
+        .filter { s.side == null || it.signal == s.side }
+        .filter { s.horizon == null || it.strategy.horizon == s.horizon }
+        .let { list ->
+            when (s.sort) {
+                1 -> list.sortedByDescending { it.backtest.winRatePct }
+                2 -> list.sortedByDescending { it.quality }
+                else -> list.sortedByDescending { it.backtest.totalReturnPct }
+            }
+        }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            MarketChips(s.market, { vm.updateSignals(s.copy(market = it, result = null)) }, Modifier.padding(top = 8.dp))
-            SectionCard("조건") {
-                Text("대상: " + when (s.market) {
-                    Market.KR -> "시가총액 상위 ${s.size}종목"
-                    Market.US -> "해외 기본 목록 ${s.size}종목"
-                    Market.CRYPTO -> "거래대금 상위 ${s.size}개 코인"
-                } + if (s.includeWatch) " + 관심종목" else "")
-                ChipRow(listOf(20, 50, 100, 200), { it == s.size }, { "$it" }, Modifier.padding(vertical = 4.dp)) { vm.updateSignals(s.copy(size = it)) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(s.includeWatch, { vm.updateSignals(s.copy(includeWatch = it)) })
-                    Text("관심종목도 함께 보기")
-                }
-                Text("전략 ${s.strategyIds.size}개: " + s.strategyIds.mapNotNull { Strategies.find(it)?.name }.take(4).joinToString(", ") + if (s.strategyIds.size > 4) " …" else "", style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
-                    OutlinedButton(onClick = { pickStrategies = true }) { Text("전략 고르기") }
-                    Button(onClick = { vm.runSignals() }, enabled = !s.running) { Text(if (s.running) "찾는 중…" else "신호 찾기") }
-                }
+            // 국내·미국·코인·관심
+            val tabs = listOf("국내" to Market.KR, "미국" to Market.US, "코인" to Market.CRYPTO, "관심" to null)
+            ChipRow(tabs, { (_, m) -> if (m == null) s.watchOnly else !s.watchOnly && s.market == m }, { it.first }, Modifier.padding(top = 8.dp)) { (_, m) ->
+                vm.updateSignals(if (m == null) s.copy(watchOnly = true, result = null) else s.copy(market = m, watchOnly = false, result = null))
+            }
+            ChipRow(listOf<StrategyHorizon?>(null) + StrategyHorizon.entries, { it == s.horizon }, { it?.let { h -> "${h.label} (${h.period})" } ?: "전체 기간" }, Modifier.padding(top = 4.dp)) {
+                vm.updateSignals(s.copy(horizon = it, result = if (s.useCustom) s.result else null))
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { vm.runSignals() }, enabled = !s.running) { Text(if (s.running) "찾는 중…" else if (r == null) "신호 찾기" else "다시 찾기") }
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = { showOptions = !showOptions }) { Text(if (showOptions) "조건 접기" else "조건") }
+                Spacer(Modifier.weight(1f))
                 val alertOn = vm.scanAlerts.any { it.market == s.market }
+                Text("알림", style = MaterialTheme.typography.bodySmall)
+                Switch(alertOn, { vm.toggleScanAlert() }, enabled = !s.watchOnly)
+            }
+            if (showOptions) SectionCard("조건") {
+                if (!s.watchOnly) {
+                    Text("대상: " + when (s.market) {
+                        Market.KR -> "시가총액 상위 ${s.size}종목"
+                        Market.US -> "해외 기본 목록 ${s.size}종목"
+                        Market.CRYPTO -> "거래대금 상위 ${s.size}개 코인"
+                    } + if (s.includeWatch) " + 관심종목" else "")
+                    ChipRow(listOf(20, 50, 100, 200), { it == s.size }, { "$it" }, Modifier.padding(vertical = 4.dp)) { vm.updateSignals(s.copy(size = it)) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(s.includeWatch, { vm.updateSignals(s.copy(includeWatch = it)) })
+                        Text("관심종목도 함께 보기")
+                    }
+                } else Text("대상: 관심종목 전체 (${vm.watchlists.sumOf { it.assets.size }}종목)")
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("새 매수 신호 알림", modifier = Modifier.weight(1f))
-                    Switch(alertOn, { vm.toggleScanAlert() })
+                    Checkbox(s.useCustom, { vm.updateSignals(s.copy(useCustom = it, result = null)) })
+                    Text("고른 전략만 쓰기 (${s.strategyIds.size}개)", modifier = Modifier.weight(1f))
+                    TextButton(onClick = { pickStrategies = true }) { Text("고르기") }
                 }
-                SmallLabel("최근 3봉 안에 매수 신호가 난 종목을, 그 종목에서 그 전략의 과거 성과(거래 3회 이상)가 좋은 순서로 보여 줍니다." + if (s.market == Market.KR && !vm.keys.hasKis) " 국내는 전날 종가 기준입니다." else "")
+                SmallLabel(if (s.useCustom) "고른 전략만 봅니다." else "위에서 고른 기간의 전략 ${io.github.jgg113.stocknote.core.Strategies.of(s.horizon).size}개를 모두 봅니다.")
+                SmallLabel("최근 3봉 안에 신호가 난 종목만, 그 종목에서 그 전략이 과거 3번 넘게 거래한 경우만 보여 줍니다." + if (s.market == Market.KR && !vm.keys.hasKis && !s.watchOnly) " 국내는 전날 종가 기준입니다." else "")
             }
         }
         if (s.running) item { Loading("일봉 받는 중", s.progress) }
         s.error?.let { item { ErrorNotice(it) { vm.runSignals() } } }
-        val r = s.result
+        if (r == null && !s.running && s.error == null) item {
+            Notice("[신호 찾기]를 누르면 대표 종목마다 전략 ${io.github.jgg113.stocknote.core.Strategies.of(s.horizon).size}개를 과거 자료로 시험하고, 최근 매수·매도 신호를 누적수익률 순으로 보여 줍니다.")
+        }
         if (r != null) {
             item {
-                SectionCard("전략 성과 (최근 1년, ${r.scanned}종목에 똑같이 적용)") {
-                    val sorted = r.portfolios.sortedByDescending { it.totalReturnPct }
-                    val sel = sorted.firstOrNull { it.strategy.id == s.selectedPortfolio } ?: sorted.firstOrNull()
-                    if (sel != null) {
-                        Text(sel.strategy.name, fontWeight = FontWeight.Bold)
-                        LineChart(
-                            listOf(sel.equity.map { (it - 1) * 100 }.toDoubleArray() to MaterialTheme.colorScheme.primary, sel.benchmark.map { (it - 1) * 100 }.toDoubleArray() to MaterialTheme.colorScheme.outline),
-                            height = 130.dp, baseline = 0.0, format = { Fmt.decimal(it) + "%" },
-                        )
-                        SmallLabel("파랑: 전략대로 사고판 누적 수익률 · 회색: 같은 종목을 나눠 들고만 있었을 때")
-                    }
-                    sorted.forEach { p ->
-                        Row(Modifier.fillMaxWidth().clickable { vm.updateSignals(s.copy(selectedPortfolio = p.strategy.id)) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(p.strategy.name, fontWeight = if (p.strategy.id == sel?.strategy?.id) FontWeight.Bold else FontWeight.Normal)
-                                SmallLabel("거래 ${p.trades}회 · 승률 ${Fmt.decimal(p.winRatePct)}% · 보유만 ${Fmt.signedRate(p.benchmarkReturnPct)}")
-                            }
-                            ChangeText(p.totalReturnPct, bold = true)
-                        }
+                TabRow(selectedTabIndex = listOf(null, Signal.BUY, Signal.SELL).indexOf(s.side)) {
+                    listOf<Signal?>(null, Signal.BUY, Signal.SELL).forEach { side ->
+                        val count = r.hits.count { (side == null || it.signal == side) && (s.horizon == null || it.strategy.horizon == s.horizon) }
+                        Tab(selected = s.side == side, onClick = { vm.updateSignals(s.copy(side = side)) }, text = { Text("${side?.label ?: "전체"} $count") })
                     }
                 }
-            }
-            item { Text("매수 신호 ${r.hits.size}건", fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
-            if (r.hits.isEmpty()) item { Notice("조건에 맞는 최근 매수 신호가 없습니다. 전략이나 대상을 바꿔 보세요.") }
-            items(r.hits.take(200), key = { "${it.asset.key}|${it.strategy.id}" }) { h ->
-                Row(Modifier.fillMaxWidth().clickable { vm.openAsset(h.asset) }.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(h.asset.name.ifBlank { h.asset.code }, fontWeight = FontWeight.SemiBold)
-                        SmallLabel("${h.strategy.name} · ${if (h.barsAgo == 0) "오늘" else "${h.barsAgo}봉 전"} (${Fmt.shortDate(h.time)})")
-                        SmallLabel("이 전략 과거: 거래 ${h.backtest.closedTrades}회 · 승률 ${Fmt.decimal(h.backtest.winRatePct)}% · 평균 ${Fmt.signedRate(h.backtest.avgReturnPct)}")
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(Fmt.price(h.price, h.asset.market.currency), fontWeight = FontWeight.SemiBold)
-                        ChangeText(h.backtest.totalReturnPct)
-                    }
+                ChipRow(listOf("누적수익률순", "승률순", "신뢰도순"), { it == listOf("누적수익률순", "승률순", "신뢰도순")[s.sort] }, { it }, Modifier.padding(vertical = 6.dp)) {
+                    vm.updateSignals(s.copy(sort = listOf("누적수익률순", "승률순", "신뢰도순").indexOf(it)))
                 }
-                HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
             }
-            item { SmallLabel("과거 성과는 미래 수익을 보장하지 않습니다. 신호는 종가 기준이며 다음 거래일 시가 매수를 가정합니다.", Modifier.padding(16.dp)) }
+            if (hits.isEmpty()) item { Notice("조건에 맞는 최근 신호가 없습니다. 기간이나 대상을 바꿔 보세요.") }
+            itemsIndexed(hits.take(200), key = { _, h -> "${h.asset.key}|${h.strategy.id}" }) { i, h -> SignalCard(i + 1, h) { vm.openAsset(h.asset) } }
+            item {
+                TextButton(onClick = { showPortfolio = !showPortfolio }, modifier = Modifier.padding(horizontal = 8.dp)) { Text(if (showPortfolio) "전략 성과 접기" else "전략별 성과 보기 (${r.scanned}종목에 똑같이 적용)") }
+            }
+            if (showPortfolio) item { PortfolioCard(vm, r) }
+            item { SmallLabel("과거 성과는 미래 수익을 보장하지 않습니다. 신호는 종가 기준이며 다음 거래일 시가 매매를 가정합니다.", Modifier.padding(16.dp)) }
         }
     }
-    if (pickStrategies) StrategyPicker(s.strategyIds, onDismiss = { pickStrategies = false }) { vm.updateSignals(s.copy(strategyIds = it, result = null)) }
+    if (pickStrategies) StrategyPicker(s.strategyIds, onDismiss = { pickStrategies = false }) { vm.updateSignals(s.copy(strategyIds = it, useCustom = it.isNotEmpty(), result = null)) }
+}
+
+@Composable
+private fun SignalCard(rank: Int, h: io.github.jgg113.stocknote.core.SignalHit, onClick: () -> Unit) {
+    val buy = h.signal == Signal.BUY
+    val color = if (buy) PriceColors.up else PriceColors.down
+    androidx.compose.material3.Card(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp).clickable(onClick = onClick),
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(color.copy(alpha = 0.06f), androidx.compose.foundation.shape.RoundedCornerShape(10.dp)).padding(10.dp)) {
+                Text("$rank", fontWeight = FontWeight.Bold, modifier = Modifier.width(28.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(h.asset.name.ifBlank { h.asset.code }, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    SmallLabel("${h.asset.shortCode} · ${if (h.barsAgo == 0) "오늘" else "${h.barsAgo}봉 전"} 신호 · 종가 ${Fmt.priceWithUnit(h.price, h.asset.market.currency)}")
+                }
+                Pill(h.signal.label, color)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SmallLabel("전략명 ")
+                        Text(h.strategy.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
+                        Pill("승률 ${Fmt.decimal(h.backtest.winRatePct)}%", MaterialTheme.colorScheme.onSurfaceVariant)
+                        Pill("주기 ${h.backtest.frequencyText}", MaterialTheme.colorScheme.onSurfaceVariant)
+                        Pill(h.strategy.horizon.label, MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    SmallLabel("누적수익률")
+                    Text(Fmt.signedRate(h.backtest.totalReturnPct), color = PriceColors.color(h.backtest.totalReturnPct), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PortfolioCard(vm: AppViewModel, r: io.github.jgg113.stocknote.core.ScanResult) {
+    val s = vm.signals
+    SectionCard("전략 성과 (최근 1년, ${r.scanned}종목에 똑같이 적용)") {
+        val sorted = r.portfolios.filter { s.horizon == null || it.strategy.horizon == s.horizon }.sortedByDescending { it.totalReturnPct }
+        val sel = sorted.firstOrNull { it.strategy.id == s.selectedPortfolio } ?: sorted.firstOrNull()
+        if (sel != null) {
+            Text(sel.strategy.name, fontWeight = FontWeight.Bold)
+            LineChart(
+                listOf(sel.equity.map { (it - 1) * 100 }.toDoubleArray() to MaterialTheme.colorScheme.primary, sel.benchmark.map { (it - 1) * 100 }.toDoubleArray() to MaterialTheme.colorScheme.outline),
+                height = 130.dp, baseline = 0.0, format = { Fmt.decimal(it) + "%" },
+            )
+            SmallLabel("파랑: 전략대로 사고판 누적 수익률 · 회색: 같은 종목을 나눠 들고만 있었을 때")
+        }
+        sorted.take(30).forEach { p ->
+            Row(Modifier.fillMaxWidth().clickable { vm.updateSignals(s.copy(selectedPortfolio = p.strategy.id)) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(p.strategy.name, fontWeight = if (p.strategy.id == sel?.strategy?.id) FontWeight.Bold else FontWeight.Normal)
+                    SmallLabel("${p.strategy.horizon.label} · 거래 ${p.trades}회 · 승률 ${Fmt.decimal(p.winRatePct)}% · 보유만 ${Fmt.signedRate(p.benchmarkReturnPct)}")
+                }
+                ChangeText(p.totalReturnPct, bold = true)
+            }
+        }
+    }
 }
 
 @Composable
