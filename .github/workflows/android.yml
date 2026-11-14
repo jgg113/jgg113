@@ -3,7 +3,8 @@ name: 공매비교 APK
 on:
   push:
     branches: ["**"]
-    paths-ignore: ["**.md"]
+    # 주식노트(stock/)는 따로 빌드한다 (.github/workflows/stock.yml).
+    paths-ignore: ["**.md", "stock/**", ".github/workflows/stock.yml"]
   workflow_dispatch:
 
 permissions:

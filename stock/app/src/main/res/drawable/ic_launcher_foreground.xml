@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 108dp 적응형 아이콘: 안전영역(가운데 66dp) 안에 캔들 세 개와 상승선 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 심지 -->
+    <path android:fillColor="#FF8FA3C7" android:pathData="M39,46 L41,46 L41,74 L39,74 Z" />
+    <path android:fillColor="#FF8FA3C7" android:pathData="M53,40 L55,40 L55,70 L53,70 Z" />
+    <path android:fillColor="#FF8FA3C7" android:pathData="M67,32 L69,32 L69,62 L67,62 Z" />
+    <!-- 몸통 -->
+    <path android:fillColor="#FF4C8DFF" android:pathData="M35,54 L45,54 L45,70 L35,70 Z" />
+    <path android:fillColor="#FFFF5A5F" android:pathData="M49,46 L59,46 L59,64 L49,64 Z" />
+    <path android:fillColor="#FFFF5A5F" android:pathData="M63,38 L73,38 L73,56 L63,56 Z" />
+    <!-- 상승선 -->
+    <path android:fillColor="#FFFFD54F" android:pathData="M32,72 L50,58 L58,62 L74,44 L71,42 L80,38 L78,47 L76,45.5 L58.5,66 L50.5,62 L34,75 Z" />
+</vector>
