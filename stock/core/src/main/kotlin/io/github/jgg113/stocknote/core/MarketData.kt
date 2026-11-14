@@ -140,14 +140,29 @@ class MarketData(
 
     private fun cryptoNameMap(): Map<String, String> = cryptoNames ?: runCatching { cryptoAssets() }.getOrDefault(emptyList()).associate { it.code to it.name }
 
-    /** 국내 종목 목록: 공공데이터 시세 → DART 회사 목록 → 기본 테마 종목 순으로 찾는다. */
+    /** 국내 종목 목록: 공공데이터 시세 → 한국투자증권 종목 파일 → DART 회사 목록 → 기본 테마 종목 순으로 찾는다. */
     fun krAssets(): List<Asset> {
         runCatching { krSnapshot() }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { s -> return s.map { it.asset } }
+        if (keys.hasKis) runCatching { kisMaster() }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
         if (keys.hasDart) runCatching { dartCorps() }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { corps ->
             return corps.map { Asset(Market.KR, it.stockCode, it.name, "") }
         }
-        return Themes.builtIn.flatMap { it.members }.filter { it.startsWith("KR:") }.distinct().map { Asset(Market.KR, it.removePrefix("KR:"), it.removePrefix("KR:"), "") }
+        return Themes.builtIn.flatMap { it.members }.filter { it.startsWith("KR:") }.distinct().map { k -> k.removePrefix("KR:").let { Asset(Market.KR, it, KrNames.of(it) ?: it, "") } }
     }
+
+    /** 한국투자증권 종목 파일 (코드·이름). 일주일에 한 번만 받는다. */
+    fun kisMaster(): List<Asset> {
+        val name = "kis_master.json"
+        cache.read(name)?.takeIf { (nowSec() - (cache.modified(name) ?: 0)) < 7 * 86_400 }?.let { text ->
+            runCatching { json.decodeFromString(ListSerializer(Asset.serializer()), text) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        val list = KisMaster.download(http)
+        if (list.isNotEmpty()) cache.write(name, json.encodeToString(ListSerializer(Asset.serializer()), list))
+        return list
+    }
+
+    /** 코드로 종목 이름을 찾는다 (목록에 없으면 null). */
+    fun krName(code: String): String? = KrNames.of(code) ?: runCatching { krAssets() }.getOrNull()?.firstOrNull { it.code == code }?.name?.takeIf { it != code }
 
     fun search(text: String, markets: Set<Market> = Market.entries.toSet(), limit: Int = 60): List<Asset> {
         val q = text.trim()
@@ -157,6 +172,8 @@ class MarketData(
         if (Market.KR in markets) {
             val list = runCatching { krAssets() }.getOrDefault(emptyList())
             out += list.filter { it.code.startsWith(q) || it.name.lowercase().contains(lower) }
+            // 목록에 없는 6자리 코드는 그대로 넣어 볼 수 있게 한다.
+            if (Regex("^\\d{6}$").matches(q) && list.none { it.code == q }) out += Asset(Market.KR, q, q, "")
         }
         if (Market.US in markets) {
             val hits = UsStocks.list.filter { it.code.lowercase().startsWith(lower) || it.name.lowercase().contains(lower) }
@@ -292,7 +309,9 @@ class MarketData(
                 kr.take(40).forEach { a -> runCatching { quote(a, maxAgeSec) }.getOrNull()?.let { out[a.key] = it } }
             }
         }
-        need.filter { it.market == Market.US }.forEach { a -> runCatching { quote(a, maxAgeSec) }.getOrNull()?.let { out[a.key] = it } }
+        // Twelve Data 무료 키는 1분에 8번까지만 되므로, 한국투자증권이 없으면 한 번에 8종목까지만 받는다.
+        val us = need.filter { it.market == Market.US }.let { if (keys.hasKis) it else it.take(8) }
+        us.forEach { a -> runCatching { quote(a, maxAgeSec) }.getOrNull()?.let { out[a.key] = it } }
         return out
     }
 
@@ -300,7 +319,7 @@ class MarketData(
     fun marketQuotes(market: Market): List<Quote> = when (market) {
         Market.KR -> krSnapshot()
         Market.CRYPTO -> upbit.allTickers(cryptoNameMap()).also { list -> list.forEach { memoryQuotes[it.asset.key] = it to nowSec() } }
-        Market.US -> if (hasUs) quotes(UsStocks.list, maxAgeSec = 300).values.toList() else emptyList()
+        Market.US -> if (hasUs) quotes(if (keys.hasKis) UsStocks.list else UsStocks.list.take(8), maxAgeSec = if (keys.hasKis) 300 else 900).values.toList() else emptyList()
     }
 
     /** 실시간 거래대금·거래량 상위 (한국투자증권 실전 서버만, 실패하면 빈 목록) */
@@ -363,13 +382,18 @@ class MarketData(
             Market.CRYPTO -> recentlyFetched(asset, 60)
         }
         var candles = cached
-        if (!upToDate || cached.size < bars / 2) {
-            val from = if (cached.size >= bars / 2 && lastDate != null) lastDate.minusDays(3) else today.minusDays((bars * 1.5).toLong() + 10)
-            val fresh = fetchDaily(asset, from, if (cached.size >= bars / 2) 0 else bars)
-            candles = CandleMerge.merge(if (cached.size >= bars / 2) cached else emptyList(), fresh).takeLast(bars + 200)
+        // 전에 더 짧은 기간만 받아 둔 종목은 한 번 더 길게 받는다 (상장한 지 얼마 안 된 종목을 매번 다시 받지 않도록 받은 깊이를 적어 둔다).
+        val depthFile = "depth_" + candleFile(asset)
+        val depth = cache.read(depthFile)?.toIntOrNull() ?: 0
+        val enough = cached.isNotEmpty() && (cached.size >= bars * 9 / 10 || depth >= bars)
+        if (!upToDate || !enough) {
+            val from = if (enough && lastDate != null) lastDate.minusDays(3) else today.minusDays((bars * 1.5).toLong() + 10)
+            val fresh = fetchDaily(asset, from, if (enough) 0 else bars)
+            candles = CandleMerge.merge(if (enough) cached else emptyList(), fresh).takeLast(maxOf(bars, depth) + 200)
             if (candles.isNotEmpty()) {
                 cache.write(candleFile(asset), CandleCodec.encode(candles))
                 cache.write("fetched_" + candleFile(asset), nowSec().toString())
+                if (!enough) cache.write(depthFile, bars.toString())
             }
         }
         if (live && candles.isNotEmpty() && asset.market == Market.KR && keys.hasKis && MarketClock.krOpen(now())) {
@@ -541,7 +565,7 @@ class MarketData(
     }
 
     fun clearCache() {
-        listOf("candles_", "fetched_", "kr_snapshot", "news_", "fin_", "kr_indices", "crypto_markets", "fx_", "dart_").forEach { p -> cache.list(p).forEach { cache.delete(it) } }
+        listOf("candles_", "fetched_", "depth_", "kr_snapshot", "news_", "fin_", "kr_indices", "crypto_markets", "fx_", "dart_", "kis_master").forEach { p -> cache.list(p).forEach { cache.delete(it) } }
         memoryQuotes.clear()
         krSnapshotMemo = null
     }

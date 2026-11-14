@@ -8,6 +8,75 @@ import kotlin.test.assertTrue
 class LiveTest {
     private fun live() = assumeTrue(System.getenv("LIVE") == "1")
 
+    /** 실제 Kronos 가중치로 구현이 맞는지 점검한다: KRONOS_DIR 에 가중치 두 파일이 있어야 한다. */
+    @Test
+    fun kronosSanity() {
+        live()
+        val dir = java.io.File(System.getenv("KRONOS_DIR") ?: return)
+        assumeTrue(KronosModel.installed(dir))
+        val model = KronosModel.load(dir)
+        println("Kronos 층 ${model.layers}, 차원 ${model.dModel}")
+        val md = MarketData(DataKeys(), MemoryCache())
+        for (code in listOf("KRW-BTC", "KRW-ETH", "KRW-XRP")) {
+            val asset = Asset(Market.CRYPTO, code, code, "UPBIT")
+            val candles = md.daily(asset, 600, live = false)
+            val window = candles.takeLast(276).dropLast(20)
+            val (rmse, nll1, nll2) = model.diagnose(window)
+            println("$code 복원 RMSE(정규화) ${"%.3f".format(rmse)}, 다음 토큰 NLL s1 ${"%.2f".format(nll1)} s2 ${"%.2f".format(nll2)} (무작위면 ${"%.2f".format(kotlin.math.ln(1024.0))})")
+            assertTrue(rmse < 0.5, "토크나이저 복원 오차가 큽니다: $rmse")
+            assertTrue(nll1 < 6.0, "다음 토큰 예측이 무작위 수준입니다: $nll1")
+            val r = model.forecast(window, 20, KronosModel.futureDays(window.last().time, 20, Market.CRYPTO), context = 256, samples = 16)
+            val actual = candles.last().close / window.last().close - 1
+            println("   20일 예측 ${"%.1f".format(r.seconds)}초: 상승확률 ${"%.0f".format(r.upProb * 100)}%, 예상 ${Fmt.signedRate(r.expectedReturn * 100)}, 80% 범위 ${Fmt.signedRate((r.closeQuantile(19, 0.1) / r.lastClose - 1) * 100)} ~ ${Fmt.signedRate((r.closeQuantile(19, 0.9) / r.lastClose - 1) * 100)}, 실제 ${Fmt.signedRate(actual * 100)}")
+            println("   첫 예상 봉 ${r.candles.first().let { "시 ${Fmt.number(it.open)} 고 ${Fmt.number(it.high)} 저 ${Fmt.number(it.low)} 종 ${Fmt.number(it.close)}" }} (직전 종가 ${Fmt.number(window.last().close)})")
+            assertTrue(kotlin.math.abs(r.candles.first().close / window.last().close - 1) < 0.25, "첫 예상 봉이 직전 종가에서 너무 멉니다")
+        }
+    }
+
+    /**
+     * Kronos 를 모델 공개(2025-09) 이후 구간에서만 검증한다 (학습에 쓰였을 수 있는 과거는 뺀다).
+     * 결과를 KRONOS_OUT 파일(CSV)로 남긴다.
+     */
+    @Test
+    fun kronosValidation() {
+        live()
+        val dir = java.io.File(System.getenv("KRONOS_DIR") ?: return)
+        assumeTrue(KronosModel.installed(dir))
+        val model = KronosModel.load(dir)
+        val md = MarketData(DataKeys(), MemoryCache())
+        val pool = md.dailyMany(md.universe(Market.CRYPTO, 24), 1500).filter { it.value.size >= 500 }
+        val from = java.time.LocalDate.of(2025, 9, 1).epochKst()
+        val horizon = 20; val stride = 10
+        data class Job(val asset: Asset, val candles: List<Candle>, val end: Int)
+        val jobs = pool.flatMap { (asset, c) ->
+            (300 until c.size - horizon).filter { c[it].time >= from && (c.size - 1 - horizon - it) % stride == 0 }.map { Job(asset, c, it) }
+        }
+        println("검증 대상 ${pool.size}종목, ${jobs.size}건")
+        val t0 = System.currentTimeMillis()
+        val rows = jobs.parallelStream().map { j ->
+            val window = j.candles.subList(0, j.end + 1)
+            val r = model.forecast(window, horizon, KronosModel.futureDays(window.last().time, horizon, Market.CRYPTO), context = 256, samples = 16, threads = 1, seed = j.end.toLong())
+            val actual = j.candles[j.end + horizon].close / j.candles[j.end].close - 1
+            listOf(j.asset.code, Fmt.date(j.candles[j.end].time), r.upProb, r.expectedReturn, r.medianReturn, actual)
+        }.toList()
+        println("걸린 시간 ${(System.currentTimeMillis() - t0) / 1000}초")
+        System.getenv("KRONOS_OUT")?.let { out -> java.io.File(out).writeText("code,date,upProb,expected,median,actual\n" + rows.joinToString("\n") { it.joinToString(",") }) }
+        val prob = rows.map { it[2] as Double }.toDoubleArray()
+        val exp = rows.map { it[3] as Double }.toDoubleArray()
+        val act = rows.map { it[5] as Double }.toDoubleArray()
+        val up = BooleanArray(act.size) { act[it] > 0 }
+        val eff = rows.size.toDouble() * stride / horizon
+        val upFrac = up.count { it }.toDouble() / up.size
+        val n1 = eff * upFrac; val n2 = eff * (1 - upFrac)
+        val se = kotlin.math.sqrt((n1 + n2 + 1) / (12 * n1 * n2))
+        println("Kronos 검증: ${rows.size}건 (겹침 제외 ${eff.toInt()}건), 실제 상승 비율 ${"%.1f".format(upFrac * 100)}%, 평균 예측 상승확률 ${"%.1f".format(prob.average() * 100)}%")
+        println("  상승확률 AUC ${"%.3f".format(Metrics.auc(prob, up))} ±${"%.3f".format(se)}, 예상수익률 AUC ${"%.3f".format(Metrics.auc(exp, up))}, 순위상관 ${"%.3f".format(Metrics.rankIc(exp, act))}, 방향 적중 ${"%.3f".format(Metrics.accuracy(prob, up))}")
+        // 날짜별 종목 간 순위 상관 (같은 날 어떤 코인이 더 오를지 맞히는 힘)
+        val byDate = rows.groupBy { it[1] as String }.values.filter { it.size >= 8 }
+        val ics = byDate.map { g -> Metrics.rankIc(g.map { it[3] as Double }.toDoubleArray(), g.map { it[5] as Double }.toDoubleArray()) }
+        println("  날짜별 종목 순위상관 평균 ${"%.3f".format(ics.average())} (${ics.size}일, 표준오차 ${"%.3f".format(kotlin.math.sqrt(ics.map { (it - ics.average()).let { v -> v * v } }.average() / ics.size))})")
+    }
+
     @Test
     fun aiOnRealCoins() {
         live()

@@ -9,6 +9,65 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
+/**
+ * 한국투자증권이 Open API 이용자에게 공개하는 종목 마스터 파일 (코스피·코스닥 전 종목의 코드와 이름).
+ * 줄마다 길이가 고정된 CP949 글자 자료다: 단축코드(9) + 표준코드(12) + 한글 이름, 그 뒤 고정 길이 꼬리.
+ */
+object KisMaster {
+    const val KOSPI_URL = "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip"
+    const val KOSDAQ_URL = "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip"
+    private const val KOSPI_TAIL = 228
+    private const val KOSDAQ_TAIL = 222
+
+    private val charset: java.nio.charset.Charset by lazy {
+        listOf("MS949", "x-windows-949", "windows-949", "EUC-KR").firstNotNullOfOrNull { runCatching { java.nio.charset.Charset.forName(it) }.getOrNull() } ?: Charsets.UTF_8
+    }
+
+    fun parse(bytes: ByteArray, kosdaq: Boolean): List<Asset> {
+        val tail = if (kosdaq) KOSDAQ_TAIL else KOSPI_TAIL
+        val out = ArrayList<Asset>()
+        var start = 0
+        while (start < bytes.size) {
+            var end = start
+            while (end < bytes.size && bytes[end] != '\n'.code.toByte()) end++
+            var len = end - start
+            if (len > 0 && bytes[end - 1] == '\r'.code.toByte()) len--
+            if (len > tail + 21) {
+                val head = len - tail
+                val code = String(bytes, start, 9, Charsets.US_ASCII).trim()
+                val name = String(bytes, start + 21, head - 21, charset).trim()
+                val group = String(bytes, start + head + 1, 2, Charsets.US_ASCII)
+                // 주권(ST)·ETF(EF)·ETN(EN)·리츠(RT)·외국주권(FS) 등 6자리 코드만 남긴다 (수익증권·워런트는 뺀다).
+                if (code.length == 6 && name.isNotEmpty() && group in KEEP) out += Asset(Market.KR, code, name, if (kosdaq) "KOSDAQ" else "KOSPI")
+            }
+            start = end + 1
+        }
+        return out
+    }
+
+    private val KEEP = setOf("ST", "EF", "EN", "RT", "FS", "DR", "MF", "IF")
+
+    fun unzip(zip: ByteArray): ByteArray {
+        java.util.zip.ZipInputStream(zip.inputStream()).use { z ->
+            while (true) {
+                val e = z.nextEntry ?: break
+                if (e.name.endsWith(".mst", true)) return z.readBytes()
+            }
+        }
+        return ByteArray(0)
+    }
+
+    fun download(http: Http): List<Asset> {
+        val out = ArrayList<Asset>()
+        for ((url, kosdaq) in listOf(KOSPI_URL to false, KOSDAQ_URL to true)) {
+            val r = network("한국투자증권 종목 목록") { http.get(url) }
+            if (r.status != 200) throw DataException("종목 목록을 받지 못했습니다 (HTTP ${r.status}).", "HTTP${r.status}")
+            out += parse(unzip(r.bytes), kosdaq)
+        }
+        return out
+    }
+}
+
 /** 접근 토큰 (하루 동안 쓰고, 1분에 한 번만 새로 받을 수 있어 기기에 저장해 둔다) */
 @Serializable
 data class KisToken(val token: String, val expiresAt: Long, val appKeyHash: Int)

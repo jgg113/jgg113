@@ -68,6 +68,64 @@ class AiTest {
     }
 
     @Test
+    fun randomForestLearnsNonlinearRule() {
+        val r = Random(11)
+        val x = List(4000) { DoubleArray(6) { r.nextDouble(-2.0, 2.0) } }
+        val y = DoubleArray(x.size) { if (x[it][0] * x[it][1] > 0) 1.0 else 0.0 }
+        val model = RandomForest.fit(x.take(3000), y.copyOfRange(0, 3000), Random(1), mtry = 3)
+        val test = x.drop(3000)
+        val auc = Metrics.auc(DoubleArray(test.size) { model.predict(test[it]) }, BooleanArray(test.size) { y[3000 + it] > 0.5 })
+        assertTrue(auc > 0.9, "랜덤 포레스트 AUC $auc")
+    }
+
+    @Test
+    fun gruGradientMatchesNumericalDerivative() {
+        val r = Random(4)
+        val model = Gru.init(3, 4, 5, r)
+        val seq = FloatArray(15) { r.nextDouble(-1.0, 1.0).toFloat() }
+        val grad = DoubleArray(model.p.size)
+        model.lossAndGrad(seq, 1.0, grad)
+        val eps = 1e-6
+        for (k in model.p.indices) {
+            val old = model.p[k]
+            model.p[k] = old + eps; val up = model.lossAndGrad(seq, 1.0, DoubleArray(model.p.size))
+            model.p[k] = old - eps; val down = model.lossAndGrad(seq, 1.0, DoubleArray(model.p.size))
+            model.p[k] = old
+            val numeric = (up - down) / (2 * eps)
+            assertEquals(numeric, grad[k], 1e-5, "매개변수 $k 의 기울기가 다릅니다")
+        }
+    }
+
+    @Test
+    fun gruLearnsSequenceRule() {
+        val r = Random(8)
+        // 뒤쪽 5칸의 첫 값 합이 양수면 오른다 → 순서를 읽어야 맞힐 수 있다.
+        val seqs = List(3000) { FloatArray(20 * 2) { r.nextDouble(-1.0, 1.0).toFloat() } }
+        val y = DoubleArray(seqs.size) { i -> if ((15 until 20).sumOf { seqs[i][it * 2].toDouble() } > 0) 1.0 else 0.0 }
+        val model = Gru.fit(seqs.take(2400), y.copyOfRange(0, 2400), 2, 20, Random(1), hidden = 8, epochs = 8)
+        val test = seqs.drop(2400)
+        val auc = Metrics.auc(DoubleArray(test.size) { model.predict(test[it]) }, BooleanArray(test.size) { y[2400 + it] > 0.5 })
+        assertTrue(auc > 0.9, "GRU AUC $auc")
+    }
+
+    @Test
+    fun externalModelJoinsOnlyWhenValidated() {
+        val pool = (1..6).map { k -> Asset(Market.KR, "20000$k", "무작위$k") to series(1300, 300 + k) { _, _ -> 0.0 } }
+        val ens = AiForecaster.train(pool, AiHorizon.SHORT)!!
+        val (asset, candles) = pool[0]
+        val unvalidated = ExternalModel("kronos", "Kronos", "", 0.95, 0.3, Double.NaN, Double.NaN)
+        val a = AiForecaster.predict(ens, asset, candles, external = unvalidated)!!
+        assertEquals(0.0, a.models.last().weight, 1e-12)
+        assertTrue(a.models.last().pretrained)
+        val base = AiForecaster.predict(ens, asset, candles)!!
+        assertEquals(base.upProb, a.upProb, 1e-12, "검증 안 된 모델이 의견을 바꿨습니다")
+        val validated = ExternalModel("kronos", "Kronos", "", 0.95, 0.3, 0.70, 0.03)
+        val b = AiForecaster.predict(ens, asset, candles, external = validated)!!
+        assertTrue(b.models.last().weight > 0.5 && b.upProb > base.upProb + 0.1, "검증된 모델이 반영되지 않았습니다: ${b.upProb} vs ${base.upProb}")
+        assertEquals(7, b.models.size)
+    }
+
+    @Test
     fun metricsBehave() {
         val up = booleanArrayOf(false, false, true, true)
         assertEquals(1.0, Metrics.auc(doubleArrayOf(0.1, 0.2, 0.8, 0.9), up), 1e-9)

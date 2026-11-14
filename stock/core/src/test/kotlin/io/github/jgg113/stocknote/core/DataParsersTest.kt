@@ -186,6 +186,56 @@ class DataParsersTest {
     }
 
     @Test
+    fun kisMasterParsesFixedWidthLines() {
+        val cp949 = java.nio.charset.Charset.forName("MS949")
+        fun line(code: String, std: String, name: String, group: String, tail: Int): ByteArray {
+            val nameBytes = name.toByteArray(cp949)
+            val head = code.padEnd(9).toByteArray() + std.toByteArray() + nameBytes + ByteArray(39 - nameBytes.size) { ' '.code.toByte() }
+            val t = (" $group " + "0".repeat(tail - 4)).toByteArray()
+            return head + t + byteArrayOf('\n'.code.toByte())
+        }
+        val kospi = line("005930", "KR7005930003", "삼성전자", "ST", 228) + line("F70100034", "KR5701000345", "어떤수익증권", "BC", 228) + line("0233A0", "KR70233A0001", "ACE 테스트 ETF", "EF", 228)
+        val a = KisMaster.parse(kospi, kosdaq = false)
+        assertEquals(listOf("005930" to "삼성전자", "0233A0" to "ACE 테스트 ETF"), a.map { it.code to it.name })
+        assertEquals("KOSPI", a.first().exchange)
+        val b = KisMaster.parse(line("117730", "KR7117730002", "티로보틱스", "ST", 222), kosdaq = true)
+        assertEquals("티로보틱스", b.single().name)
+        assertEquals("삼성전자", KrNames.of("005930"))
+    }
+
+    @Test
+    fun safeTensorsReadsFloats() {
+        val header = """{"__metadata__":{"format":"pt"},"a.weight":{"dtype":"F32","shape":[2,2],"data_offsets":[0,16]},"b":{"dtype":"F32","shape":[1],"data_offsets":[16,20]}}"""
+        val hb = header.toByteArray()
+        val buf = java.nio.ByteBuffer.allocate(8 + hb.size + 20).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        buf.putLong(hb.size.toLong()); buf.put(hb)
+        listOf(1f, 2f, 3f, 4f, 5.5f).forEach { buf.putFloat(it) }
+        val file = java.io.File.createTempFile("stt", ".safetensors").apply { writeBytes(buf.array()); deleteOnExit() }
+        val st = SafeTensors.open(file)
+        assertEquals(listOf(1f, 2f, 3f, 4f), st.floats("a.weight").toList())
+        assertEquals(listOf(2, 2), st.shape("a.weight").toList())
+        assertEquals(5.5f, st.floats("b").single())
+        assertTrue(st.has("b") && !st.has("c"))
+        assertFailsWith<DataException> { st.floats("c") }
+    }
+
+    @Test
+    fun deeperHistoryIsFetchedOnceWhenAskedForMore() {
+        val day = { d: Int -> val date = LocalDate.of(2026, 1, 1).plusDays(d.toLong()); """{"market":"KRW-BTC","candle_date_time_utc":"${date}T00:00:00","candle_date_time_kst":"${date}T09:00:00","opening_price":1.0,"high_price":2.0,"low_price":0.5,"trade_price":${d + 1}.0,"candle_acc_trade_volume":1.0}""" }
+        val candles = "[" + (99 downTo 0).joinToString(",") { day(it) } + "]"
+        val http = FakeHttp(listOf("/v1/candles/days" to candles, "/v1/market/all" to "[]", "/v1/ticker" to "[]"))
+        val md = MarketData(DataKeys(), MemoryCache(), http = http, now = { LocalDateTime.of(2026, 4, 11, 15, 0) })
+        val btc = Asset(Market.CRYPTO, "KRW-BTC", "비트코인", "UPBIT")
+        md.daily(btc, bars = 60, live = false)
+        val first = http.calls.count { it.contains("/candles/") }
+        md.daily(btc, bars = 400, live = false)   // 더 길게 달라고 하면 한 번 더 받는다
+        val second = http.calls.count { it.contains("/candles/") }
+        assertTrue(second > first, "더 긴 기간을 다시 받지 않았습니다")
+        md.daily(btc, bars = 400, live = false)   // 상장 기간이 짧아 400개가 안 돼도 또 받지는 않는다
+        assertEquals(second, http.calls.count { it.contains("/candles/") })
+    }
+
+    @Test
     fun candleCodecRoundTrip() {
         val c = listOf(Candle(1, 1.5, 2.0, 1.0, 1.75, 100.0, 175.0), Candle(2, 1.0, 1.0, 1.0, 1.0, 0.0))
         assertEquals(c, CandleCodec.decode(CandleCodec.encode(c)))
