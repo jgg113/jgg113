@@ -58,6 +58,17 @@ android {
     lint {
         checkReleaseBuilds = false
     }
+
+    // 화면 스모크 테스트(Robolectric)로 스크린샷을 찍는다: ./gradlew :app:testDebugUnitTest -PscreenTests
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.enabled = project.hasProperty("screenTests")
+            it.systemProperty("robolectric.graphicsMode", "NATIVE")
+            it.systemProperty("screenshots.dir", rootProject.layout.buildDirectory.dir("screenshots").get().asFile.absolutePath)
+            it.maxHeapSize = "2g"
+        }
+    }
 }
 
 kotlin {
@@ -78,4 +89,12 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.core)
     implementation(libs.androidx.work.runtime.ktx)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(platform(libs.androidx.compose.bom))
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

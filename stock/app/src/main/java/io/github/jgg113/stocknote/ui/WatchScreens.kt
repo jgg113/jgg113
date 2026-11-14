@@ -123,7 +123,7 @@ fun WatchScreen(vm: AppViewModel) {
             TextButton(onClick = { editing = !editing }) { Text(if (editing) "완료" else "편집") }
         }
         ScrollableTabRow(selectedTabIndex = lists.indexOf(list).coerceAtLeast(0), edgePadding = 12.dp) {
-            lists.forEachIndexed { i, w -> Tab(selected = w.id == list.id, onClick = { selected = i }, text = { Text("${w.name} ${w.assets.size}") }) }
+            lists.forEachIndexed { i, w -> Tab(selected = w.id == list.id, onClick = { selected = i }, text = { Text("${w.name} (${w.assets.size})") }) }
             Tab(selected = false, onClick = { name = ""; dialog = "new" }, text = { Text("+ 목록") })
         }
         if (editing) Row(Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {

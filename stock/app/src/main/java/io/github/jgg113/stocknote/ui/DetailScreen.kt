@@ -109,11 +109,10 @@ fun DetailScreen(vm: AppViewModel) {
                 Modifier.padding(horizontal = 16.dp),
             )
         }
-        ScrollableTabRow(selectedTabIndex = tab.ordinal, edgePadding = 8.dp) {
-            DetailTab.entries.forEach { t ->
-                if (t == DetailTab.FINANCE && asset.market != Market.KR) return@forEach
-                Tab(selected = tab == t, onClick = { tab = t }, text = { Text(t.label) })
-            }
+        // 재무 탭은 국내 종목에만 있다. 선택 위치는 보이는 탭 기준으로 센다.
+        val tabs = DetailTab.entries.filter { it != DetailTab.FINANCE || asset.market == Market.KR }
+        ScrollableTabRow(selectedTabIndex = tabs.indexOf(tab).coerceAtLeast(0), edgePadding = 8.dp) {
+            tabs.forEach { t -> Tab(selected = tab == t, onClick = { tab = t }, text = { Text(t.label) }) }
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             if (d.loading) Loading()
@@ -264,8 +263,9 @@ private fun StrategyRow(r: BacktestResult, selected: Boolean, onClick: () -> Uni
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(r.strategy.name, fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold)
                 Spacer(Modifier.width(6.dp))
+                val last = r.lastSignal
                 when {
-                    r.signalOnLastBar && r.lastSignal != null -> Pill("오늘 ${r.lastSignal.label}", if (r.lastSignal == io.github.jgg113.stocknote.core.Signal.BUY) PriceColors.up else PriceColors.down)
+                    r.signalOnLastBar && last != null -> Pill("오늘 ${last.label}", if (last == io.github.jgg113.stocknote.core.Signal.BUY) PriceColors.up else PriceColors.down)
                     r.holding -> Pill("보유 중", PriceColors.up)
                 }
             }
@@ -422,7 +422,10 @@ private fun InfoTab(vm: AppViewModel) {
         var question by rememberSaveable { mutableStateOf("") }
         OutlinedTextField(question, { question = it }, label = { Text("예) 지금 분할 매수해도 될까? 위험 요소는?") }, modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp))
         Spacer(Modifier.height(6.dp))
-        Button(onClick = { if (question.isNotBlank()) vm.askAi(StockPrompt.Mode.QUESTION, question) { p, text -> handoffToAi(context, p, text) } }) { Text("질문하기 (${vm.store.aiProvider.label})") }
+        Button(onClick = { if (question.isNotBlank()) vm.askAi(StockPrompt.Mode.QUESTION, question) { p, text -> handoffToAi(context, p, text) } }) {
+            val p = vm.store.aiProvider
+            Text(if (p == io.github.jgg113.stocknote.core.AiProvider.NONE) "질문하기" else "질문하기 (${p.label})")
+        }
         SmallLabel("앱이 계산한 시세·예측·전략 신호·재무·뉴스 제목을 함께 보냅니다.")
         AiResult(vm)
     }
@@ -440,7 +443,7 @@ private fun InfoTab(vm: AppViewModel) {
 private fun AiBox(vm: AppViewModel, mode: StockPrompt.Mode, label: String, context: android.content.Context) {
     SectionCard("AI 해설") {
         val provider = vm.store.aiProvider
-        Button(onClick = { vm.askAi(mode) { p, text -> handoffToAi(context, p, text) } }) { Text("$label (${provider.label})") }
+        Button(onClick = { vm.askAi(mode) { p, text -> handoffToAi(context, p, text) } }) { Text(if (provider == io.github.jgg113.stocknote.core.AiProvider.NONE) label else "$label (${provider.label})") }
         if (provider.isAppHandoff) SmallLabel("질문이 ${provider.label.removeSuffix("으로 넘기기")}으로 넘어가고 클립보드에도 복사됩니다.")
         AiResult(vm)
     }
@@ -476,11 +479,11 @@ private fun OrderDialog(vm: AppViewModel, asset: Asset, buy: Boolean, onDismiss:
                 NumberField(if (account.type == AccountType.MANUAL && isBuy) "평균 단가" else "가격", price, { price = it })
                 NumberField("수량", qty, { qty = it })
                 if (account.type == AccountType.PAPER) {
-                    SmallLabel("현금 ${Fmt.priceWithUnit(account.cash(asset.market.currency), asset.market.currency)}" + if (isBuy) " · 최대 ${Fmt.number(maxQty)}" else "")
+                    SmallLabel("현금 ${Fmt.priceWithUnit(account.cash(asset.market.currency), asset.market.currency)}" + if (isBuy) " · 최대 ${Fmt.quantity(maxQty, asset.market)}" else "")
                     if (isBuy) TextButton(onClick = { qty = if (asset.market == Market.CRYPTO) "%.8f".format(maxQty) else maxQty.toLong().toString() }) { Text("최대") }
                 }
                 holding?.let { h ->
-                    SmallLabel("보유 ${Fmt.number(h.quantity)} · 평균 ${Fmt.price(h.avgPrice, asset.market.currency)}")
+                    SmallLabel("보유 ${Fmt.quantity(h.quantity, asset.market)} · 평균 ${Fmt.price(h.avgPrice, asset.market.currency)}")
                     if (!isBuy) TextButton(onClick = { qty = if (asset.market == Market.CRYPTO) h.quantity.toString() else h.quantity.toLong().toString() }) { Text("전부") }
                 }
                 if (account.type == AccountType.PAPER) SmallLabel("모의투자는 가상 돈으로 지금 시세에 바로 체결됩니다. 실제 주문은 나가지 않습니다.")

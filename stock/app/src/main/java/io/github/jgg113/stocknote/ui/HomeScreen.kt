@@ -84,7 +84,7 @@ fun HomeScreen(vm: AppViewModel) {
                 }
                 val rows = h.featured[featureTab].orEmpty()
                 if (rows.isEmpty()) SmallLabel("자료가 없습니다.")
-                rows.forEach { r -> QuoteRow(r.quote.asset, r.quote, note = r.note) { vm.openAsset(r.quote.asset) } }
+                rows.forEach { r -> QuoteRow(r.quote.asset, r.quote, note = r.note.takeIf { featureTab == FeatureKind.VALUE }) { vm.openAsset(r.quote.asset) } }
             }
         }
 

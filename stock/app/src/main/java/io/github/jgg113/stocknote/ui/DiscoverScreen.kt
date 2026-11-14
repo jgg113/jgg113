@@ -74,16 +74,16 @@ private fun SignalsTab(vm: AppViewModel) {
     var pickStrategies by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            MarketChips(s.market, { vm.setSignals(s.copy(market = it, result = null)) }, Modifier.padding(top = 8.dp))
+            MarketChips(s.market, { vm.updateSignals(s.copy(market = it, result = null)) }, Modifier.padding(top = 8.dp))
             SectionCard("조건") {
                 Text("대상: " + when (s.market) {
                     Market.KR -> "시가총액 상위 ${s.size}종목"
                     Market.US -> "해외 기본 목록 ${s.size}종목"
                     Market.CRYPTO -> "거래대금 상위 ${s.size}개 코인"
                 } + if (s.includeWatch) " + 관심종목" else "")
-                ChipRow(listOf(20, 50, 100, 200), { it == s.size }, { "$it" }, Modifier.padding(vertical = 4.dp)) { vm.setSignals(s.copy(size = it)) }
+                ChipRow(listOf(20, 50, 100, 200), { it == s.size }, { "$it" }, Modifier.padding(vertical = 4.dp)) { vm.updateSignals(s.copy(size = it)) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(s.includeWatch, { vm.setSignals(s.copy(includeWatch = it)) })
+                    Checkbox(s.includeWatch, { vm.updateSignals(s.copy(includeWatch = it)) })
                     Text("관심종목도 함께 보기")
                 }
                 Text("전략 ${s.strategyIds.size}개: " + s.strategyIds.mapNotNull { Strategies.find(it)?.name }.take(4).joinToString(", ") + if (s.strategyIds.size > 4) " …" else "", style = MaterialTheme.typography.bodySmall)
@@ -116,7 +116,7 @@ private fun SignalsTab(vm: AppViewModel) {
                         SmallLabel("파랑: 전략대로 사고판 누적 수익률 · 회색: 같은 종목을 나눠 들고만 있었을 때")
                     }
                     sorted.forEach { p ->
-                        Row(Modifier.fillMaxWidth().clickable { vm.setSignals(s.copy(selectedPortfolio = p.strategy.id)) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().clickable { vm.updateSignals(s.copy(selectedPortfolio = p.strategy.id)) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(p.strategy.name, fontWeight = if (p.strategy.id == sel?.strategy?.id) FontWeight.Bold else FontWeight.Normal)
                                 SmallLabel("거래 ${p.trades}회 · 승률 ${Fmt.decimal(p.winRatePct)}% · 보유만 ${Fmt.signedRate(p.benchmarkReturnPct)}")
@@ -145,7 +145,7 @@ private fun SignalsTab(vm: AppViewModel) {
             item { SmallLabel("과거 성과는 미래 수익을 보장하지 않습니다. 신호는 종가 기준이며 다음 거래일 시가 매수를 가정합니다.", Modifier.padding(16.dp)) }
         }
     }
-    if (pickStrategies) StrategyPicker(s.strategyIds, onDismiss = { pickStrategies = false }) { vm.setSignals(s.copy(strategyIds = it, result = null)) }
+    if (pickStrategies) StrategyPicker(s.strategyIds, onDismiss = { pickStrategies = false }) { vm.updateSignals(s.copy(strategyIds = it, result = null)) }
 }
 
 @Composable
@@ -198,7 +198,7 @@ private fun FeaturedTab(vm: AppViewModel) {
         f.error?.let { ErrorNotice(it) { vm.loadFeatured() } }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
             items(f.rows, key = { it.quote.asset.key }) { r ->
-                QuoteRow(r.quote.asset, r.quote, note = r.note) { vm.openAsset(r.quote.asset) }
+                QuoteRow(r.quote.asset, r.quote, note = r.note.takeUnless { f.kind == FeatureKind.GAINERS || f.kind == FeatureKind.LOSERS || f.kind == FeatureKind.LIMIT_UP }) { vm.openAsset(r.quote.asset) }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
             if (!f.loading && f.rows.isEmpty() && f.error == null) item { SmallLabel("해당 종목이 없습니다.", Modifier.padding(12.dp)) }
@@ -293,12 +293,12 @@ fun ThemeDetailScreen(vm: AppViewModel, theme0: Theme) {
 private fun ScreenerTab(vm: AppViewModel) {
     val s = vm.screener
     val f = s.filter
-    fun set(nf: ScreenerFilter) = vm.setScreener(s.copy(filter = nf))
+    fun set(nf: ScreenerFilter) = vm.updateScreener(s.copy(filter = nf))
     fun num(v: Double?) = v?.let { if (it % 1.0 == 0.0) it.toLong().toString() else it.toString() }.orEmpty()
     val unit = if (s.market == Market.US) "백만$" else "억원"
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            MarketChips(s.market, { vm.setScreener(s.copy(market = it, rows = null, filter = f.copy(exchanges = emptySet()))) }, Modifier.padding(top = 8.dp))
+            MarketChips(s.market, { vm.updateScreener(s.copy(market = it, rows = null, filter = f.copy(exchanges = emptySet()))) }, Modifier.padding(top = 8.dp))
             SectionCard("시세 조건") {
                 if (s.market == Market.KR) {
                     ChipRow(listOf("KOSPI", "KOSDAQ", "KONEX"), { it in f.exchanges }, { it }) { e -> set(f.copy(exchanges = if (e in f.exchanges) f.exchanges - e else f.exchanges + e)) }
@@ -349,7 +349,7 @@ private fun ScreenerTab(vm: AppViewModel) {
             ChipRow(ScreenerSort.entries, { it == f.sort }, { it.label + "순" }) { set(f.copy(sort = it)) }
             Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { vm.runScreener() }, enabled = !s.running) { Text(if (s.running) "찾는 중…" else "찾기 (조건 ${f.activeCount}개)") }
-                OutlinedButton(onClick = { vm.setScreener(s.copy(filter = ScreenerFilter(), rows = null)) }) { Text("초기화") }
+                OutlinedButton(onClick = { vm.updateScreener(s.copy(filter = ScreenerFilter(), rows = null)) }) { Text("초기화") }
             }
         }
         if (s.running) item { Loading("일봉 받는 중", s.progress) }

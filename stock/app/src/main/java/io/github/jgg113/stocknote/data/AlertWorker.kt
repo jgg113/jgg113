@@ -74,11 +74,12 @@ class AlertWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                 val candles = runCatching { data.daily(s.asset, 400) }.getOrNull() ?: return@map s
                 val r = Backtester.run(strategy, PriceData(candles), BacktestConfig(fees.roundTripPct(s.asset.market)))
                 val idx = r.lastSignalIndex
-                if (idx < 0 || r.lastSignal == null) return@map s
+                val signal = r.lastSignal ?: return@map s
+                if (idx < 0) return@map s
                 val t = candles[idx].time
                 if (t > s.lastSignalTime && idx >= candles.size - 2) {
                     if (s.lastSignalTime > 0 || idx == candles.size - 1) {
-                        messages += "${s.asset.name} ${r.lastSignal.label} 신호" to "${strategy.name} · ${Fmt.date(t)} 종가 ${Fmt.priceWithUnit(candles[idx].close, s.asset.market.currency)}"
+                        messages += "${s.asset.name} ${signal.label} 신호" to "${strategy.name} · ${Fmt.date(t)} 종가 ${Fmt.priceWithUnit(candles[idx].close, s.asset.market.currency)}"
                     }
                     s.copy(lastSignalTime = t)
                 } else if (s.lastSignalTime == 0L) s.copy(lastSignalTime = t) else s

@@ -72,7 +72,7 @@ private fun AccountsTab(vm: AppViewModel) {
     val v = PortfolioValuation.of(account, vm.accountPrices, fx)
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            ChipRow(vm.accounts, { it.id == account.id }, { "${it.name} (${it.type.label})" }, Modifier.padding(top = 8.dp)) { selectedId = it.id }
+            ChipRow(vm.accounts, { it.id == account.id }, { if (it.name == it.type.label) it.name else "${it.name} (${it.type.label})" }, Modifier.padding(top = 8.dp)) { selectedId = it.id }
             Row(Modifier.padding(horizontal = 8.dp)) {
                 TextButton(onClick = { dialog = "newPaper" }) { Text("+ 모의계좌") }
                 TextButton(onClick = { dialog = "newManual" }) { Text("+ 보유목록") }
@@ -116,7 +116,7 @@ private fun AccountsTab(vm: AppViewModel) {
         items(v.rows, key = { it.holding.asset.key }) { r ->
             val cur = r.currency
             Column(Modifier.padding(horizontal = 16.dp)) {
-                QuoteRow(r.holding.asset, null, note = "${Fmt.number(r.holding.quantity)}${if (r.holding.asset.market == io.github.jgg113.stocknote.core.Market.CRYPTO) "개" else "주"} · 평균 ${Fmt.price(r.holding.avgPrice, cur)}", trailing = {
+                QuoteRow(r.holding.asset, null, note = "${Fmt.quantity(r.holding.quantity, r.holding.asset.market)}${if (r.holding.asset.market == io.github.jgg113.stocknote.core.Market.CRYPTO) "개" else "주"} · 평균 ${Fmt.price(r.holding.avgPrice, cur)}", trailing = {
                     Column(horizontalAlignment = Alignment.End) {
                         Text(Fmt.priceWithUnit(r.value, cur), fontWeight = FontWeight.SemiBold)
                         Text("${Fmt.big(r.pnl, cur)} (${Fmt.signedRate(r.pnlPct)})", color = PriceColors.color(r.pnl), style = MaterialTheme.typography.bodySmall)
@@ -131,7 +131,7 @@ private fun AccountsTab(vm: AppViewModel) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                     Text(Fmt.dateTime(t.time).substring(2), style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(96.dp))
                     Text("${t.asset.name} ${t.side.label}", style = MaterialTheme.typography.bodySmall, color = if (t.side == Signal.BUY) PriceColors.up else PriceColors.down, modifier = Modifier.weight(1f))
-                    Text("${Fmt.number(t.quantity)} × ${Fmt.price(t.price, t.asset.market.currency)}", style = MaterialTheme.typography.bodySmall)
+                    Text("${Fmt.quantity(t.quantity, t.asset.market)} × ${Fmt.price(t.price, t.asset.market.currency)}", style = MaterialTheme.typography.bodySmall)
                     if (t.side == Signal.SELL) Text("  ${Fmt.big(t.realized, t.asset.market.currency)}", color = PriceColors.color(t.realized), style = MaterialTheme.typography.bodySmall)
                 }
             }

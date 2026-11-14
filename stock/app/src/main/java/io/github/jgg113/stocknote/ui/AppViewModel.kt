@@ -21,6 +21,7 @@ import io.github.jgg113.stocknote.core.CandleAggregator
 import io.github.jgg113.stocknote.core.ChartGame
 import io.github.jgg113.stocknote.core.Currency
 import io.github.jgg113.stocknote.core.DataKeys
+import io.github.jgg113.stocknote.core.epochKst
 import io.github.jgg113.stocknote.core.FeatureKind
 import io.github.jgg113.stocknote.core.FeaturedRow
 import io.github.jgg113.stocknote.core.Financials
@@ -246,7 +247,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         store.indicators = list
     }
 
-    fun setAlertSettings(s: AlertSettings) {
+    fun updateAlertSettings(s: AlertSettings) {
         alertSettings = s
         store.alertSettings = s
         AlertWorker.schedule(getApplication(), s)
@@ -558,12 +559,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun removeScanAlert(a: ScanAlert) { scanAlerts = scanAlerts - a; store.scanAlerts = scanAlerts }
 
     private fun ensureAlertsOn() {
-        if (!alertSettings.enabled) setAlertSettings(alertSettings.copy(enabled = true))
+        if (!alertSettings.enabled) updateAlertSettings(alertSettings.copy(enabled = true))
     }
 
     // ───────── 매매신호 ─────────
 
-    fun setSignals(s: SignalsState) {
+    fun updateSignals(s: SignalsState) {
         signals = s
         store.signalStrategies = s.strategyIds.toList()
     }
@@ -618,7 +619,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ───────── 종목필터 ─────────
 
-    fun setScreener(s: ScreenerState) {
+    fun updateScreener(s: ScreenerState) {
         screener = s
         store.screener = s.filter
     }
@@ -727,7 +728,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val next = if (buy) PaperBroker.buy(acc, asset, qty, price, store.fees, time) else PaperBroker.sell(acc, asset, qty, price, store.fees, time)
             saveAccounts(accounts.map { if (it.id == accountId) next else it })
             accountPrices = accountPrices + (asset.key to price)
-            message(if (acc.type == AccountType.MANUAL) "보유 종목을 고쳤습니다." else "${asset.name} ${PaperBroker.normalizeQty(asset.market, qty).let { io.github.jgg113.stocknote.core.Fmt.number(it) }} ${if (buy) "매수" else "매도"} 완료")
+            message(if (acc.type == AccountType.MANUAL) "보유 종목을 고쳤습니다." else "${asset.name} ${io.github.jgg113.stocknote.core.Fmt.quantity(PaperBroker.normalizeQty(asset.market, qty), asset.market)} ${if (buy) "매수" else "매도"} 완료")
             true
         } catch (e: TradeException) {
             message(err(e)); false

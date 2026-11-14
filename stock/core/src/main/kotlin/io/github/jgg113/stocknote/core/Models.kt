@@ -176,6 +176,11 @@ object Fmt {
 
     fun number(value: Double): String = if (value.isNaN()) "-" else krw.format(value)
 
+    private val qty8 = java.text.DecimalFormat("#,##0.########")
+
+    /** 수량: 코인은 소수 여덟째 자리까지, 주식은 정수 */
+    fun quantity(value: Double, market: Market): String = if (market == Market.CRYPTO) qty8.format(value) else krw.format(value)
+
     fun decimal(value: Double): String = if (value.isNaN()) "-" else dec2.format(value)
 
     /** 큰 금액을 조·억·만 단위로 (원화) 또는 B/M (달러) */

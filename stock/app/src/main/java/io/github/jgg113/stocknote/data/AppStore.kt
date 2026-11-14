@@ -18,6 +18,7 @@ import io.github.jgg113.stocknote.core.Theme
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.io.File
 
@@ -123,12 +124,12 @@ class AppStore(context: Context) {
         set(value) = save("screener", ScreenerFilter.serializer(), value)
 
     var recentSearches: List<String>
-        get() = load("recent_searches", ListSerializer(kotlinx.serialization.builtins.serializer<String>()), emptyList())
-        set(value) = save("recent_searches", ListSerializer(kotlinx.serialization.builtins.serializer<String>()), value.take(12))
+        get() = load("recent_searches", ListSerializer(String.serializer()), emptyList())
+        set(value) = save("recent_searches", ListSerializer(String.serializer()), value.take(12))
 
     var signalStrategies: List<String>
-        get() = load("signal_strategies", ListSerializer(kotlinx.serialization.builtins.serializer<String>()), emptyList())
-        set(value) = save("signal_strategies", ListSerializer(kotlinx.serialization.builtins.serializer<String>()), value)
+        get() = load("signal_strategies", ListSerializer(String.serializer()), emptyList())
+        set(value) = save("signal_strategies", ListSerializer(String.serializer()), value)
 
     var homeMarket: Market
         get() = prefs.getString("home_market", null)?.let { n -> Market.entries.firstOrNull { it.name == n } } ?: Market.KR

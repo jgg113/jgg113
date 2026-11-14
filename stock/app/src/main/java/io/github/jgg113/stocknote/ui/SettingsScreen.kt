@@ -114,10 +114,10 @@ fun SettingsScreen(vm: AppViewModel) {
             val a = vm.alertSettings
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("가격·신호 알림 켜기", modifier = Modifier.weight(1f))
-                Switch(a.enabled, { vm.setAlertSettings(a.copy(enabled = it)) })
+                Switch(a.enabled, { vm.updateAlertSettings(a.copy(enabled = it)) })
             }
             Text("확인 간격", style = MaterialTheme.typography.bodySmall)
-            ChipRow(listOf(15, 30, 60, 180), { it == a.intervalMinutes }, { if (it < 60) "${it}분" else "${it / 60}시간" }) { vm.setAlertSettings(a.copy(intervalMinutes = it)) }
+            ChipRow(listOf(15, 30, 60, 180), { it == a.intervalMinutes }, { if (it < 60) "${it}분" else "${it / 60}시간" }) { vm.updateAlertSettings(a.copy(intervalMinutes = it)) }
             SmallLabel("안드로이드는 15분보다 자주 확인할 수 없고, 배터리 절약 중에는 늦어질 수 있습니다. 가격 알림 ${vm.priceAlerts.size}개 · 종목 신호 알림 ${vm.signalAlerts.size}개 · 매매신호 알림 ${vm.scanAlerts.size}개")
             vm.scanAlerts.forEach { s ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
