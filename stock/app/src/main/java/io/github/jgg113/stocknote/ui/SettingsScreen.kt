@@ -1,5 +1,7 @@
 package io.github.jgg113.stocknote.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -45,7 +47,19 @@ import io.github.jgg113.stocknote.ui.theme.PriceColors
 @Composable
 fun SettingsScreen(vm: AppViewModel) {
     val context = LocalContext.current
-    var k by remember { mutableStateOf(vm.keys) }
+    var k by remember(vm.keys) { mutableStateOf(vm.keys) }
+    val saveBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) {
+            val ok = runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(vm.exportBackup().toByteArray()) } != null }.getOrDefault(false)
+            vm.message(if (ok) "백업 파일을 저장했습니다." else "백업 파일을 저장하지 못했습니다.")
+        }
+    }
+    val openBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val text = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } }.getOrNull()
+            if (text == null) vm.message("백업 파일을 열지 못했습니다.") else vm.importBackup(text)
+        }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text("설정", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp))
 
@@ -152,6 +166,25 @@ fun SettingsScreen(vm: AppViewModel) {
             SmallLabel("증권사·이벤트에 따라 다릅니다. 국내 거래세는 시장과 연도에 따라 바뀌니 맞게 고치세요.")
         }
 
+        SectionCard("백업·복원") {
+            Text("키·관심종목·내 테마·모의계좌·보유 종목·알림·보조지표 설정을 파일 하나로 저장했다가 되돌립니다. 앱을 지우고 다시 설치하거나 휴대폰을 바꿀 때 쓰세요.", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+                OutlinedButton(onClick = { saveBackup.launch("stocknote-backup.json") }) { Text("백업 파일 저장") }
+                OutlinedButton(onClick = { openBackup.launch(arrayOf("application/json", "text/plain", "*/*")) }) { Text("백업에서 복원") }
+            }
+            SmallLabel("백업 파일에는 넣어 둔 인증키도 그대로 들어갑니다. 다른 사람에게 보내지 마세요. 복원하면 지금 내용 위에 덮어씁니다.")
+        }
+
+        SectionCard("AI 모델 파일") {
+            val kb = vm.kronosFileBytes()
+            Text(if (vm.kronos.installed) "Kronos-mini (미리 학습된 모델) ${Fmt.decimal(kb / 1024.0 / 1024.0)}MB" else "Kronos-mini: 받지 않음", style = MaterialTheme.typography.bodyMedium)
+            SmallLabel("종목 화면 → AI 예측 → [단기]에서 내려받고 실행합니다. 다른 AI 모델은 앱 안에서 그날그날 학습하므로 파일이 없습니다.")
+            Row {
+                if (vm.kronos.installed) TextButton(onClick = { vm.deleteKronos() }) { Text("모델 파일 지우기") }
+                TextButton(onClick = { openUrl(context, io.github.jgg113.stocknote.core.KronosModel.PAGE) }) { Text("Kronos 소개") }
+            }
+        }
+
         SectionCard("저장 공간") {
             Text("저장해 둔 시세 ${Fmt.decimal(vm.cacheSize() / 1024.0 / 1024.0)}MB", style = MaterialTheme.typography.bodyMedium)
             TextButton(onClick = { vm.clearCache() }) { Text("저장한 시세 지우기") }
@@ -159,11 +192,13 @@ fun SettingsScreen(vm: AppViewModel) {
         }
 
         SectionCard("이 앱에 대해") {
+            SmallLabel("버전 ${io.github.jgg113.stocknote.BuildConfig.VERSION_NAME}")
             Text("주식노트는 공개된 무료 시세·공시 자료로 차트·지표·전략 신호·통계 예측·모의투자를 하는 개인용 분석 앱입니다.", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(4.dp))
             Text("• 실제 주문·결제·로그인 기능은 없습니다.\n• 전략 성과와 예측은 과거 자료로 계산한 참고값이며 미래 수익을 보장하지 않습니다.\n• 국내 무료 시세(공공데이터포털)는 전날 종가 기준입니다.", style = MaterialTheme.typography.bodySmall)
             HorizontalDivider(Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
             SmallLabel("자료 출처: 업비트 공개 API, 공공데이터포털(금융위원회), 한국투자증권 Open API, Twelve Data, 금융감독원 DART, Google 뉴스, ExchangeRate-API")
+            SmallLabel("AI 모델: Kronos (Shi 외, 2025, MIT 라이선스, Hugging Face NeoQuasar/Kronos-mini) — 추론 코드는 이 앱에서 직접 구현했습니다.")
         }
         Spacer(Modifier.height(40.dp))
     }

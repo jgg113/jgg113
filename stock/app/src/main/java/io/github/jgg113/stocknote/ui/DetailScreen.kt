@@ -75,7 +75,7 @@ fun DetailScreen(vm: AppViewModel) {
         val live = asset.market == Market.CRYPTO || (asset.market == Market.KR && vm.keys.hasKis) || (asset.market == Market.US && vm.keys.hasKis)
         if (!live) return@LaunchedEffect
         while (true) {
-            delay(if (asset.market == Market.CRYPTO) 3_000 else 5_000)
+            delay(if (asset.market == Market.CRYPTO) 3_000 else if (io.github.jgg113.stocknote.core.MarketClock.open(asset.market)) 5_000 else 60_000)
             vm.refreshQuote()
         }
     }
@@ -150,7 +150,8 @@ private fun ChartTab(vm: AppViewModel, onEditIndicators: () -> Unit) {
     ChipRow(tfs, { it == d.timeframe }, { it.label }, Modifier.padding(top = 8.dp)) { vm.setTimeframe(it) }
     d.chartError?.let { Notice(it) }
     if (d.candles.isNotEmpty()) {
-        val markers = if (showMarkers && d.timeframe == Timeframe.DAY && d.candles.size == d.daily.size) d.selected?.markers.orEmpty() else emptyList()
+        // 장중에는 오늘 봉이 하나 더 붙을 수 있다 (과거 봉의 위치는 그대로다).
+        val markers = if (showMarkers && d.timeframe == Timeframe.DAY && d.candles.size - d.daily.size in 0..1) d.selected?.markers.orEmpty() else emptyList()
         CandleChart(d.candles, vm.indicators, d.asset.market.currency, Modifier.padding(top = 6.dp), markers = markers, intraday = d.timeframe.intraday)
         Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onEditIndicators) { Text("보조지표 ${vm.indicators.size}개 편집") }

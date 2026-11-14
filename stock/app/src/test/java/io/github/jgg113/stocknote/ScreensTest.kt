@@ -91,7 +91,11 @@ class ScreensTest {
     @Test
     fun mainScreens() {
         compose.mainClock.autoAdvance = false
-        val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        // KRONOS_DIR 에 가중치 파일이 있으면 내려받은 것처럼 넣어 두고 Kronos 화면도 확인한다.
+        val kronosSrc = System.getenv("KRONOS_DIR")?.let { File(it) }?.takeIf { it.isDirectory }
+        kronosSrc?.listFiles()?.forEach { f -> f.copyTo(File(File(app.filesDir, "models").apply { mkdirs() }, f.name), overwrite = true) }
+        val vm = AppViewModel(app)
         vm.setHomeMarket(Market.CRYPTO)
         compose.setContent { StockTheme { AppRoot(vm) } }
         waitFor(60, "home") { !vm.home.loading && vm.home.featured.isNotEmpty() }
@@ -105,10 +109,25 @@ class ScreensTest {
         click("AI 예측")
         waitFor(300, "ai short") { vm.ai[AiHorizon.SHORT]?.let { it.result != null || it.error != null } == true }
         println("AI 단기: " + (vm.ai[AiHorizon.SHORT]?.error ?: vm.ai[AiHorizon.SHORT]?.result?.let { "${it.opinion.label} ${it.reliability.label}" }))
+        if (vm.kronos.installed) {
+            vm.runKronos()
+            waitFor(300, "kronos") { !vm.kronos.running && (vm.kronos.result != null || vm.kronos.error != null) }
+            println("Kronos: " + (vm.kronos.error ?: vm.kronos.result?.let { "상승확률 ${it.upProb} 예상 ${it.expectedReturn} ${it.seconds}초" }))
+            waitFor(120, "ai short again") { vm.ai[AiHorizon.SHORT]?.result != null }
+        }
         shot("03_ai_short_top")
-        swipe(); shot("03_ai_short_mid")
-        swipe(); shot("03_ai_short_models")
-        swipe(); shot("03_ai_short_patterns")
+        swipe(); shot("03_ai_short_2")
+        swipe(); shot("03_ai_short_3")
+        swipe(); shot("03_ai_short_4")
+        swipe(); shot("03_ai_short_5")
+        swipe(); shot("03_ai_short_6")
+        if (vm.kronos.installed) {
+            vm.validateKronos()
+            waitFor(600, "kronos validation") { !vm.kronos.validating }
+            println("Kronos 검증: " + (vm.kronos.error ?: vm.kronosValidation(Market.CRYPTO)?.let { "AUC ${it.auc} ±${it.se} ${it.windows}건 bundled=${it.bundled}" }))
+            waitFor(120, "ai short after validation") { vm.ai[AiHorizon.SHORT]?.result != null }
+            swipeDown(); swipe(); swipe(); shot("03_ai_short_kronos_validated")
+        }
         vm.loadAi(AiHorizon.LONG)
         waitFor(300, "ai long") { vm.ai[AiHorizon.LONG]?.let { it.result != null || it.error != null } == true }
         swipeDown(); shot("03_ai_long_top")

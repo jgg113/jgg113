@@ -3,7 +3,10 @@ package io.github.jgg113.stocknote.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -96,12 +99,32 @@ fun CandleChart(
     Box(modifier.fillMaxWidth().height(total).background(scheme.surface)) {
         Canvas(
             Modifier.fillMaxWidth().height(total)
+                // 가로로 밀면 과거를 보고, 세로로 밀면 화면이 스크롤되게 세로 드래그는 건드리지 않는다.
                 .pointerInput(slots) {
-                    detectTransformGestures { _, pan, zoom, _ ->
+                    detectHorizontalDragGestures { change, dragAmount ->
                         val barW = width / visible
-                        val minBars = (futureCount + 10).toFloat()
-                        visible = (visible / zoom).coerceIn(min(12f, slots.toFloat()).coerceAtLeast(minBars.coerceAtMost(slots.toFloat())), max(min(slots.toFloat(), 400f + futureCount), minBars.coerceAtMost(slots.toFloat())))
-                        endOffset = (endOffset + pan.x / barW).coerceIn(0f, (slots - visible).coerceAtLeast(0f))
+                        endOffset = (endOffset + dragAmount / barW).coerceIn(0f, (slots - visible).coerceAtLeast(0f))
+                        change.consume()
+                    }
+                }
+                // 두 손가락으로 벌리거나 오므리면 확대·축소한다.
+                .pointerInput(slots) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        do {
+                            val event = awaitPointerEvent()
+                            if (event.changes.count { it.pressed } >= 2) {
+                                val zoom = event.calculateZoom()
+                                if (zoom != 1f) {
+                                    val minBars = (futureCount + 10).toFloat().coerceAtMost(slots.toFloat())
+                                    val lower = max(min(12f, slots.toFloat()), minBars)
+                                    val upper = max(min(slots.toFloat(), 400f + futureCount), lower)
+                                    visible = (visible / zoom).coerceIn(lower, upper)
+                                    endOffset = endOffset.coerceIn(0f, (slots - visible).coerceAtLeast(0f))
+                                    event.changes.forEach { it.consume() }
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
                     }
                 }
                 .pointerInput(slots) {

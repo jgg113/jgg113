@@ -113,6 +113,14 @@ fun AiForecastTab(vm: AppViewModel) {
         BigRow("예상수익률", Fmt.signedRate(r.expectedReturn * 100), PriceColors.color(r.expectedReturn))
         BigRow("상승확률", "${Fmt.decimal(r.upProb * 100).removeSuffix(".00")}%", MaterialTheme.colorScheme.onSurface)
         SmallLabel("같은 기간 이 시장 종목이 오른 비율은 평소 ${Fmt.decimal(r.baseUpProb * 100)}%였습니다.")
+        if (!r.beatMarketProb.isNaN()) {
+            BigRow("시장 대비 초과 확률", "${Fmt.decimal(r.beatMarketProb * 100).removeSuffix(".00")}%", MaterialTheme.colorScheme.onSurface)
+            val relZ = if (r.relSe > 0 && !r.relAuc.isNaN()) (r.relAuc - 0.5) / r.relSe else 0.0
+            SmallLabel(
+                "같은 시장 대표 종목들의 가운데 수익률보다 잘할 확률입니다 (검증 AUC ${Fmt.decimal(r.relAuc)} ±${Fmt.decimal(r.relSe)}" +
+                    (if (relZ >= 2) ", 우연보다 뚜렷이 나음)." else if (relZ >= 1) ", 약한 우위)." else ", 우연과 구별 안 됨 — 참고만 하세요)."),
+            )
+        }
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("검증 신뢰도 ", style = MaterialTheme.typography.bodyMedium)
@@ -137,6 +145,8 @@ fun AiForecastTab(vm: AppViewModel) {
         SmallLabel("목표1·목표2는 예상 수익률에 이 종목의 같은 기간 수익률 분포(상위 30%·10%)를 더한 값, 손절가는 하위 20% 또는 변동폭(ATR)의 1.5배 중 더 낮은 값입니다.")
     }
 
+    if (h == AiHorizon.SHORT) KronosCard(vm, r) else Notice("미리 학습된 Kronos 모델은 앞으로 20일(단기)만 예측합니다. [단기]를 고르면 볼 수 있습니다.")
+
     SectionCard("모델별 예측과 검증 성적") {
         Row(Modifier.fillMaxWidth()) {
             SmallLabel("모델", Modifier.weight(1.4f)); SmallLabel("상승확률", Modifier.weight(1f)); SmallLabel("검증 AUC", Modifier.weight(1.2f)); SmallLabel("가중치", Modifier.weight(0.8f))
@@ -144,8 +154,8 @@ fun AiForecastTab(vm: AppViewModel) {
         r.models.forEach { m -> ModelRow(m) }
         Spacer(Modifier.height(6.dp))
         SmallLabel(
-            "검증: 시간 순서대로 앞부분으로 학습하고 그 뒤 기간으로 두 번 시험했습니다 (검증 ${Fmt.number(r.validSamples.toDouble())}건, 정답 기간이 겹치지 않게 세면 ${r.effectiveSamples}건). " +
-                "AUC 0.5 는 동전 던지기, 0.55 면 작지만 쓸 만한 우위입니다. 우연 범위(±)를 뺀 실력만큼만 가중치를 줍니다.",
+            "검증: 시간 순서대로 앞부분으로 학습하고 그 뒤 기간으로 두 번 시험했습니다 (검증 ${Fmt.number(r.validSamples.toDouble())}건, 서로 겹치지 않는 ${r.horizon.period} 구간으로는 ${r.effectiveSamples}개). " +
+                "AUC 0.5 는 동전 던지기, 0.55 면 작지만 쓸 만한 우위입니다. ± 는 같은 기간의 표본을 한 덩어리로 묶어 잰 통계 오차이고, 이 범위를 뺀 실력만큼만 가중치를 줍니다.",
         )
         if (r.topFeatures.isNotEmpty()) SmallLabel("많이 쓰인 특징: ${r.topFeatures.joinToString(", ")}")
     }
@@ -167,7 +177,10 @@ fun AiForecastTab(vm: AppViewModel) {
         d.aiError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         if (d.aiLoading) Loading("AI 가 답을 쓰는 중…")
     }
-    OutlinedButton(onClick = { vm.loadAi(h, force = true) }, modifier = Modifier.padding(horizontal = 12.dp)) { Text("다시 학습") }
+    Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { vm.loadAi(h, force = true) }) { Text("다시 학습") }
+        OutlinedButton(onClick = { shareText(context, aiShareText(r)) }) { Text("결과 공유") }
+    }
     SmallLabel("과거 자료로 계산한 통계 예측입니다. 미래를 보장하지 않으며 투자 판단의 책임은 본인에게 있습니다.", Modifier.padding(16.dp))
 }
 
@@ -240,13 +253,13 @@ private fun ModelRow(m: ModelReport) {
             Text(if (m.upProb.isNaN()) "-" else "${Fmt.decimal(m.upProb * 100)}%", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
             val z = if (m.aucSe > 0 && !m.auc.isNaN()) (m.auc - 0.5) / m.aucSe else 0.0
             Text(
-                if (m.auc.isNaN()) "-" else "${Fmt.decimal(m.auc)} ±${Fmt.decimal(m.aucSe)}",
+                if (m.auc.isNaN()) (if (m.pretrained) "미검증" else "-") else "${Fmt.decimal(m.auc)} ±${Fmt.decimal(m.aucSe)}",
                 color = when { z >= 2 -> Color(0xFF13A38B); z < 0 -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface },
                 modifier = Modifier.weight(1.2f), style = MaterialTheme.typography.bodyMedium,
             )
             Text("${(m.weight * 100).toInt()}%", modifier = Modifier.weight(0.8f), style = MaterialTheme.typography.bodyMedium)
         }
-        SmallLabel(m.description + if (!m.expectedReturn.isNaN()) " 예상수익률 ${Fmt.signedRate(m.expectedReturn * 100)}." else "")
+        SmallLabel((if (m.pretrained) "[미리 학습된 모델] " else "") + m.description + if (!m.expectedReturn.isNaN()) " 예상수익률 ${Fmt.signedRate(m.expectedReturn * 100)}." else "")
     }
 }
 
@@ -288,8 +301,13 @@ fun AiRankTab(vm: AppViewModel) {
                     Text("검증 신뢰도 ")
                     Pill(rel.label, reliabilityColor(rel))
                     Spacer(Modifier.width(8.dp))
-                    SmallLabel("최고 AUC ${s.models.maxOfOrNull { it.auc }?.let { Fmt.decimal(it) } ?: "-"} · 유효 검증 ${s.effectiveSamples}건")
+                    SmallLabel("최고 AUC ${s.models.filter { !it.auc.isNaN() }.maxOfOrNull { it.auc }?.let { Fmt.decimal(it) } ?: "-"} · 겹치지 않는 검증 구간 ${s.effectiveSamples}개")
                 }
+                SmallLabel(
+                    if (s.rankedByRelative) "줄 세운 기준: 같은 시장 종목들의 가운데 수익률보다 잘할 확률 (검증 AUC ${Fmt.decimal(s.relAuc)} ±${Fmt.decimal(s.relSe)})"
+                    else "줄 세운 기준: 오를 확률 + 예상 수익률" + if (!s.relAuc.isNaN()) " (시장 대비 초과 분류기는 검증 AUC ${Fmt.decimal(s.relAuc)} ±${Fmt.decimal(s.relSe)}로 약해서 쓰지 않음)" else "",
+                    Modifier.padding(horizontal = 16.dp),
+                )
             }
         }
         itemsIndexed(s.rows, key = { _, r -> r.asset.key }) { i, r ->
@@ -300,7 +318,8 @@ fun AiRankTab(vm: AppViewModel) {
                     SmallLabel("${r.asset.shortCode} · ${Fmt.price(r.price, r.asset.market.currency)}")
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    Text("상승 ${Fmt.decimal(r.upProb * 100)}%", fontWeight = FontWeight.SemiBold, color = if (r.upProb >= 0.5) PriceColors.up else PriceColors.down)
+                    if (s.rankedByRelative) Text("초과 ${Fmt.decimal(r.beatProb * 100)}%", fontWeight = FontWeight.SemiBold, color = if (r.beatProb >= 0.5) PriceColors.up else PriceColors.down)
+                    Text("상승 ${Fmt.decimal(r.upProb * 100)}%", fontWeight = if (s.rankedByRelative) FontWeight.Normal else FontWeight.SemiBold, style = if (s.rankedByRelative) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyLarge, color = if (r.upProb >= 0.5) PriceColors.up else PriceColors.down)
                     Text("예상 ${Fmt.signedRate(r.expectedReturn * 100)}", style = MaterialTheme.typography.bodySmall, color = PriceColors.color(r.expectedReturn))
                 }
             }
@@ -310,5 +329,81 @@ fun AiRankTab(vm: AppViewModel) {
         if (s.market == Market.US && !vm.keys.hasKis && s.rows.isEmpty() && !s.running) item {
             Notice("해외 종목을 여러 개 받으려면 한국투자증권 키가 좋습니다. Twelve Data 무료 키는 분당 8회 제한이 있어 종목 수가 줄어듭니다.")
         }
+    }
+}
+
+
+/** 미리 학습된 Kronos 모델: 내려받기 → 예측 → 이 시장에서 검증 */
+@Composable
+private fun KronosCard(vm: AppViewModel, r: AiForecastResult) {
+    val d = vm.detail ?: return
+    val k = vm.kronos
+    val context = LocalContext.current
+    val cur = d.asset.market.currency
+    val v = vm.kronosValidation(d.asset.market)
+    SectionCard("Kronos · 미리 학습된 모델") {
+        Text("전 세계 45개 거래소의 캔들 120억 개로 미리 학습된 금융 전용 AI 입니다 (Kronos-mini, MIT 라이선스). 과거 봉을 읽고 앞으로 20일의 봉을 직접 그려 냅니다. 휴대폰 안에서만 계산합니다.", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(6.dp))
+        when {
+            !k.installed && !k.downloading -> {
+                Button(onClick = { vm.downloadKronos() }) { Text("모델 내려받기 (약 ${k.totalBytes / 1024 / 1024}MB)") }
+                SmallLabel("Hugging Face 공식 배포 파일을 한 번만 받습니다. 와이파이를 권합니다.")
+            }
+            k.downloading -> Loading("내려받는 중", (k.downloadedBytes / 1024 / 1024).toInt() to (k.totalBytes / 1024 / 1024).toInt())
+            k.running -> Loading(k.progress.ifBlank { "예측하는 중" })
+            else -> {
+                val res = k.result?.takeIf { k.resultKey == d.asset.key }
+                if (res == null) {
+                    Button(onClick = { vm.runKronos() }) { Text("Kronos 로 20일 예측") }
+                } else {
+                    val shown = d.daily.takeLast(60)
+                    CandleChart(shown + res.candles, patternIndicators, cur, mainHeight = 200.dp, initialBars = shown.size + res.candles.size, shadeFrom = shown.size, showExtremes = false)
+                    SmallLabel("칠한 부분이 Kronos 가 그린 앞으로 20일의 봉입니다 (경로 ${res.samples.size}개의 평균).")
+                    if (v == null || v.z < 1) Text(
+                        if (v == null) "이 시장에서 아직 검증하지 않은 예측입니다. 아래 숫자는 참고만 하세요." else "이 시장 검증에서 우연보다 낫다는 것이 확인되지 않았습니다. 아래 숫자를 그대로 믿지 마세요.",
+                        color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                    BigRow("상승확률", "${Fmt.decimal(res.upProb * 100).removeSuffix(".00")}%", MaterialTheme.colorScheme.onSurface)
+                    BigRow("예상수익률", Fmt.signedRate(res.expectedReturn * 100), PriceColors.color(res.expectedReturn))
+                    InfoRow("80% 범위", "${Fmt.price(res.closeQuantile(res.steps - 1, 0.1), cur)} ~ ${Fmt.price(res.closeQuantile(res.steps - 1, 0.9), cur)}")
+                    SmallLabel("경로 ${res.samples.size}개 중 20일 뒤 종가가 지금보다 높은 비율이 상승확률입니다. 계산 ${Fmt.decimal(res.seconds)}초.")
+                    OutlinedButton(onClick = { vm.runKronos() }) { Text("다시 예측") }
+                }
+            }
+        }
+        k.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+
+        if (k.installed) {
+            HorizontalDivider(Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
+            Text("이 시장(${d.asset.market.label})에서의 검증", fontWeight = FontWeight.SemiBold)
+            if (v == null) {
+                SmallLabel("아직 검증하지 않았습니다. 검증하기 전에는 참고용으로만 보여 주고 종합 의견에 섞지 않습니다.")
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("AUC ${Fmt.decimal(v.auc)} ±${Fmt.decimal(v.se)}  ", style = MaterialTheme.typography.bodyMedium)
+                    Pill(if (v.z >= 2) "우위 있음" else if (v.z >= 1) "약한 우위" else "우위 없음", if (v.z >= 1) Color(0xFF13A38B) else MaterialTheme.colorScheme.error)
+                }
+                SmallLabel(
+                    "${if (v.bundled) "앱을 만들 때" else Fmt.date(v.date) + "에 이 휴대폰에서"} ${v.windows}건을 검증했습니다. " +
+                        "예측한 상승확률 평균 ${Fmt.decimal(v.avgUpProb * 100)}%, 실제로 오른 비율 ${Fmt.decimal(v.actualUpRate * 100)}%. " +
+                        if (v.z >= 1) "종합 의견에 가중치를 받아 들어갑니다." else "우연과 구별되지 않아 종합 의견에는 넣지 않고 참고용으로만 보여 줍니다.",
+                )
+            }
+            if (k.validating) Loading("검증하는 중", k.validateProgress)
+            else OutlinedButton(onClick = { vm.validateKronos() }) { Text(if (v == null || v.bundled) "이 시장에서 직접 검증 (1~3분)" else "다시 검증") }
+            SmallLabel("대표 12종목의 최근 약 10개월을 20일씩 끊어, 그 시점까지의 봉만 보여 주고 20일 뒤 올랐는지 맞히게 합니다. 모델이 본 적 없는 기간입니다.")
+        }
+    }
+}
+
+fun aiShareText(r: AiForecastResult): String {
+    val cur = r.asset.market.currency
+    return buildString {
+        appendLine("[주식노트 AI 예측] ${r.asset.name} (${r.asset.shortCode}) · ${r.horizon.period}")
+        appendLine("투자의견 ${r.opinion.label} (${r.score.toInt()}점) · 검증 신뢰도 ${r.reliability.label}")
+        appendLine("현재 ${Fmt.priceWithUnit(r.price, cur)} → 예상 ${Fmt.priceWithUnit(r.expectedPrice, cur)} (${Fmt.signedRate(r.expectedReturn * 100)})")
+        appendLine("상승확률 ${Fmt.decimal(r.upProb * 100)}% (평소 ${Fmt.decimal(r.baseUpProb * 100)}%)")
+        appendLine("목표1 ${Fmt.price(r.target1, cur)} · 목표2 ${Fmt.price(r.target2, cur)} · 손절 ${Fmt.price(r.stop, cur)}")
+        append("과거 자료로 계산한 통계 예측이며 미래를 보장하지 않습니다.")
     }
 }

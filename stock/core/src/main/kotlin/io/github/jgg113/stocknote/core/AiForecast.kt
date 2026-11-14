@@ -131,10 +131,9 @@ class AiEnsemble internal constructor(
     val relAuc: Double,
     val relSe: Double,
     val seconds: Double,
+    /** 검증 구간을 예측 기간 길이로 끊은 덩어리 수 (서로 겹치지 않는 기간의 수) */
+    val effectiveSamples: Int,
 ) {
-    /** 겹치지 않게 센 검증 표본 수 */
-    val effectiveSamples: Int get() = (validSamples * horizon.stride / horizon.bars).coerceAtLeast(1)
-
     /** 가장 나은 모델이 우연보다 몇 표준오차만큼 나았는지 */
     val bestZ: Double get() = reports.maxOfOrNull { it.z } ?: 0.0
 
@@ -143,9 +142,10 @@ class AiEnsemble internal constructor(
     val reliability: Reliability get() = reliabilityOf(bestZ, effectiveSamples)
 
     companion object {
-        fun reliabilityOf(z: Double, effective: Int) = when {
-            z >= 3 && effective >= 100 -> Reliability.HIGH
-            z >= 2 && effective >= 40 -> Reliability.MEDIUM
+        /** [blocks]: 서로 겹치지 않는 검증 기간의 수 */
+        fun reliabilityOf(z: Double, blocks: Int) = when {
+            z >= 3 && blocks >= 20 -> Reliability.HIGH
+            z >= 2 && blocks >= 8 -> Reliability.MEDIUM
             else -> Reliability.LOW
         }
     }
@@ -216,11 +216,6 @@ object AiForecaster {
         return Fitted(scaler, gc, gr, rf, lg, rd, nn, gru, rel)
     }
 
-    private fun aucSe(n: Double, upFrac: Double): Double {
-        val n1 = (n * upFrac).coerceAtLeast(1.0); val n2 = (n * (1 - upFrac)).coerceAtLeast(1.0)
-        return sqrt((n1 + n2 + 1) / (12 * n1 * n2))
-    }
-
     /**
      * [pool] (같은 시장 종목들의 일봉)으로 모델들을 학습한다.
      * 시간 순서로 앞으로 걸어가며 두 번 검증해(앞 60% → 다음 20%, 앞 80% → 마지막 20%) 모델마다 가중치를 정한 다음,
@@ -254,7 +249,7 @@ object AiForecaster {
         val nCls = 5
         val p = Array(nCls) { DoubleArray(valid.size) }
         val r = Array(2) { DoubleArray(valid.size) }
-        val relP = ArrayList<Double>(); val relUp = ArrayList<Boolean>()
+        val relP = ArrayList<Double>(); val relUp = ArrayList<Boolean>(); val relTime = ArrayList<Long>()
         var row = 0
         folds.forEachIndexed { k, (_, va) ->
             val f = fits[k]
@@ -263,48 +258,64 @@ object AiForecaster {
                 val pr = f.probs(x, smp.seq); val rr = f.rets(x)
                 for (m in 0 until nCls) p[m][row] = pr[m]
                 r[0][row] = rr[0]; r[1][row] = rr[1]
-                if (f.relCls != null && !smp.rel.isNaN()) { relP += f.relCls.predict(x); relUp += smp.rel > 0 }
+                if (f.relCls != null && !smp.rel.isNaN()) { relP += f.relCls.predict(x); relUp += smp.rel > 0; relTime += smp.time }
                 row++
             }
         }
         val vUp = BooleanArray(valid.size) { valid[it].ret > 0 }
         val vRet = DoubleArray(valid.size) { valid[it].ret }
         val baseUp = train.count { it.ret > 0 }.toDouble() / train.size
-        // 정답 기간이 겹치는 표본은 서로 거의 같은 정보이므로, 겹치지 않는 수로 통계 오차를 잰다.
-        val effective = (valid.size.toDouble() * h.stride / h.bars).coerceAtLeast(4.0)
-        val upFrac = vUp.count { it }.toDouble() / valid.size
-        val se = aucSe(effective, upFrac)
+        // 통계 오차: 검증 구간을 예측 기간 길이의 덩어리로 끊어 덩어리째 다시 뽑는다.
+        // 정답 기간이 겹치는 표본, 같은 날 함께 움직이는 종목들을 독립으로 세지 않기 위해서다.
+        val spacing = pool.first().second.let { c -> ((c.last().time - c.first().time).toDouble() / (c.size - 1)).coerceAtLeast(3600.0) }
+        val blockSeconds = spacing * h.bars
+        val t0v = valid.minOf { it.time }
+        fun blockOf(time: Long) = ((time - t0v) / blockSeconds).toInt()
+        val vBlock = IntArray(valid.size) { blockOf(valid[it].time) }
+        val blocks = vBlock.distinct().size
+        val bootRandom = Random(seed + 5)
+        val relBlock = relTime.map { blockOf(it) }
 
-        // 패턴 매칭 검증: 검증 구간에서 일부 시점만 골라, 그 시점 이전 자료만으로 찾아 본다.
+        // 패턴 매칭 검증: 검증 구간의 여러 시점에서, 그 시점 이전에 끝난 자료만으로 찾아 본다.
+        // 시점 간격이 예측 기간보다 짧으면 정답이 겹치므로, 통계 오차는 겹치지 않게 센 건수로 잰다.
         progress("패턴 매칭 검증")
-        val random = Random(seed + 9)
+        val eligible = pool.filter { it.second.size > AiFeatures.WARMUP + h.bars }
+        val perAsset = eligible.map { (_, c) -> c.indices.count { i -> c[i].time > cuts[0] && i + h.bars < c.size && i >= h.window } }
+        var spacingBars = max(h.stride * 2, h.bars / 4)
+        val total = perAsset.sumOf { it / spacingBars }
+        if (total > 600) spacingBars *= (total + 599) / 600
         val patternScores = ArrayList<Pair<Double, Boolean>>()
-        val checkpoints = pool.filter { it.second.size > AiFeatures.WARMUP + h.bars }.flatMap { (asset, c) ->
-            c.indices.filter { i -> c[i].time > cuts[0] && i + h.bars < c.size && i >= h.window }.let { idx -> idx.filterIndexed { k, _ -> k % max(1, idx.size / 6) == 0 } }.map { asset to it }
-        }.shuffled(random).take(60)
-        for ((asset, i) in checkpoints) {
-            val c = pool.first { it.first.key == asset.key }.second
-            val m = matches(c.subList(0, i + 1), asset, pool, h, before = c[i].time - (h.bars * 1.5 * 86400).toLong(), top = 15, step = h.stride * 2)
-            if (m.size < 5) continue
-            patternScores += m.count { it.forwardReturn > 0 }.toDouble() / m.size to (c[i + h.bars].close > c[i].close)
+        val patternBlocks = ArrayList<Int>()
+        for ((asset, c) in eligible) {
+            val idx = c.indices.filter { i -> c[i].time > cuts[0] && i + h.bars < c.size && i >= h.window }
+            for (k in idx.indices step spacingBars) {
+                val i = idx[k]
+                val m = matches(c.subList(0, i + 1), asset, pool, h, before = c[i].time - (h.bars * 1.5 * 86400).toLong(), top = 15, step = h.stride * 2)
+                if (m.size < 5) continue
+                patternScores += m.count { it.forwardReturn > 0 }.toDouble() / m.size to (c[i + h.bars].close > c[i].close)
+                patternBlocks += blockOf(c[i].time)
+            }
         }
-        val patternAuc = if (patternScores.size >= 20) Metrics.auc(patternScores.map { it.first }.toDoubleArray(), patternScores.map { it.second }.toBooleanArray()) else Double.NaN
-        val patternSe = aucSe(patternScores.size.toDouble(), upFrac)
+        val pScore = patternScores.map { it.first }.toDoubleArray(); val pUp = patternScores.map { it.second }.toBooleanArray()
+        val patternAuc = if (patternScores.size >= 20) Metrics.auc(pScore, pUp) else Double.NaN
+        val patternSe = if (patternScores.size >= 20) Metrics.blockBootstrapAucSe(pScore, pUp, patternBlocks.toIntArray(), bootRandom) else Double.NaN
 
         // 우연으로 나올 만한 만큼(표준오차 1배)은 빼고 남는 실력만 가중치로 쓴다.
-        fun edge(auc: Double, err: Double) = if (auc.isNaN()) 0.0 else max(0.0, auc - 0.5 - err)
+        fun edge(auc: Double, err: Double) = if (auc.isNaN() || err.isNaN()) 0.0 else max(0.0, auc - 0.5 - err)
         val aucs = DoubleArray(nCls) { Metrics.auc(p[it], vUp) }
+        val ses = DoubleArray(nCls) { Metrics.blockBootstrapAucSe(p[it], vUp, vBlock, bootRandom) }
         val ics = DoubleArray(2) { Metrics.rankIc(r[it], vRet) }
-        val clsEdges = DoubleArray(nCls + 1) { if (it < nCls) edge(aucs[it], se) else edge(patternAuc, patternSe) }
-        val icSe = 1 / sqrt(effective)
-        val regEdges = DoubleArray(2) { max(0.0, ics[it] - icSe) }
+        val icSes = DoubleArray(2) { Metrics.blockBootstrapIcSe(r[it], vRet, vBlock, bootRandom) }
+        val clsEdges = DoubleArray(nCls + 1) { if (it < nCls) edge(aucs[it], ses[it]) else edge(patternAuc, patternSe) }
+        val regEdges = DoubleArray(2) { max(0.0, ics[it] - icSes[it]) }
         val clsSum = clsEdges.sum(); val regSum = regEdges.sum()
         fun cw(i: Int) = if (clsSum > 0) clsEdges[i] / clsSum else 0.0
         fun rw(i: Int) = if (regSum > 0) regEdges[i] / regSum else 0.0
 
         // 시장 대비 초과수익 분류기: 같은 날 종목들끼리 비교하므로 시장 전체 방향에 덜 흔들린다.
-        val relAuc = if (relP.size >= 100) Metrics.auc(relP.toDoubleArray(), relUp.toBooleanArray()) else Double.NaN
-        val relSe = aucSe((relP.size.toDouble() * h.stride / h.bars).coerceAtLeast(4.0), 0.5)
+        val relScores = relP.toDoubleArray(); val relUps = relUp.toBooleanArray()
+        val relAuc = if (relP.size >= 100) Metrics.auc(relScores, relUps) else Double.NaN
+        val relSe = if (relP.size >= 100) Metrics.blockBootstrapAucSe(relScores, relUps, relBlock.toIntArray(), bootRandom) else Double.NaN
 
         val final = fits[2]
         val importance = final.gbdtCls.importance(AiFeatures.size)
@@ -312,16 +323,16 @@ object AiForecaster {
         fun acc(i: Int) = Metrics.accuracy(p[i], vUp)
         val nan = Double.NaN
         val reports = listOf(
-            ModelReport("gbdt", "그래디언트 부스팅", "결정트리 수십 개를 차례로 더해 오를 확률과 수익률을 맞춥니다 (LightGBM 방식).", nan, nan, aucs[0], se, acc(0), ics[0], (cw(0) + rw(0)) / 2),
-            ModelReport("forest", "랜덤 포레스트", "서로 다른 표본·특징으로 키운 깊은 트리 60개의 평균입니다. 한두 특징에 쏠리지 않아 안정적입니다.", nan, nan, aucs[1], se, acc(1), nan, cw(1)),
-            ModelReport("mlp", "신경망", "은닉층 두 개짜리 작은 신경망으로 오를 확률을 맞춥니다.", nan, nan, aucs[2], se, acc(2), nan, cw(2)),
-            ModelReport("linear", "로지스틱·릿지 회귀", "특징값의 가중합으로 오를 확률과 수익률을 맞추는 기본 모델입니다.", nan, nan, aucs[3], se, acc(3), ics[1], (cw(3) + rw(1)) / 2),
-            ModelReport("gru", "GRU 순환신경망", "최근 20일의 수익률·변동폭·거래량 흐름을 하루씩 차례로 읽는 순서 모델입니다 (LSTM 계열).", nan, nan, aucs[4], se, acc(4), nan, cw(4)),
+            ModelReport("gbdt", "그래디언트 부스팅", "결정트리 수십 개를 차례로 더해 오를 확률과 수익률을 맞춥니다 (LightGBM 방식).", nan, nan, aucs[0], ses[0], acc(0), ics[0], (cw(0) + rw(0)) / 2),
+            ModelReport("forest", "랜덤 포레스트", "서로 다른 표본·특징으로 키운 깊은 트리 60개의 평균입니다. 한두 특징에 쏠리지 않아 안정적입니다.", nan, nan, aucs[1], ses[1], acc(1), nan, cw(1)),
+            ModelReport("mlp", "신경망", "은닉층 두 개짜리 작은 신경망으로 오를 확률을 맞춥니다.", nan, nan, aucs[2], ses[2], acc(2), nan, cw(2)),
+            ModelReport("linear", "로지스틱·릿지 회귀", "특징값의 가중합으로 오를 확률과 수익률을 맞추는 기본 모델입니다.", nan, nan, aucs[3], ses[3], acc(3), ics[1], (cw(3) + rw(1)) / 2),
+            ModelReport("gru", "GRU 순환신경망", "최근 20일의 수익률·변동폭·거래량 흐름을 하루씩 차례로 읽는 순서 모델입니다 (LSTM 계열).", nan, nan, aucs[4], ses[4], acc(4), nan, cw(4)),
             ModelReport("pattern", "차트 패턴 매칭", "지금과 모양이 가장 비슷했던 과거 차트들이 그 뒤 어떻게 움직였는지 봅니다.", nan, nan, patternAuc, patternSe, nan, nan, cw(5)),
         )
         return AiEnsemble(
             h, final, reports, baseUp, train.size, valid.size, pool, topFeatures, Weights(clsEdges, regEdges), relAuc, relSe,
-            (System.nanoTime() - t0) / 1e9,
+            (System.nanoTime() - t0) / 1e9, blocks,
         )
     }
 

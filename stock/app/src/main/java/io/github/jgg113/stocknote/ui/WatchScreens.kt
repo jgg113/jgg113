@@ -112,7 +112,9 @@ fun WatchScreen(vm: AppViewModel) {
     LaunchedEffect(list.id, list.assets.size) {
         while (true) {
             vm.refreshWatch(list.id)
-            delay(if (vm.keys.hasKis || list.assets.all { it.market == Market.CRYPTO }) 5_000 else 60_000)
+            // 실시간 출처가 있고 장이 열려 있을 때만 자주 받는다.
+            val live = list.assets.any { it.market == Market.CRYPTO } || (vm.keys.hasKis && list.assets.any { io.github.jgg113.stocknote.core.MarketClock.open(it.market) })
+            delay(if (live) 5_000 else 60_000)
         }
     }
 

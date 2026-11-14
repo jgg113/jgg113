@@ -585,6 +585,54 @@ object Metrics {
         return if (da == 0.0 || db == 0.0) 0.0 else num / sqrt(da * db)
     }
 
+    /**
+     * AUC 의 통계 오차를 '기간 블록 다시 뽑기'로 잰다.
+     * 같은 기간의 표본(정답 기간이 겹치거나, 같은 날 함께 움직이는 종목들)은 한 덩어리로 묶어 통째로 뽑으므로,
+     * 표본 수가 많아 보여도 실제로 독립인 기간이 적으면 오차가 크게 나온다.
+     */
+    fun blockBootstrapAucSe(score: DoubleArray, up: BooleanArray, block: IntArray, random: Random, rounds: Int = 200): Double {
+        val ids = block.distinct()
+        if (ids.size < 3) return 0.5
+        val slot = HashMap<Int, Int>().apply { ids.forEachIndexed { i, b -> put(b, i) } }
+        val order = score.indices.sortedBy { score[it] }.toIntArray()
+        val bSlot = IntArray(score.size) { slot.getValue(block[it]) }
+        val w = IntArray(ids.size)
+        val vals = DoubleArray(rounds) {
+            java.util.Arrays.fill(w, 0)
+            repeat(ids.size) { w[random.nextInt(ids.size)]++ }
+            var negBelow = 0.0; var num = 0.0; var pos = 0.0; var neg = 0.0
+            var i = 0
+            while (i < order.size) {
+                var j = i
+                var gp = 0.0; var gn = 0.0
+                while (j < order.size && score[order[j]] == score[order[i]]) {
+                    val wt = w[bSlot[order[j]]].toDouble()
+                    if (up[order[j]]) gp += wt else gn += wt
+                    j++
+                }
+                num += gp * (negBelow + gn / 2); negBelow += gn; pos += gp; neg += gn
+                i = j
+            }
+            if (pos == 0.0 || neg == 0.0) 0.5 else num / (pos * neg)
+        }
+        val m = vals.average()
+        // 구간이 몇 개 안 되면 다시 뽑기 자체가 오차를 작게 잡으므로 바닥값을 둔다 (구간 4개면 0.125).
+        return max(sqrt(vals.sumOf { (it - m) * (it - m) } / rounds), 0.5 / ids.size)
+    }
+
+    /** 순위 상관의 통계 오차를 같은 방법(기간 블록 다시 뽑기)으로 잰다. */
+    fun blockBootstrapIcSe(a: DoubleArray, b: DoubleArray, block: IntArray, random: Random, rounds: Int = 40): Double {
+        val groups = block.indices.groupBy { block[it] }.values.map { it.toIntArray() }
+        if (groups.size < 3) return 1.0
+        val vals = DoubleArray(rounds) {
+            val idx = ArrayList<Int>(a.size)
+            repeat(groups.size) { for (i in groups[random.nextInt(groups.size)]) idx += i }
+            rankIc(DoubleArray(idx.size) { a[idx[it]] }, DoubleArray(idx.size) { b[idx[it]] })
+        }
+        val m = vals.average()
+        return sqrt(vals.sumOf { (it - m) * (it - m) } / rounds)
+    }
+
     fun accuracy(prob: DoubleArray, up: BooleanArray, threshold: Double = 0.5): Double =
         if (prob.isEmpty()) 0.0 else prob.indices.count { (prob[it] > threshold) == up[it] }.toDouble() / prob.size
 

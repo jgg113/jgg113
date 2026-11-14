@@ -60,7 +60,11 @@ fun HomeScreen(vm: AppViewModel) {
             if (sub.isNotEmpty()) SmallLabel(sub.joinToString("  ·  "), Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
         }
         if (h.loading && h.featured.isEmpty()) item { Loading() }
-        h.error?.let { e -> item { ErrorNotice(e) { vm.refreshHome() } } }
+        h.error?.let { e ->
+            item { ErrorNotice(e) { vm.refreshHome() } }
+            // 키가 없어서 못 보는 경우에는 설정으로 바로 갈 수 있게 한다.
+            if (h.market != Market.CRYPTO && e.contains("설정")) item { Notice("키는 모두 무료입니다. 코인은 키 없이 바로 볼 수 있습니다.", action = "설정 열기") { vm.tab = Tab.SETTINGS } }
+        }
         if (h.market == Market.KR && !vm.keys.hasKis && vm.keys.hasPublic) item {
             Notice("국내 시세는 공공데이터포털 자료라 전날 종가 기준입니다. 한국투자증권 앱키를 넣으면 실시간으로 바뀝니다.")
         }

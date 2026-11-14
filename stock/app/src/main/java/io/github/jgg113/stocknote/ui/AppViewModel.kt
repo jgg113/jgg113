@@ -85,6 +85,23 @@ data class AiUiState(
     val error: String? = null,
 )
 
+/** 미리 학습된 Kronos 모델의 상태 */
+data class KronosState(
+    val installed: Boolean = false,
+    val downloading: Boolean = false,
+    val downloadedBytes: Long = 0,
+    val running: Boolean = false,
+    val progress: String = "",
+    val result: io.github.jgg113.stocknote.core.KronosResult? = null,
+    /** 결과가 어느 종목 것인지 */
+    val resultKey: String? = null,
+    val validating: Boolean = false,
+    val validateProgress: Pair<Int, Int>? = null,
+    val error: String? = null,
+) {
+    val totalBytes: Long get() = io.github.jgg113.stocknote.core.KronosModel.MODEL_BYTES + io.github.jgg113.stocknote.core.KronosModel.TOKENIZER_BYTES
+}
+
 /** 발굴 → AI 순위 */
 data class AiRankState(
     val market: Market = Market.KR,
@@ -97,6 +114,10 @@ data class AiRankState(
     val models: List<io.github.jgg113.stocknote.core.ModelReport> = emptyList(),
     val effectiveSamples: Int = 0,
     val error: String? = null,
+    /** '시장 가운데보다 잘할 확률'로 줄을 세웠는지 */
+    val rankedByRelative: Boolean = false,
+    val relAuc: Double = Double.NaN,
+    val relSe: Double = Double.NaN,
 )
 
 /** 검색 화면을 고르기용으로 열 때 */
@@ -241,6 +262,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var ai by mutableStateOf<Map<io.github.jgg113.stocknote.core.AiHorizon, AiUiState>>(emptyMap()); private set
     var aiShowOnChart by mutableStateOf(true)
     var aiRank by mutableStateOf(AiRankState()); private set
+    private val kronosDir = java.io.File(app.filesDir, "models")
+    var kronos by mutableStateOf(KronosState(installed = io.github.jgg113.stocknote.core.KronosModel.installed(kronosDir))); private set
+    var kronosValidations by mutableStateOf(store.kronosValidations); private set
+    @Volatile private var kronosModel: io.github.jgg113.stocknote.core.KronosModel? = null
     /** 시장·기간별로 학습한 모델 (하루 동안 다시 쓴다) */
     private val ensembles = java.util.concurrent.ConcurrentHashMap<String, Pair<io.github.jgg113.stocknote.core.AiEnsemble, java.time.LocalDate>>()
     var searching by mutableStateOf(false); private set
@@ -557,7 +582,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val e = ensemble(asset.market, h, { buildPool(asset.market, aiPoolSize(asset.market), listOf(asset to d.daily), progress) }, progress)
                         ?: throw io.github.jgg113.stocknote.core.DataException("학습할 자료가 모자랍니다. ${h.label} 예측은 종목마다 ${io.github.jgg113.stocknote.core.AiFeatures.WARMUP + h.bars}봉 넘는 일봉이 필요합니다.")
                     progress("예측하는 중")
-                    io.github.jgg113.stocknote.core.AiForecaster.predict(e, asset, d.daily, d.quote?.price ?: d.daily.last().close)
+                    io.github.jgg113.stocknote.core.AiForecaster.predict(e, asset, d.daily, d.quote?.price ?: d.daily.last().close, kronosExternal(asset, h))
                         ?: throw io.github.jgg113.stocknote.core.DataException("이 종목의 최근 지표를 계산하지 못했습니다.")
                 }
             }
@@ -586,8 +611,170 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             aiRank = aiRank.copy(
                 running = false, progress = "", rows = rows, reliability = e?.reliability, models = e?.reports.orEmpty(),
                 effectiveSamples = e?.effectiveSamples ?: 0, error = r.exceptionOrNull()?.let(::err),
+                rankedByRelative = e != null && e.relZ >= 1 && rows.any { !it.beatProb.isNaN() }, relAuc = e?.relAuc ?: Double.NaN, relSe = e?.relSe ?: Double.NaN,
             )
         }
+    }
+
+    // ───────── Kronos (미리 학습된 모델) ─────────
+
+    /** 이 시장에서 Kronos 를 검증한 결과 (직접 검증한 것이 있으면 그것, 코인은 개발 때 검증한 값) */
+    fun kronosValidation(market: Market): io.github.jgg113.stocknote.data.KronosValidation? =
+        kronosValidations.firstOrNull { it.market == market } ?: io.github.jgg113.stocknote.data.KronosValidation.bundledCrypto.takeIf { market == Market.CRYPTO }
+
+    private fun kronosExternal(asset: Asset, h: io.github.jgg113.stocknote.core.AiHorizon): io.github.jgg113.stocknote.core.ExternalModel? {
+        if (h != io.github.jgg113.stocknote.core.AiHorizon.SHORT) return null
+        val r = kronos.result?.takeIf { kronos.resultKey == asset.key } ?: return null
+        val v = kronosValidation(asset.market)
+        return io.github.jgg113.stocknote.core.ExternalModel(
+            "kronos", "Kronos (사전학습)", "45개 거래소의 캔들 120억 개로 미리 학습된 금융 전용 모델입니다. 앞으로 20일의 봉을 직접 그려 냅니다.",
+            r.upProb, r.expectedReturn, v?.auc ?: Double.NaN, v?.se ?: Double.NaN, r.path,
+        )
+    }
+
+    private fun kronosThreads() = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+
+    private fun loadKronos(): io.github.jgg113.stocknote.core.KronosModel =
+        kronosModel ?: io.github.jgg113.stocknote.core.KronosModel.load(kronosDir).also { kronosModel = it }
+
+    fun downloadKronos() {
+        if (kronos.downloading) return
+        kronos = kronos.copy(downloading = true, downloadedBytes = 0, error = null)
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val km = io.github.jgg113.stocknote.core.KronosModel
+                    val files = listOf(
+                        Triple(km.TOKENIZER_URL, java.io.File(kronosDir, km.TOKENIZER_FILE), km.TOKENIZER_BYTES),
+                        Triple(km.MODEL_URL, java.io.File(kronosDir, km.MODEL_FILE), km.MODEL_BYTES),
+                    )
+                    var done = 0L
+                    for ((url, file, bytes) in files) {
+                        if (!(file.exists() && file.length() == bytes)) {
+                            io.github.jgg113.stocknote.data.Downloader.download(url, file, bytes) { n -> kronos = kronos.copy(downloadedBytes = done + n) }
+                        }
+                        done += bytes
+                        kronos = kronos.copy(downloadedBytes = done)
+                    }
+                    loadKronos()   // 파일이 온전한지 읽어서 확인한다
+                }
+            }
+            kronos = kronos.copy(
+                downloading = false, installed = io.github.jgg113.stocknote.core.KronosModel.installed(kronosDir) && r.isSuccess,
+                error = r.exceptionOrNull()?.let(::err),
+            )
+            if (r.isSuccess) message("Kronos 모델을 받았습니다.")
+        }
+    }
+
+    fun deleteKronos() {
+        kronosModel = null
+        kronosDir.listFiles()?.forEach { it.delete() }
+        kronos = KronosState(installed = false)
+        message("Kronos 모델 파일을 지웠습니다.")
+    }
+
+    /** 지금 종목의 앞으로 20일을 Kronos 로 예측한다. */
+    fun runKronos() {
+        val d = detail ?: return
+        if (kronos.running || !kronos.installed) return
+        if (d.daily.size < 64) { kronos = kronos.copy(error = "Kronos 예측에는 일봉이 64개 이상 필요합니다."); return }
+        val asset = d.asset
+        kronos = kronos.copy(running = true, progress = "과거 봉을 읽는 중", error = null)
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.Default) {
+                runCatching {
+                    val steps = io.github.jgg113.stocknote.core.AiHorizon.SHORT.bars
+                    loadKronos().forecast(
+                        d.daily, steps, io.github.jgg113.stocknote.core.KronosModel.futureDays(d.daily.last().time, steps, asset.market),
+                        context = 256, samples = 16, threads = kronosThreads(),
+                    ) { done, total -> kronos = kronos.copy(progress = if (done < 2) "과거 봉을 읽는 중" else "앞으로 20일을 16가지 경로로 그리는 중 ($done/$total)") }
+                }
+            }
+            kronos = kronos.copy(running = false, progress = "", result = r.getOrNull() ?: kronos.result, resultKey = if (r.isSuccess) asset.key else kronos.resultKey, error = r.exceptionOrNull()?.let(::err))
+            // 검증된 시장이면 종합 의견에 반영되도록 단기 예측을 다시 계산한다 (학습은 다시 하지 않는다).
+            if (r.isSuccess && detail?.asset?.key == asset.key && ai[io.github.jgg113.stocknote.core.AiHorizon.SHORT]?.result != null) {
+                ai = ai - io.github.jgg113.stocknote.core.AiHorizon.SHORT
+                loadAi(io.github.jgg113.stocknote.core.AiHorizon.SHORT)
+            }
+        }
+    }
+
+    /**
+     * 지금 보는 종목의 시장에서 Kronos 가 방향을 맞히는지 검증한다.
+     * 대표 종목마다 최근 약 10개월을 20일씩 끊어, 그 시점까지의 봉만 주고 20일 뒤 오를지 물어본다.
+     * (모델은 2025년에 학습이 끝났으므로 이 구간은 모델이 본 적 없는 자료다.)
+     */
+    fun validateKronos() {
+        val market = detail?.asset?.market ?: return
+        if (kronos.validating || !kronos.installed) return
+        kronos = kronos.copy(validating = true, validateProgress = 0 to 1, error = null)
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.Default) {
+                runCatching {
+                    val model = loadKronos()
+                    val pool = buildPool(market, 12, emptyList()) { }
+                    val horizon = 20
+                    val jobs = pool.flatMap { (asset, c) -> ((c.size - 1 - horizon) downTo maxOf(200, c.size - 1 - horizon * 10) step horizon).map { asset to (c to it) } }
+                    if (jobs.size < 30) throw io.github.jgg113.stocknote.core.DataException("검증할 자료가 모자랍니다. " + noDataHint(market))
+                    val done = java.util.concurrent.atomic.AtomicInteger(0)
+                    val exec = java.util.concurrent.Executors.newFixedThreadPool(kronosThreads())
+                    val rows = try {
+                        exec.invokeAll(jobs.map { (asset, pair) ->
+                            java.util.concurrent.Callable {
+                                val (c, end) = pair
+                                val window = c.subList(0, end + 1)
+                                val f = model.forecast(window, horizon, io.github.jgg113.stocknote.core.KronosModel.futureDays(window.last().time, horizon, asset.market), context = 128, samples = 8, threads = 1, seed = end.toLong())
+                                kronos = kronos.copy(validateProgress = done.incrementAndGet() to jobs.size)
+                                Triple(f.upProb, c[end + horizon].close > c[end].close, c[end].time)
+                            }
+                        }).map { it.get() }
+                    } finally { exec.shutdown() }
+                    val up = rows.map { it.second }.toBooleanArray()
+                    val prob = rows.map { it.first }.toDoubleArray()
+                    val frac = up.count { it }.toDouble() / up.size
+                    // 같은 기간의 종목들은 함께 움직이므로, 20일 구간을 한 덩어리로 묶어 통계 오차를 잰다.
+                    val t0 = rows.minOf { it.third }
+                    val block = rows.map { ((it.third - t0) / (horizon * 86_400L * if (market == Market.CRYPTO) 1.0 else 1.45)).toInt() }.toIntArray()
+                    io.github.jgg113.stocknote.data.KronosValidation(
+                        market, io.github.jgg113.stocknote.core.Metrics.auc(prob, up),
+                        io.github.jgg113.stocknote.core.Metrics.blockBootstrapAucSe(prob, up, block, kotlin.random.Random(3)),
+                        rows.size, prob.average(), frac, System.currentTimeMillis() / 1000,
+                    )
+                }
+            }
+            r.getOrNull()?.let { v ->
+                kronosValidations = kronosValidations.filterNot { it.market == v.market } + v
+                store.kronosValidations = kronosValidations
+            }
+            kronos = kronos.copy(validating = false, validateProgress = null, error = r.exceptionOrNull()?.let(::err))
+            if (r.isSuccess && ai[io.github.jgg113.stocknote.core.AiHorizon.SHORT]?.result != null && kronos.resultKey == detail?.asset?.key) {
+                ai = ai - io.github.jgg113.stocknote.core.AiHorizon.SHORT
+                loadAi(io.github.jgg113.stocknote.core.AiHorizon.SHORT)
+            }
+        }
+    }
+
+    fun kronosFileBytes(): Long = kronosDir.listFiles()?.sumOf { it.length() } ?: 0
+
+    // ───────── 백업·복원 ─────────
+
+    fun exportBackup(): String = store.exportBackup()
+
+    fun importBackup(text: String): Boolean = try {
+        store.importBackup(text)
+        keys = store.keys; _data = null
+        watchlists = store.watchlists; customThemes = store.customThemes; accounts = store.accounts; gameStats = store.gameStats
+        indicators = store.indicators; priceAlerts = store.priceAlerts; signalAlerts = store.signalAlerts; scanAlerts = store.scanAlerts
+        alertSettings = store.alertSettings
+        AlertWorker.schedule(getApplication(), alertSettings)
+        screener = screener.copy(filter = store.screener)
+        message("백업에서 복원했습니다.")
+        refreshHome()
+        true
+    } catch (e: Exception) {
+        message("백업 파일을 읽지 못했습니다: ${e.message?.take(80) ?: e.javaClass.simpleName}")
+        false
     }
 
     // ───────── 관심종목 ─────────
@@ -663,7 +850,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleScanAlert() {
         val s = signals
         val exists = scanAlerts.any { it.market == s.market }
-        val list = if (exists) scanAlerts.filterNot { it.market == s.market } else scanAlerts + ScanAlert(s.market, s.strategyIds.toList(), s.size)
+        // 지금 화면에서 실제로 쓰는 전략(고른 전략 또는 고른 기간의 전략 전부)을 그대로 알림에 쓴다.
+        val ids = if (s.useCustom && s.strategyIds.isNotEmpty()) s.strategyIds.toList() else Strategies.of(s.horizon).map { it.id }
+        val list = if (exists) scanAlerts.filterNot { it.market == s.market } else scanAlerts + ScanAlert(s.market, ids, s.size)
         scanAlerts = list
         store.scanAlerts = list
         if (!exists) ensureAlertsOn()

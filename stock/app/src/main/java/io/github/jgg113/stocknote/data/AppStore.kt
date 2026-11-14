@@ -51,6 +51,49 @@ data class ScanAlert(
 @Serializable
 data class AlertSettings(val enabled: Boolean = false, val intervalMinutes: Int = 30)
 
+/** Kronos(사전학습 모델)를 한 시장에서 검증한 결과 */
+@Serializable
+data class KronosValidation(
+    val market: Market,
+    val auc: Double,
+    val se: Double,
+    val windows: Int,
+    val avgUpProb: Double,
+    val actualUpRate: Double,
+    /** 검증한 날 (epoch 초) */
+    val date: Long,
+    /** 앱을 만들 때 미리 검증해 넣어 둔 값이면 참 */
+    val bundled: Boolean = false,
+) {
+    val z: Double get() = if (se > 0) (auc - 0.5) / se else 0.0
+
+    companion object {
+        /** 개발 중 검증: 업비트 코인 14종목, 모델 공개(2025-09) 이후 구간 559건 (20일 구간 21개로 묶어 잰 통계 오차 0.042) */
+        val bundledCrypto = KronosValidation(Market.CRYPTO, 0.518, 0.042, 559, 0.723, 0.340, 1794528000, bundled = true)
+    }
+}
+
+/** 백업 파일에 담는 것 (모두 이 휴대폰에만 있던 정보) */
+@Serializable
+data class Backup(
+    val version: Int = 1,
+    val keys: DataKeys = DataKeys(),
+    val aiProvider: String = "NONE",
+    val aiKeys: Map<String, String> = emptyMap(),
+    val fees: FeeConfig = FeeConfig(),
+    val backtest: BacktestConfig = BacktestConfig(),
+    val indicators: List<IndicatorConfig> = IndicatorConfig.defaults,
+    val watchlists: List<Watchlist> = emptyList(),
+    val customThemes: List<Theme> = emptyList(),
+    val accounts: List<Account> = emptyList(),
+    val gameStats: GameStats = GameStats(),
+    val priceAlerts: List<PriceAlert> = emptyList(),
+    val signalAlerts: List<SignalAlert> = emptyList(),
+    val scanAlerts: List<ScanAlert> = emptyList(),
+    val alertSettings: AlertSettings = AlertSettings(),
+    val screener: ScreenerFilter = ScreenerFilter(),
+)
+
 /** 설정·관심종목·계좌 등 기기에만 저장한다. */
 class AppStore(context: Context) {
     private val prefs = context.getSharedPreferences("stocknote", Context.MODE_PRIVATE)
@@ -130,6 +173,34 @@ class AppStore(context: Context) {
     var signalStrategies: List<String>
         get() = load("signal_strategies", ListSerializer(String.serializer()), emptyList())
         set(value) = save("signal_strategies", ListSerializer(String.serializer()), value)
+
+    var kronosValidations: List<KronosValidation>
+        get() = load("kronos_validations", ListSerializer(KronosValidation.serializer()), emptyList())
+        set(value) = save("kronos_validations", ListSerializer(KronosValidation.serializer()), value)
+
+    /** 설정·관심종목·계좌 등을 한 덩어리 글(JSON)로 내보낸다. */
+    fun exportBackup(): String = json.encodeToString(
+        Backup.serializer(),
+        Backup(
+            keys = keys, aiProvider = aiProvider.name, aiKeys = AiProvider.entries.filter { it.isApi }.associate { it.name to aiKey(it) }.filterValues { it.isNotBlank() },
+            fees = fees, backtest = backtest, indicators = indicators, watchlists = watchlists, customThemes = customThemes, accounts = accounts,
+            gameStats = gameStats, priceAlerts = priceAlerts, signalAlerts = signalAlerts, scanAlerts = scanAlerts, alertSettings = alertSettings, screener = screener,
+        ),
+    )
+
+    /** 백업 글을 읽어 그대로 덮어쓴다. 형식이 다르면 예외. */
+    fun importBackup(text: String) {
+        val b = json.decodeFromString(Backup.serializer(), text)
+        keys = b.keys
+        AiProvider.entries.firstOrNull { it.name == b.aiProvider }?.let { aiProvider = it }
+        b.aiKeys.forEach { (name, key) -> AiProvider.entries.firstOrNull { it.name == name }?.let { saveAiKey(it, key) } }
+        fees = b.fees; backtest = b.backtest; indicators = b.indicators
+        if (b.watchlists.isNotEmpty()) watchlists = b.watchlists
+        customThemes = b.customThemes
+        if (b.accounts.isNotEmpty()) accounts = b.accounts
+        gameStats = b.gameStats; priceAlerts = b.priceAlerts; signalAlerts = b.signalAlerts; scanAlerts = b.scanAlerts
+        alertSettings = b.alertSettings; screener = b.screener
+    }
 
     var homeMarket: Market
         get() = prefs.getString("home_market", null)?.let { n -> Market.entries.firstOrNull { it.name == n } } ?: Market.KR

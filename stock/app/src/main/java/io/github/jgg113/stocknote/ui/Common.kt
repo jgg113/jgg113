@@ -203,6 +203,14 @@ fun openUrl(context: Context, url: String) {
     }
 }
 
+/** 다른 앱(메신저 등)으로 글을 보낸다. */
+fun shareText(context: Context, text: String) {
+    try {
+        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "공유").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (_: ActivityNotFoundException) {
+    }
+}
+
 fun copyText(context: Context, text: String) {
     val cm = context.getSystemService(ClipboardManager::class.java)
     cm.setPrimaryClip(ClipData.newPlainText("주식노트", text))
