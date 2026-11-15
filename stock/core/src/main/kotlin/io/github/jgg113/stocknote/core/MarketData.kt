@@ -162,6 +162,8 @@ class MarketData(
     private val dart = DartClient(keys.dart, http)
     private val newsClient = NewsClient(http)
     private val fx = FxClient(http)
+    private val fearGreedClient = FearGreedClient(http)
+    private val globalCoin = GlobalCoinClient(http)
 
     private val memoryQuotes = ConcurrentHashMap<String, Pair<Quote, Long>>()
     private val usExchange = ConcurrentHashMap<String, String>()
@@ -536,6 +538,57 @@ class MarketData(
         return f
     }
 
+    // ───────────── 수급·투자의견·지분·배당 ─────────────
+
+    /** 국내 종목의 수급(개인·외국인·기관 순매수)을 볼 수 있는지 (한국투자증권 키가 있어야 한다) */
+    val hasFlows: Boolean get() = keys.hasKis
+
+    fun investorFlows(asset: Asset): List<InvestorFlow> =
+        if (asset.market != Market.KR || !keys.hasKis) emptyList() else kis.investorFlows(asset.code)
+
+    /** 증권사 투자의견 (최근 6개월). 실전 서버 키에서만 된다. */
+    fun analystOpinions(asset: Asset): List<AnalystOpinion> =
+        if (asset.market != Market.KR || !keys.hasKis || keys.kisVirtual) emptyList() else kis.analystOpinions(asset.code, now().toLocalDate().minusMonths(6), now().toLocalDate())
+
+    /** 5% 이상 주주와 임원의 지분 변동 (DART 키) */
+    fun ownership(asset: Asset): List<OwnershipReport> {
+        val code = corpCode(asset) ?: return emptyList()
+        val major = runCatching { dart.majorHoldings(code) }
+        val insider = runCatching { dart.insiderReports(code) }
+        if (major.isFailure && insider.isFailure) throw major.exceptionOrNull()!!
+        return (major.getOrDefault(emptyList()) + insider.getOrDefault(emptyList())).sortedByDescending { it.date }.take(20)
+    }
+
+    fun dividend(asset: Asset): DividendInfo? {
+        val code = corpCode(asset) ?: return null
+        val name = "div_$code.json"
+        cache.read(name)?.takeIf { (nowSec() - (cache.modified(name) ?: 0)) < 7 * 86_400 }?.let { text ->
+            runCatching { json.decodeFromString(DividendInfo.serializer(), text) }.getOrNull()?.let { return it }
+        }
+        val d = dart.dividend(code, now().toLocalDate()) ?: return null
+        cache.write(name, json.encodeToString(DividendInfo.serializer(), d))
+        return d
+    }
+
+    // ───────────── 코인: 공포·탐욕, 김치 프리미엄 (키 없음) ─────────────
+
+    @Volatile private var fearGreedMemo: Pair<FearGreed, Long>? = null
+    @Volatile private var globalCoinMemo: Triple<Map<String, Double>, String, Long>? = null
+
+    fun fearGreed(): FearGreed? {
+        fearGreedMemo?.let { (v, t) -> if (nowSec() - t < 1800) return v }
+        return fearGreedClient.crypto()?.also { fearGreedMemo = it to nowSec() }
+    }
+
+    /** 업비트 원화 가격과 해외 달러 가격의 차이. 돌려주는 글은 해외 시세 출처. */
+    fun kimchi(upbit: List<Quote>): Pair<List<Premium>, String> {
+        val rate = usdKrw() ?: throw DataException("환율을 받지 못해 김치 프리미엄을 계산하지 못했습니다.", "FX")
+        val memo = globalCoinMemo
+        val (prices, source) = if (memo != null && nowSec() - memo.third < 60) memo.first to memo.second
+        else globalCoin.usdPrices().also { globalCoinMemo = Triple(it.first, it.second, nowSec()) }
+        return Kimchi.premiums(upbit, prices, rate) to source
+    }
+
     fun news(query: String, limit: Int = 30): List<NewsItem> {
         val name = "news_" + query.hashCode().toString(16)
         cache.read(name)?.takeIf { (nowSec() - (cache.modified(name) ?: 0)) < 900 }?.let { text ->
@@ -656,7 +709,7 @@ class MarketData(
     }
 
     fun clearCache() {
-        listOf("candles_", "fetched_", "depth_", "kr_snapshot", "news_", "fin_", "kr_indices", "crypto_markets", "fx_", "dart_", "kis_master").forEach { p -> cache.list(p).forEach { cache.delete(it) } }
+        listOf("candles_", "fetched_", "depth_", "kr_snapshot", "news_", "fin_", "div_", "kr_indices", "crypto_markets", "fx_", "dart_", "kis_master").forEach { p -> cache.list(p).forEach { cache.delete(it) } }
         memoryQuotes.clear()
         krSnapshotMemo = null
     }

@@ -229,6 +229,18 @@ class KisClient(
         return out.distinctBy { it.time }.sortedBy { it.time }
     }
 
+    /** 종목별 투자자(개인·외국인·기관) 순매수, 최근 약 30거래일 */
+    fun investorFlows(code: String): List<InvestorFlow> =
+        get("/uapi/domestic-stock/v1/quotations/inquire-investor", "FHKST01010900", mapOf("FID_COND_MRKT_DIV_CODE" to "J", "FID_INPUT_ISCD" to code))["output"]
+            .asList().mapNotNull { parseInvestorFlow(it) }.sortedBy { it.date }
+
+    /** 증권사 투자의견·목표가 (최근 것부터). 모의투자 서버에는 없다. */
+    fun analystOpinions(code: String, from: LocalDate, to: LocalDate = LocalDate.now(KST)): List<AnalystOpinion> =
+        get(
+            "/uapi/domestic-stock/v1/quotations/invest-opinion", "FHKST663300C0",
+            mapOf("FID_COND_MRKT_DIV_CODE" to "J", "FID_COND_SCR_DIV_CODE" to "16633", "FID_INPUT_ISCD" to code, "FID_INPUT_DATE_1" to from.format(YMD), "FID_INPUT_DATE_2" to to.format(YMD)),
+        )["output"].asList().mapNotNull { parseAnalystOpinion(it) }.sortedByDescending { it.date }
+
     fun index(code: String, name: String): IndexQuote {
         val o = get("/uapi/domestic-stock/v1/quotations/inquire-index-price", "FHPUP02100000", mapOf("FID_COND_MRKT_DIV_CODE" to "U", "FID_INPUT_ISCD" to code))
         val out = o["output"].obj() ?: throw DataException("지수 값이 비어 있습니다.", "EMPTY")
@@ -337,6 +349,22 @@ class KisClient(
                 realtime = true,
                 source = "한국투자증권",
             )
+        }
+
+        fun parseInvestorFlow(o: JsonObject): InvestorFlow? {
+            val date = runCatching { LocalDate.parse(o.str("stck_bsop_date"), YMD) }.getOrNull() ?: return null
+            // 장중에는 오늘 줄의 순매수가 비어 온다. 그런 줄은 뺀다.
+            val foreign = o.dbl("frgn_ntby_qty") ?: return null
+            val institution = o.dbl("orgn_ntby_qty") ?: return null
+            return InvestorFlow(date.epochKst(), o.dbl("stck_clpr") ?: 0.0, o.dbl("prsn_ntby_qty") ?: 0.0, foreign, institution)
+        }
+
+        fun parseAnalystOpinion(o: JsonObject): AnalystOpinion? {
+            val date = runCatching { LocalDate.parse(o.str("stck_bsop_date"), YMD) }.getOrNull() ?: return null
+            val opinion = o.str("invt_opnn").trim()
+            val target = o.dbl("hts_goal_prc") ?: 0.0
+            if (opinion.isEmpty() && target <= 0) return null
+            return AnalystOpinion(date.epochKst(), opinion, o.str("rgbf_invt_opnn").trim(), target, o.str("mbcr_name").trim())
         }
 
         fun parseDomesticDaily(o: JsonObject): Candle? {

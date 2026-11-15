@@ -63,8 +63,10 @@ object AiEngines {
             )
             AiProvider.OPENROUTER_API -> OpenAiCompatClient(
                 "OpenRouter", "https://openrouter.ai/api/v1/chat/completions", key,
-                listOf("openai/gpt-oss-20b:free", "meta-llama/llama-3.3-70b-instruct:free", "google/gemma-3-27b-it:free"), http,
+                // openrouter/free 는 그때그때 쓸 수 있는 무료 모델로 알아서 보내 준다. 뒤의 둘은 그것이 막혔을 때 쓴다.
+                listOf("openrouter/free", "google/gemma-4-31b-it:free", "nvidia/nemotron-3-ultra-550b-a55b:free"), http,
                 mapOf("X-Title" to "Stock Note"),
+                discover = { OpenRouterModels.free(http) },
             )
             else -> null
         }
@@ -78,12 +80,17 @@ class OpenAiCompatClient(
     private val models: List<String>,
     private val http: Http = UrlConnectionHttp(),
     private val extraHeaders: Map<String, String> = emptyMap(),
+    /** 정해 둔 모델이 모두 안 될 때, 지금 쓸 수 있는 모델 이름을 알아 오는 방법 (없으면 null) */
+    private val discover: (() -> List<String>)? = null,
 ) : AiEngine {
     private val key = KeyText.clean(apiKey)
 
     override fun generate(prompt: String): AiAnswer {
         var last: DataException? = null
-        for (model in models) {
+        // 무료 모델은 이름이 자주 바뀐다. 정해 둔 것이 모두 안 되면 지금 있는 모델을 찾아 이어서 해 본다.
+        val more = lazy { runCatching { discover?.invoke().orEmpty() }.getOrDefault(emptyList()).filter { it !in models }.take(4) }
+        val queue = sequence { yieldAll(models); yieldAll(more.value) }
+        for (model in queue) {
             val body = buildJsonObject {
                 put("model", model)
                 putJsonArray("messages") { add(buildJsonObject { put("role", "user"); put("content", prompt) }) }
@@ -117,7 +124,6 @@ class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(),
 
     override fun generate(prompt: String): AiAnswer {
         var last: DataException? = null
-        var allMissing = true
         fun attempt(model: String): AiAnswer? {
             val body = buildJsonObject {
                 putJsonArray("contents") {
@@ -130,7 +136,6 @@ class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(),
             }.toString()
             val r = network("Gemini") { http.post("$BASE/$model:generateContent", mapOf("Content-Type" to "application/json; charset=UTF-8", "x-goog-api-key" to key), body) }
             if (r.status == 404) { if (last == null) last = DataException("Gemini 모델 $model 을 찾지 못했습니다."); return null }
-            allMissing = false
             return try {
                 AiAnswer(parse(r.status, r.body), model)
             } catch (e: DataException) {
@@ -141,8 +146,8 @@ class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(),
             }
         }
         for (model in models) attempt(model)?.let { return it }
-        // 정해 둔 이름이 모두 없어졌으면, 이 키로 쓸 수 있는 모델을 물어 다시 해 본다.
-        if (allMissing) for (model in runCatching { discover() }.getOrDefault(emptyList()).filter { it !in models }.take(3)) attempt(model)?.let { return it }
+        // 정해 둔 이름이 모두 안 되면, 이 키로 쓸 수 있는 모델을 물어 다시 해 본다.
+        for (model in runCatching { discover() }.getOrDefault(emptyList()).filter { it !in models }.take(3)) attempt(model)?.let { return it }
         throw last ?: DataException("사용할 수 있는 Gemini 모델이 없습니다.")
     }
 
@@ -154,7 +159,8 @@ class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(),
 
     companion object {
         const val BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-        val DEFAULT_MODELS = listOf("gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest")
+        // 2.5 계열은 새 키로는 쓸 수 없게 되었다(2026-11 확인). 이름이 또 바뀌어도 아래 목록이 모두 안 되면 쓸 수 있는 모델을 물어 찾는다.
+        val DEFAULT_MODELS = listOf("gemini-flash-latest", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite")
         private val SKIP = listOf("image", "tts", "audio", "live", "embedding", "robotics", "computer")
 
         fun parseModels(body: String): List<String> =
@@ -190,6 +196,26 @@ class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(),
             return text
         }
     }
+}
+
+/** OpenRouter 가 공개하는 모델 목록(키 없이 볼 수 있다)에서 지금 무료인 글 모델을 고른다. */
+object OpenRouterModels {
+    const val URL = "https://openrouter.ai/api/v1/models"
+    private val PREFER = listOf("gemma", "llama", "nemotron-3-ultra", "nemotron", "gpt-oss", "qwen", "deepseek", "mistral")
+    private val SKIP = listOf("code", "nano", "guard", "embed", "tts", "-vl", "preview")
+
+    fun free(http: Http): List<String> = parse(network("OpenRouter") { http.get(URL) }.body)
+
+    fun parse(body: String): List<String> =
+        (parseJson(body).obj()?.get("data") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+            .filter { m ->
+                val out = (m["architecture"].obj()?.get("output_modalities") as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.content }
+                m.str("id").endsWith(":free") && (out.isEmpty() || "text" in out)
+            }
+            .map { it.str("id") to (it.dbl("context_length") ?: 0.0) }
+            .filter { (id, _) -> SKIP.none { it in id } }
+            .sortedWith(compareBy<Pair<String, Double>> { (id, _) -> PREFER.indexOfFirst { it in id }.let { if (it < 0) PREFER.size else it } }.thenByDescending { it.second }.thenByDescending { it.first })
+            .map { it.first }
 }
 
 /** 설정 화면의 [연결 테스트]: 짧은 질문 하나로 키가 되는지 본다. */

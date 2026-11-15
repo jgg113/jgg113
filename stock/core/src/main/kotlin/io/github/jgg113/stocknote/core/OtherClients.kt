@@ -150,6 +150,29 @@ class DartClient(apiKey: String, private val http: Http = UrlConnectionHttp()) {
         }
     }
 
+    /** 5% 넘게 가진 주주의 지분 변동 보고 (대량보유 상황보고), 최근 것부터 */
+    fun majorHoldings(corpCode: String, limit: Int = 12): List<OwnershipReport> = listOrEmpty("majorstock.json", mapOf("corp_code" to corpCode))
+        .mapNotNull { parseOwnership(it, major = true) }.sortedByDescending { it.date }.take(limit)
+
+    /** 임원·주요주주가 자기 회사 주식을 사고판 보고, 최근 것부터 */
+    fun insiderReports(corpCode: String, limit: Int = 12): List<OwnershipReport> = listOrEmpty("elestock.json", mapOf("corp_code" to corpCode))
+        .mapNotNull { parseOwnership(it, major = false) }.sortedByDescending { it.date }.take(limit)
+
+    /** 배당 (가장 최근 사업보고서 기준, 없으면 한 해 앞) */
+    fun dividend(corpCode: String, today: LocalDate = LocalDate.now(KST)): DividendInfo? {
+        for (year in listOf(today.year - 1, today.year - 2)) {
+            val rows = listOrEmpty("alotMatter.json", mapOf("corp_code" to corpCode, "bsns_year" to year.toString(), "reprt_code" to "11011"))
+            parseDividend(rows, year)?.let { return it }
+        }
+        return null
+    }
+
+    private fun listOrEmpty(path: String, params: Map<String, String>): List<kotlinx.serialization.json.JsonObject> = try {
+        call(path, params)["list"].asList()
+    } catch (e: DataException) {
+        if (e.code == "013") emptyList() else throw e
+    }
+
     /** 주요 계정 재무 (사업보고서 3년치 + 가장 최근 분기) */
     fun financials(corpCode: String, today: LocalDate = LocalDate.now(KST)): Financials? {
         var annual: Pair<Int, List<kotlinx.serialization.json.JsonObject>>? = null
@@ -182,6 +205,31 @@ class DartClient(apiKey: String, private val http: Http = UrlConnectionHttp()) {
         const val BASE = "https://opendart.fss.or.kr/api"
         const val KEY_PAGE = "https://opendart.fss.or.kr/uss/umt/EgovMberInsertView.do"
         val YMD: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
+
+        private fun date(o: kotlinx.serialization.json.JsonObject): Long = runCatching { LocalDate.parse(o.str("rcept_dt").replace("-", "").replace(".", ""), YMD).epochKst() }.getOrDefault(0)
+
+        fun parseOwnership(o: kotlinx.serialization.json.JsonObject, major: Boolean): OwnershipReport? {
+            val who = o.str("repror").trim().ifEmpty { return null }
+            return if (major) OwnershipReport(
+                date(o), who, "5% 이상 주주", o.dbl("stkqy") ?: 0.0, o.dbl("stkqy_irds") ?: 0.0, o.dbl("stkrt"), o.dbl("stkrt_irds"),
+                o.str("report_resn").trim().replace(Regex("\\s+"), " ").take(80), "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=" + o.str("rcept_no"),
+            ) else OwnershipReport(
+                date(o), who, listOf(o.str("isu_exctv_ofcps"), o.str("isu_main_shrholdr")).map { it.trim() }.filter { it.isNotEmpty() && it != "-" }.joinToString(" · ").ifEmpty { "임원" },
+                o.dbl("sp_stock_lmp_cnt") ?: 0.0, o.dbl("sp_stock_lmp_irds_cnt") ?: 0.0, o.dbl("sp_stock_lmp_rate"), o.dbl("sp_stock_lmp_irds_rate"),
+                "", "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=" + o.str("rcept_no"),
+            )
+        }
+
+        fun parseDividend(rows: List<kotlinx.serialization.json.JsonObject>, year: Int): DividendInfo? {
+            // 보통주 줄을 먼저 쓴다 (우선주 줄이 따로 온다).
+            fun pick(name: String, field: String): Double? = rows.filter { it.str("se").replace(" ", "").contains(name) }
+                .sortedBy { if (it.str("stock_knd").contains("우선")) 1 else 0 }.firstNotNullOfOrNull { it.dbl(field) }
+            val dps = pick("주당현금배당금", "thstrm")
+            val yieldPct = pick("현금배당수익률", "thstrm")
+            val payout = pick("현금배당성향", "thstrm")
+            if (dps == null && yieldPct == null && payout == null) return null
+            return DividendInfo(year, dps, yieldPct, payout, pick("주당현금배당금", "frmtrm"), pick("주당현금배당금", "lwfr"))
+        }
 
         fun checkStatus(status: String, message: String) {
             if (status.isEmpty() || status == "000") return

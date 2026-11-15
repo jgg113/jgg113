@@ -159,7 +159,7 @@ class ConnectionTest {
             else res(200, geminiOk("PER 은 주가를 주당순이익으로 나눈 값"))
         }
         val a = GeminiClient(" AIza test\n", http).generate("q")
-        assertEquals("gemini-2.5-flash", a.model)
+        assertEquals("gemini-3.8-flash", a.model)
         assertEquals("AIzatest", http.calls.first().headers["x-goog-api-key"])
     }
 
@@ -207,5 +207,28 @@ class ConnectionTest {
         val bad = ScriptedHttp { _, _, _ -> res(401, """{"error":{"message":"Invalid API Key"}}""") }
         assertEquals("AI_KEY", assertFailsWith<DataException> { AiEngines.create(AiProvider.GROQ_API, "gsk_x", bad)!!.generate("q") }.code)
         assertEquals(1, bad.calls.size)
+    }
+
+    @Test
+    fun openRouterFindsFreeModelsWhenNamesChange() {
+        // 무료 모델 이름은 자주 바뀐다. 정해 둔 이름이 모두 없어져도 공개 목록에서 지금 무료인 모델을 찾아 쓴다.
+        val list = """{"data":[
+            {"id":"vendor/paid-model","context_length":100000,"architecture":{"output_modalities":["text"]}},
+            {"id":"cohere/north-mini-code:free","context_length":256000,"architecture":{"output_modalities":["text"]}},
+            {"id":"some/image-maker:free","context_length":1000,"architecture":{"output_modalities":["image"]}},
+            {"id":"inclusionai/ling-9-flash:free","context_length":1048576,"architecture":{"output_modalities":["text"]}},
+            {"id":"google/gemma-9-31b-it:free","context_length":262144,"architecture":{"output_modalities":["text"]}}]}"""
+        assertEquals(listOf("google/gemma-9-31b-it:free", "inclusionai/ling-9-flash:free"), OpenRouterModels.parse(list))
+        val http = ScriptedHttp { url, _, body ->
+            when {
+                url == OpenRouterModels.URL -> res(200, list)
+                body!!.contains("google/gemma-9-31b-it:free") -> res(200, """{"choices":[{"message":{"content":"답"}}]}""")
+                else -> res(404, """{"error":{"message":"No endpoints found","code":404}}""")
+            }
+        }
+        val a = AiEngines.create(AiProvider.OPENROUTER_API, "sk-or-x", http)!!.generate("q")
+        assertEquals("google/gemma-9-31b-it:free", a.model)
+        // 첫 시도는 무료 모델로 알아서 보내 주는 주소다.
+        assertTrue(http.calls.first().body!!.contains("openrouter/free"))
     }
 }
