@@ -58,7 +58,7 @@ import io.github.jgg113.stocknote.data.PriceAlert
 import io.github.jgg113.stocknote.ui.theme.PriceColors
 import kotlinx.coroutines.delay
 
-private enum class DetailTab(val label: String) { CHART("차트"), FORECAST("AI 예측"), STRATEGY("지표분석"), FINANCE("재무"), ISSUES("이슈"), INFO("정보·AI") }
+private enum class DetailTab(val label: String) { CHART("차트"), SUMMARY("종합"), FORECAST("AI 예측"), STRATEGY("지표분석"), FINANCE("재무"), ISSUES("이슈"), INFO("정보·AI") }
 
 @Composable
 fun DetailScreen(vm: AppViewModel) {
@@ -81,7 +81,7 @@ fun DetailScreen(vm: AppViewModel) {
     }
     LaunchedEffect(tab) {
         when (tab) {
-            DetailTab.FINANCE -> vm.loadFinancials()
+            DetailTab.FINANCE -> { vm.loadFinancials(); vm.loadOwnership() }
             DetailTab.ISSUES -> vm.loadIssues()
             else -> {}
         }
@@ -120,6 +120,7 @@ fun DetailScreen(vm: AppViewModel) {
             d.error?.let { ErrorNotice(it) { vm.loadDetail(asset) } }
             when (tab) {
                 DetailTab.CHART -> ChartTab(vm, onEditIndicators = { indicatorDialog = true })
+                DetailTab.SUMMARY -> SummaryTab(vm) { tab = DetailTab.FORECAST }
                 DetailTab.FORECAST -> AiForecastTab(vm)
                 DetailTab.STRATEGY -> StrategyTab(vm) { tab = DetailTab.CHART }
                 DetailTab.FINANCE -> FinanceTab(vm)
@@ -213,6 +214,8 @@ private fun FinanceTab(vm: AppViewModel) {
             InfoRow("부채비율", q.debtRatio.orDash { Fmt.decimal(it) + "%" })
         }
     }
+    d.dividend?.let { DividendCard(it, d.quote?.price ?: 0.0) }
+    d.ownership?.let { OwnershipCard(it, d.ownershipError) }
 }
 
 @Composable
@@ -221,6 +224,7 @@ private fun IssuesTab(vm: AppViewModel) {
     val context = LocalContext.current
     if (d.issuesLoading) Loading("공시·뉴스를 받는 중…")
     AiBox(vm, StockPrompt.Mode.ISSUES, "AI 이슈 요약", context)
+    SentimentCard(d.news)
     if (d.asset.market == Market.KR) SectionCard("공시 (DART, 최근 3개월)") {
         if (!vm.keys.hasDart) SmallLabel("[설정]에서 DART 인증키(무료)를 넣으면 공시를 볼 수 있습니다.") else NewsList(d.disclosures, context, 30)
     }

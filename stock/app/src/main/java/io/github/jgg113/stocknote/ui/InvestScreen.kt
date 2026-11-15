@@ -112,6 +112,7 @@ private fun AccountsTab(vm: AppViewModel) {
                 }
             }
         }
+        item { PortfolioDiagnosisCard(vm, account.id, account.holdings.size) }
         item { Text("보유 종목 ${v.rows.size}", fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
         items(v.rows, key = { it.holding.asset.key }) { r ->
             val cur = r.currency

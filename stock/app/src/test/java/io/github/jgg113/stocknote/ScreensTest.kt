@@ -237,4 +237,52 @@ class ScreensTest {
         press("넘기기 테스트")
         shot("23_settings_ai_app")
     }
+
+    /** 종합 점수·시장 심리·히트맵·김치 프리미엄·포트폴리오 진단 화면을 실제 업비트 시세로 그려 본다. */
+    @Test
+    fun insightScreens() {
+        compose.mainClock.autoAdvance = false
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = AppViewModel(app)
+        vm.setHomeMarket(Market.CRYPTO)
+        compose.setContent { StockTheme { AppRoot(vm) } }
+        waitFor(90, "home") { !vm.home.loading && vm.home.featured.isNotEmpty() }
+        val h = vm.home
+        println("mood ${h.mood?.score} ${h.mood?.label} parts=${h.mood?.parts?.map { it.name + "=" + it.score }} heat=${h.heat.size} fng=${h.fearGreed?.value} kimchi=${h.kimchi.size} median=${io.github.jgg113.stocknote.core.Kimchi.median(h.kimchi)} via ${h.kimchiSource}")
+        check(h.mood != null) { "시장 심리가 계산되지 않았다" }
+        check(h.heat.size >= 10) { "히트맵 종목이 없다" }
+        check(h.fearGreed != null) { "공포·탐욕 지수를 받지 못했다" }
+        check(h.kimchi.size >= 10) { "김치 프리미엄을 계산하지 못했다" }
+        swipe(); shot("30_home_mood_heatmap")
+        swipe(); shot("31_home_kimchi_brief")
+
+        val btc = Asset(Market.CRYPTO, "KRW-BTC", "비트코인", "UPBIT")
+        val eth = Asset(Market.CRYPTO, "KRW-ETH", "이더리움", "UPBIT")
+        vm.openAsset(btc)
+        waitFor(120, "detail") { vm.detail?.report != null }
+        click("종합")
+        waitFor(60, "summary") { vm.detail?.extraLoaded == true }
+        println("premium ${vm.detail?.premium?.premiumPct} via ${vm.detail?.premiumSource}")
+        check(vm.detail?.premium != null) { "코인 종합 탭에 김치 프리미엄이 없다" }
+        shot("32_detail_summary")
+        swipe(); shot("33_detail_summary_2")
+        click("이슈"); waitFor(60, "issues") { vm.detail?.issuesLoading == false && vm.detail?.news?.isNotEmpty() == true }
+        shot("34_detail_sentiment")
+        vm.back()
+
+        val paper = vm.accounts.first { it.type == io.github.jgg113.stocknote.core.AccountType.PAPER }
+        vm.deposit(paper.id, io.github.jgg113.stocknote.core.Currency.KRW, 50_000_000.0)
+        val prices = vm.data.quotes(listOf(btc, eth))
+        check(vm.trade(paper.id, btc, true, 0.2, prices[btc.key]!!.price)) { "모의 매수 실패" }
+        check(vm.trade(paper.id, eth, true, 1.0, prices[eth.key]!!.price)) { "모의 매수 실패" }
+        vm.tab = Tab.INVEST
+        repeat(5) { pump() }
+        vm.diagnose(paper.id)
+        waitFor(120, "diagnose") { vm.diagnoses[paper.id]?.loading == false }
+        val d = vm.diagnoses[paper.id]
+        println("diagnosis ${d?.result?.let { "${it.score} ${it.grade} vol=${it.volatilityPct} corr=${it.avgCorrelation} findings=${it.findings.map { f -> f.text }}" } ?: d?.error}")
+        check(d?.result != null) { "포트폴리오 진단 실패: ${d?.error}" }
+        swipe(); shot("35_invest_diagnosis")
+        swipe(); shot("36_invest_diagnosis_2")
+    }
 }

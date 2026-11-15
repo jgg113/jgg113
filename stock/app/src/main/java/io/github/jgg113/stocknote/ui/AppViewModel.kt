@@ -144,6 +144,26 @@ data class HomeState(
     val usdKrw: Double? = null,
     val dataDate: Long = 0,
     val realtime: Boolean = false,
+    /** 시장 심리 (0 공포 ~ 100 탐욕) */
+    val mood: io.github.jgg113.stocknote.core.MarketMood? = null,
+    /** 히트맵에 그릴 큰 종목들 */
+    val heat: List<Quote> = emptyList(),
+    val fearGreed: io.github.jgg113.stocknote.core.FearGreed? = null,
+    val kimchi: List<io.github.jgg113.stocknote.core.Premium> = emptyList(),
+    val kimchiSource: String = "",
+)
+
+/** AI 에게 물은 글 하나의 상태 (시장 브리핑·포트폴리오 진단) */
+data class BriefState(val loading: Boolean = false, val text: String? = null, val error: String? = null)
+
+/** 계좌 하나의 포트폴리오 진단 */
+data class DiagState(
+    val loading: Boolean = false,
+    val result: io.github.jgg113.stocknote.core.PortfolioDiagnosis? = null,
+    val error: String? = null,
+    val totalKrw: Double = 0.0,
+    val pnlPct: Double = 0.0,
+    val ai: BriefState = BriefState(),
 )
 
 data class DetailState(
@@ -169,6 +189,18 @@ data class DetailState(
     val aiText: String? = null,
     val aiLoading: Boolean = false,
     val aiError: String? = null,
+    /** 종합 탭: 수급·투자의견(한국투자증권), 김치 프리미엄(코인) */
+    val extraLoading: Boolean = false,
+    val extraLoaded: Boolean = false,
+    val flows: List<io.github.jgg113.stocknote.core.InvestorFlow> = emptyList(),
+    val flowsError: String? = null,
+    val opinions: List<io.github.jgg113.stocknote.core.AnalystOpinion> = emptyList(),
+    val premium: io.github.jgg113.stocknote.core.Premium? = null,
+    val premiumSource: String = "",
+    /** 재무 탭: 지분 변동·배당 (DART). null 이면 아직 받지 않음 */
+    val ownership: List<io.github.jgg113.stocknote.core.OwnershipReport>? = null,
+    val ownershipError: String? = null,
+    val dividend: io.github.jgg113.stocknote.core.DividendInfo? = null,
 )
 
 data class SignalsState(
@@ -421,6 +453,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setHomeMarket(m: Market) {
         store.homeMarket = m
         home = HomeState(market = m)
+        brief = BriefState()
         refreshHome()
     }
 
@@ -450,6 +483,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val themes = ThemeStats.rank(themeList, quoteMap)
                 val news = safe { data.news(when (market) { Market.KR -> "코스피 코스닥 증시"; Market.US -> "뉴욕증시 미국 주식"; Market.CRYPTO -> "비트코인 가상자산 시장" }, 15) }.orEmpty()
                 val disclosures = if (market == Market.KR && keys.hasDart) safe { data.disclosures(null, 2) }.orEmpty().filter { important(it.title) }.take(15) else emptyList()
+                // 시장 심리·히트맵: 거래가 거의 없는 종목은 빼고 본다. 코인은 비트코인 일봉을 지수 삼아 쓴다.
+                val liquid = quotes.filter { it.value >= minValue(market) && !MarketStats.isSpacOrPreferred(it.asset.name) }
+                val indexCandles = if (market == Market.CRYPTO) runCatching { data.daily(Asset(Market.CRYPTO, "KRW-BTC", "비트코인"), 300) }.getOrNull() else null
+                val fearGreed = if (market == Market.CRYPTO) runCatching { data.fearGreed() }.getOrNull() else null
+                val kimchi = if (market == Market.CRYPTO && quotes.isNotEmpty()) runCatching { data.kimchi(quotes.sortedByDescending { it.value }.take(30)) }.getOrNull() else null
                 HomeState(
                     market = market,
                     loading = false,
@@ -464,6 +502,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     usdKrw = safe { data.usdKrw() },
                     dataDate = quotes.maxOfOrNull { it.time } ?: 0,
                     realtime = quotes.firstOrNull()?.realtime == true || liveValue.isNotEmpty(),
+                    mood = io.github.jgg113.stocknote.core.MarketMoodCalc.of(liquid, indexCandles),
+                    heat = liquid.sortedByDescending { if (it.marketCap > 0) it.marketCap else it.value }.take(30),
+                    fearGreed = fearGreed,
+                    kimchi = kimchi?.first.orEmpty(),
+                    kimchiSource = kimchi?.second.orEmpty(),
                 )
             }
             if (home.market == market) home = result
@@ -858,6 +901,113 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     } catch (e: Exception) {
         message("백업 파일을 읽지 못했습니다: ${e.message?.take(80) ?: e.javaClass.simpleName}")
         false
+    }
+
+    // ───────── AI 브리핑 (시장·포트폴리오) ─────────
+
+    var brief by mutableStateOf(BriefState()); private set
+
+    /** 고른 AI 방법으로 글을 묻는다. 앱 넘기기면 그 앱으로 보내고, API 면 답을 [set] 으로 돌려준다. */
+    private fun runAi(prompt: String, handoff: (AiProvider, String) -> Unit, set: (BriefState) -> Unit) {
+        val provider = aiProvider
+        if (provider == AiProvider.NONE) { set(BriefState(error = "[설정] → AI 해설에서 방법을 고르면 쓸 수 있습니다 (Gemini 무료 키, 또는 키 없이 ChatGPT·Gemini·Claude 앱으로 넘기기).")); return }
+        if (provider.isAppHandoff) { handoff(provider, prompt); return }
+        val engine = AiEngines.create(provider, aiKey(provider))
+        if (engine == null) { set(BriefState(error = "[설정]에서 ${provider.label} 키를 넣으세요.")); return }
+        set(BriefState(loading = true))
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { engine.generate(prompt) } }
+            set(r.fold({ BriefState(text = AiText.plain(it.text) + "\n\n(${it.model})") }, { BriefState(error = err(it)) }))
+        }
+    }
+
+    /** 오늘 시장을 AI 가 몇 문장으로 정리한다 (앱이 계산한 숫자와 기사 제목만 넘긴다). */
+    fun askBrief(handoff: (AiProvider, String) -> Unit) {
+        val h = home
+        val prompt = io.github.jgg113.stocknote.core.BriefPrompt.market(
+            h.market, h.mood, h.breadth, h.indices,
+            h.featured[FeatureKind.GAINERS].orEmpty().map { it.quote }, h.featured[FeatureKind.LOSERS].orEmpty().map { it.quote },
+            h.news, h.fearGreed, io.github.jgg113.stocknote.core.Kimchi.median(h.kimchi),
+        )
+        runAi(prompt, handoff) { if (home.market == h.market) brief = it }
+    }
+
+    // ───────── 포트폴리오 진단 ─────────
+
+    var diagnoses by mutableStateOf<Map<String, DiagState>>(emptyMap()); private set
+
+    private fun setDiag(id: String, f: (DiagState) -> DiagState) { diagnoses = diagnoses + (id to f(diagnoses[id] ?: DiagState())) }
+
+    /** 계좌의 보유 종목을 지난 1년 일봉으로 진단한다 (쏠림·함께 움직임·변동성). */
+    fun diagnose(accountId: String) {
+        val acc = account(accountId) ?: return
+        if (diagnoses[accountId]?.loading == true) return
+        if (acc.holdings.isEmpty()) { setDiag(accountId) { DiagState(error = "보유 종목이 없습니다.") }; return }
+        setDiag(accountId) { DiagState(loading = true) }
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val fx = usdKrw ?: data.usdKrw() ?: 0.0
+                    val assets = acc.holdings.map { it.asset }
+                    val prices = data.quotes(assets, 60).mapValues { it.value.price }
+                    val v = io.github.jgg113.stocknote.core.PortfolioValuation.of(acc, accountPrices + prices, fx)
+                    val candles = data.dailyMany(assets, 300).mapKeys { it.key.key }
+                    val items = v.rows.map { row ->
+                        io.github.jgg113.stocknote.core.PortfolioItem(row.holding.asset, if (row.currency == Currency.USD) row.value * fx else row.value, candles[row.holding.asset.key].orEmpty())
+                    }
+                    val d = io.github.jgg113.stocknote.core.PortfolioDoctor.diagnose(items, acc.cashKrw + acc.cashUsd * fx)
+                        ?: throw io.github.jgg113.stocknote.core.DataException("진단에는 종목마다 일봉이 한 달 넘게 있어야 합니다. 시세를 받지 못한 종목이 있는지 확인하세요.")
+                    Triple(d, v.totalKrw, v.pnlPct)
+                }
+            }
+            setDiag(accountId) { r.fold({ (d, total, pnl) -> DiagState(result = d, totalKrw = total, pnlPct = pnl) }, { DiagState(error = err(it)) }) }
+        }
+    }
+
+    fun askPortfolio(accountId: String, handoff: (AiProvider, String) -> Unit) {
+        val acc = account(accountId) ?: return
+        val st = diagnoses[accountId] ?: return
+        val d = st.result ?: return
+        runAi(io.github.jgg113.stocknote.core.BriefPrompt.portfolio(acc.name, d, st.totalKrw, st.pnlPct), handoff) { b -> setDiag(accountId) { it.copy(ai = b) } }
+    }
+
+    // ───────── 종합 탭·지분 (종목 화면) ─────────
+
+    /** 종합 탭을 열 때: 수급·투자의견(한국투자증권), 재무(DART), 김치 프리미엄(코인)을 받아 둔다. */
+    fun loadSummary() {
+        val d = detail ?: return
+        val asset = d.asset
+        if (asset.market == Market.KR && keys.hasDart) loadFinancials()
+        if (d.extraLoaded || d.extraLoading) return
+        update(asset) { it.copy(extraLoading = true) }
+        viewModelScope.launch {
+            var flows = emptyList<io.github.jgg113.stocknote.core.InvestorFlow>()
+            var flowsError: String? = null
+            var opinions = emptyList<io.github.jgg113.stocknote.core.AnalystOpinion>()
+            var premium: io.github.jgg113.stocknote.core.Premium? = null
+            var source = ""
+            withContext(Dispatchers.IO) {
+                if (asset.market == Market.KR && keys.hasKis) {
+                    runCatching { data.investorFlows(asset) }.onSuccess { flows = it }.onFailure { flowsError = err(it) }
+                    opinions = runCatching { data.analystOpinions(asset) }.getOrDefault(emptyList())
+                }
+                if (asset.market == Market.CRYPTO) runCatching {
+                    val (list, src) = data.kimchi(listOf(data.quote(asset, 30)))
+                    premium = list.firstOrNull(); source = src
+                }
+            }
+            update(asset) { it.copy(extraLoading = false, extraLoaded = true, flows = flows, flowsError = flowsError, opinions = opinions, premium = premium, premiumSource = source) }
+        }
+    }
+
+    /** 재무 탭: 5% 이상 주주·임원의 지분 변동과 배당 (DART) */
+    fun loadOwnership() {
+        val d = detail ?: return
+        if (d.asset.market != Market.KR || !keys.hasDart || d.ownership != null || d.ownershipError != null) return
+        viewModelScope.launch {
+            val (own, div) = withContext(Dispatchers.IO) { runCatching { data.ownership(d.asset) } to runCatching { data.dividend(d.asset) }.getOrNull() }
+            update(d.asset) { it.copy(ownership = own.getOrNull() ?: emptyList(), ownershipError = own.exceptionOrNull()?.let(::err), dividend = div) }
+        }
     }
 
     // ───────── 관심종목 ─────────

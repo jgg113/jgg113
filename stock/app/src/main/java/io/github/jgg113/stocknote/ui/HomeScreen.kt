@@ -77,6 +77,10 @@ fun HomeScreen(vm: AppViewModel) {
             }
         }
         h.breadth?.let { b -> item { BreadthCard(b, h.market) } }
+        h.mood?.let { m -> item { MoodCard(m, h.fearGreed, h.market) } }
+        if (h.heat.size >= 4) item { HeatmapCard(h.heat, h.market) { vm.openAsset(it.asset) } }
+        if (h.market == Market.CRYPTO && h.kimchi.isNotEmpty()) item { KimchiCard(vm) }
+        if (h.featured.isNotEmpty()) item { BriefCard(vm) }
 
         // 특징종목
         if (h.featured.isNotEmpty()) item {
