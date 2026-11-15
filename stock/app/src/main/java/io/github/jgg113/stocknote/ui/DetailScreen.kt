@@ -259,7 +259,7 @@ private fun InfoTab(vm: AppViewModel) {
         OutlinedTextField(question, { question = it }, label = { Text("예) 지금 분할 매수해도 될까? 위험 요소는?") }, modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp))
         Spacer(Modifier.height(6.dp))
         Button(onClick = { if (question.isNotBlank()) vm.askAi(StockPrompt.Mode.QUESTION, question) { p, text -> handoffToAi(context, p, text) } }) {
-            val p = vm.store.aiProvider
+            val p = vm.aiProvider
             Text(if (p == io.github.jgg113.stocknote.core.AiProvider.NONE) "질문하기" else "질문하기 (${p.label})")
         }
         SmallLabel("앱이 계산한 시세·예측·전략 신호·재무·뉴스 제목을 함께 보냅니다.")
@@ -278,7 +278,7 @@ private fun InfoTab(vm: AppViewModel) {
 @Composable
 private fun AiBox(vm: AppViewModel, mode: StockPrompt.Mode, label: String, context: android.content.Context) {
     SectionCard("AI 해설") {
-        val provider = vm.store.aiProvider
+        val provider = vm.aiProvider
         Button(onClick = { vm.askAi(mode) { p, text -> handoffToAi(context, p, text) } }) { Text(if (provider == io.github.jgg113.stocknote.core.AiProvider.NONE) label else "$label (${provider.label})") }
         if (provider.isAppHandoff) SmallLabel("질문이 ${provider.label.removeSuffix("으로 넘기기")}으로 넘어가고 클립보드에도 복사됩니다.")
         AiResult(vm)

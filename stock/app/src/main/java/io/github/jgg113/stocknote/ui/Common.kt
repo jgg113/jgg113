@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -216,18 +217,49 @@ fun copyText(context: Context, text: String) {
     cm.setPrimaryClip(ClipData.newPlainText("주식노트", text))
 }
 
-/** 질문을 AI 앱으로 넘긴다. 앱이 없으면 웹을 연다. 질문은 클립보드에도 복사한다. */
+/** 클립보드에 있는 글 (없으면 빈 글) */
+fun pasteText(context: Context): String = runCatching {
+    context.getSystemService(ClipboardManager::class.java).primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+}.getOrNull().orEmpty()
+
+/** AI 앱이 이 휴대폰에 설치되어 있는지 */
+fun aiAppInstalled(context: Context, provider: AiProvider): Boolean =
+    provider.packageName?.let { runCatching { context.packageManager.getLaunchIntentForPackage(it) }.getOrNull() } != null
+
+fun showToast(context: Context, text: String) = Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+
+/**
+ * 질문을 AI 앱으로 넘긴다. 질문은 항상 클립보드에도 복사해 둔다.
+ * ① 앱이 '공유 받기'를 지원하면 질문을 바로 넘기고 ② 안 되면 앱만 열어 붙여넣게 하고 ③ 앱이 없으면 웹을 연다.
+ */
 fun handoffToAi(context: Context, provider: AiProvider, prompt: String) {
-    copyText(context, prompt)
-    val pkg = provider.packageName
-    if (pkg != null) {
-        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, prompt).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val pkg = provider.packageName ?: return
+    runCatching { copyText(context, prompt) }
+    val name = provider.label.substringBefore(" 앱")
+    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, prompt).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        context.startActivity(send)
+        showToast(context, "$name 앱으로 보냈습니다. 입력창이 비어 있으면 길게 눌러 붙여넣으세요.")
+        return
+    } catch (_: Exception) {
+        // 공유 받기를 지원하지 않거나 설치되지 않았다.
+    }
+    val launch = runCatching { context.packageManager.getLaunchIntentForPackage(pkg) }.getOrNull()
+    if (launch != null) {
         try {
-            context.startActivity(send); return
-        } catch (_: ActivityNotFoundException) {
+            context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            showToast(context, "질문을 복사했습니다. $name 새 대화에 길게 눌러 붙여넣으세요.")
+            return
+        } catch (_: Exception) {
         }
     }
-    provider.webLink(prompt)?.let { openUrl(context, it) }
+    val web = provider.webLink(prompt)
+    if (web != null) {
+        openUrl(context, web)
+        showToast(context, "$name 앱이 없어 웹으로 엽니다. 질문은 복사해 두었으니 붙여넣으세요.")
+    } else {
+        showToast(context, "$name 앱을 열지 못했습니다. 질문은 복사해 두었습니다.")
+    }
 }
 
 fun Double?.orDash(f: (Double) -> String): String = if (this == null || this.isNaN()) "-" else f(this)

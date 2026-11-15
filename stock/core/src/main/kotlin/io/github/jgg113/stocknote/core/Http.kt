@@ -69,8 +69,38 @@ internal fun JsonElement?.asList(): List<JsonObject> = when (this) {
 
 internal fun parseJson(body: String): JsonElement? = runCatching { lenientJson.parseToJsonElement(body.trim()) }.getOrNull()
 
+/**
+ * 붙여넣은 키를 정리한다. 키는 모두 영문·숫자·기호뿐이라, 복사하다 섞여 들어온
+ * 빈칸·줄바꿈·보이지 않는 글자·한글·따옴표를 걷어 낸다.
+ */
+object KeyText {
+    fun clean(raw: String): String = raw.filter { it in '!'..'~' }.trim('"', '\'', '`')
+
+    /** 화면에 보여 줄 때는 앞뒤 몇 글자와 길이만 */
+    fun masked(key: String): String = when {
+        key.isEmpty() -> ""
+        key.length <= 8 -> "${key.take(2)}… (${key.length}자)"
+        else -> "${key.take(4)}…${key.takeLast(4)} (${key.length}자)"
+    }
+}
+
+/** 통신 오류를 쉬운 말로 바꾼다. */
+fun networkReason(e: Throwable): String = when (e) {
+    is java.net.UnknownHostException -> "서버 주소를 찾지 못했습니다. 인터넷(와이파이·모바일 데이터)이 켜져 있는지 확인하세요."
+    is java.net.SocketTimeoutException -> "서버가 응답하지 않아 끊겼습니다. 와이파이가 막는 경우가 있으니 모바일 데이터로 바꿔 다시 해 보세요."
+    is javax.net.ssl.SSLException -> "보안 연결에 실패했습니다. 휴대폰 날짜·시간이 맞는지, VPN 이나 회사·학교 와이파이가 막고 있지 않은지 확인하세요. (${e.message ?: e.javaClass.simpleName})"
+    is java.net.ConnectException, is java.net.NoRouteToHostException -> "서버에 연결하지 못했습니다. 와이파이가 막는 경우가 있으니 모바일 데이터로 바꿔 다시 해 보세요. (${e.message ?: e.javaClass.simpleName})"
+    is IOException -> "인터넷 연결을 확인하세요. (${e.message ?: e.javaClass.simpleName})"
+    else -> "요청을 보내지 못했습니다. 키에 빈칸·줄바꿈·한글이 섞이지 않았는지 확인하세요. (${e.javaClass.simpleName})"
+}
+
 internal inline fun <T> network(name: String, block: () -> T): T = try {
     block()
-} catch (e: IOException) {
-    throw DataException("$name: 인터넷 연결을 확인하세요. (${e.message ?: e.javaClass.simpleName})", "NETWORK", retryable = true)
+} catch (e: DataException) {
+    throw e
+} catch (e: InterruptedException) {
+    throw e
+} catch (e: Exception) {
+    // IOException 뿐 아니라 주소·헤더에 못 쓰는 글자가 있을 때 나는 오류도 쉬운 말로 바꾼다.
+    throw DataException("$name: ${networkReason(e)}", "NETWORK", retryable = e is IOException)
 }

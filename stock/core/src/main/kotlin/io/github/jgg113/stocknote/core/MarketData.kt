@@ -25,6 +25,35 @@ data class DataKeys(
     val hasPublic: Boolean get() = dataGoKr.isNotBlank()
     val hasDart: Boolean get() = dart.isNotBlank()
     val hasTwelve: Boolean get() = twelveData.isNotBlank()
+
+    /** 붙여넣다 섞인 빈칸·줄바꿈·보이지 않는 글자를 걷어 낸 키 */
+    fun cleaned(): DataKeys = copy(
+        dataGoKr = KeyText.clean(dataGoKr), kisAppKey = KeyText.clean(kisAppKey), kisAppSecret = KeyText.clean(kisAppSecret),
+        dart = KeyText.clean(dart), twelveData = KeyText.clean(twelveData),
+    )
+
+    /** 키 모양이 평소와 다를 때 알려 줄 말 (틀렸다고 단정하지 않는다). 문제없으면 null */
+    fun hintDataGoKr(): String? = dataGoKr.takeIf { it.isNotEmpty() }?.let { k ->
+        when {
+            k.startsWith("http", true) || k.contains("serviceKey=", true) -> "주소 전체가 아니라 인증키만 넣으세요."
+            k.length < 40 -> "공공데이터포털 인증키는 보통 64자 이상입니다. 끝까지 복사됐는지 확인하세요."
+            else -> null
+        }
+    }
+
+    fun hintKisKey(): String? = kisAppKey.takeIf { it.isNotEmpty() }?.let { k ->
+        when {
+            k.length > 100 -> "앱시크릿(긴 것)을 앱키 칸에 넣은 것 같습니다. 앱키는 보통 36자입니다."
+            k.length < 30 -> "한국투자증권 앱키는 보통 36자입니다. 끝까지 복사됐는지 확인하세요."
+            else -> null
+        }
+    }
+
+    fun hintKisSecret(): String? = kisAppSecret.takeIf { it.isNotEmpty() && it.length < 100 }?.let {
+        "한국투자증권 앱시크릿은 보통 180자입니다. 앱키(짧은 것)를 넣었거나 중간에 잘렸는지 확인하세요."
+    }
+
+    fun hintDart(): String? = dart.takeIf { it.isNotEmpty() && it.length != 40 }?.let { "DART 인증키는 40자입니다. 지금 ${it.length}자입니다." }
 }
 
 /** 파일 캐시 (앱에서는 내부 저장소 파일) */
@@ -96,19 +125,35 @@ object MarketClock {
     }
 }
 
-data class SourceStatus(val name: String, val ok: Boolean, val detail: String, val page: String? = null)
+/**
+ * 연결 점검 한 줄. [detail] 은 서버가 한 말, [help] 는 고치는 방법, [page] 는 신청·발급 페이지.
+ * [switchKisVirtual] 이 있으면 한국투자증권 키가 반대쪽 서버(실전↔모의) 것이어서 설정을 그 값으로 바꿔야 한다.
+ */
+data class SourceStatus(
+    val name: String,
+    val ok: Boolean,
+    val detail: String,
+    val page: String? = null,
+    val help: String = "",
+    val pageLabel: String = "신청 페이지 열기",
+    val switchKisVirtual: Boolean? = null,
+) {
+    /** 키를 넣지 않아 안 쓰는 것뿐인 줄 (오류가 아니다) */
+    val unused: Boolean get() = !ok && detail.startsWith("키 없음")
+}
 
 /**
  * 앱이 쓰는 모든 시세·자료를 한곳에서 받는다. 키가 있는 출처를 먼저 쓰고, 받은 자료는 파일에 저장해 다시 받지 않는다.
  * 모든 함수는 네트워크를 쓰므로 백그라운드 스레드에서 부른다.
  */
 class MarketData(
-    private val keys: DataKeys,
+    rawKeys: DataKeys,
     private val cache: DataCache,
     private val tokenStore: KisTokenStore = MemoryTokenStore(),
     private val http: Http = UrlConnectionHttp(),
     private val now: () -> LocalDateTime = { LocalDateTime.now(KST) },
 ) {
+    private val keys: DataKeys = rawKeys.cleaned()
     private val json = lenientJson
     private val upbit = UpbitClient(http)
     private val publicData = PublicDataClient(keys.dataGoKr, http)
@@ -534,34 +579,80 @@ class MarketData(
         add(
             if (!keys.hasPublic) SourceStatus("공공데이터포털 주식시세", false, "키 없음", PublicDataClient.STOCK_PAGE)
             else runCatching { SourceStatus("공공데이터포털 주식시세", true, "최근 ${publicData.latestDate(now().toLocalDate()) ?: "-"} 시세") }
-                .getOrElse { SourceStatus("공공데이터포털 주식시세", false, it.message.orEmpty(), PublicDataClient.STOCK_PAGE) },
+                .getOrElse { SourceStatus("공공데이터포털 주식시세", false, it.message.orEmpty(), PublicDataClient.STOCK_PAGE, publicHelp(it, "금융위원회_주식시세정보")) },
         )
         add(
             if (!keys.hasPublic) SourceStatus("공공데이터포털 지수시세", false, "키 없음", PublicDataClient.INDEX_PAGE)
             else runCatching { val l = publicData.indices(listOf("코스피"), now().toLocalDate()); SourceStatus("공공데이터포털 지수시세", l.isNotEmpty(), l.firstOrNull()?.let { "코스피 ${Fmt.decimal(it.value)}" } ?: "자료 없음", PublicDataClient.INDEX_PAGE) }
-                .getOrElse { SourceStatus("공공데이터포털 지수시세", false, it.message.orEmpty(), PublicDataClient.INDEX_PAGE) },
+                .getOrElse { SourceStatus("공공데이터포털 지수시세", false, it.message.orEmpty(), PublicDataClient.INDEX_PAGE, publicHelp(it, "금융위원회_지수시세정보")) },
+        )
+        val (kisRow, kisWorking) = kisStatus()
+        add(kisRow)
+        if (kisWorking != null) add(
+            runCatching { val q = kisWorking.overseasQuote("AAPL", "NAS", "애플"); SourceStatus("한국투자증권 해외시세", q != null, q?.let { "애플 $${Fmt.decimal(it.price)}" } ?: "빈 응답") }
+                .getOrElse {
+                    SourceStatus(
+                        "한국투자증권 해외시세", false, it.message.orEmpty(),
+                        help = if ((it as? DataException)?.code == "NETWORK") "" else "해외시세는 KIS Developers 에서 앱키를 만들 때 해외주식 서비스도 함께 신청해야 나옵니다. 국내 시세만 쓴다면 그대로 두어도 됩니다.",
+                    )
+                },
         )
         add(
-            if (!keys.hasKis) SourceStatus("한국투자증권 (실시간)", false, "키 없음", KisClient.SIGNUP)
-            else runCatching { val q = kis.domesticQuote("005930", "삼성전자"); SourceStatus("한국투자증권 (실시간)", true, "삼성전자 ${Fmt.number(q.price)}원 (${if (keys.kisVirtual) "모의" else "실전"} 서버)") }
-                .getOrElse { SourceStatus("한국투자증권 (실시간)", false, it.message.orEmpty(), KisClient.SIGNUP) },
-        )
-        if (keys.hasKis) add(
-            runCatching { val q = kis.overseasQuote("AAPL", "NAS", "애플"); SourceStatus("한국투자증권 해외시세", q != null, q?.let { "애플 $${Fmt.decimal(it.price)}" } ?: "빈 응답") }
-                .getOrElse { SourceStatus("한국투자증권 해외시세", false, it.message.orEmpty()) },
-        )
-        add(
-            if (!keys.hasTwelve) SourceStatus("Twelve Data (해외)", false, "키 없음 (한국투자증권이 있으면 필요 없음)", TwelveDataClient.KEY_PAGE)
+            if (!keys.hasTwelve) SourceStatus("Twelve Data (해외)", false, "키 없음 (한국투자증권이 있으면 필요 없음)", TwelveDataClient.KEY_PAGE, pageLabel = "키 받는 곳 열기")
             else runCatching { val q = twelve.quote(Asset(Market.US, "AAPL", "애플", "NAS")); SourceStatus("Twelve Data (해외)", q != null, q?.let { "애플 $${Fmt.decimal(it.price)}" } ?: "빈 응답") }
-                .getOrElse { SourceStatus("Twelve Data (해외)", false, it.message.orEmpty(), TwelveDataClient.KEY_PAGE) },
+                .getOrElse { SourceStatus("Twelve Data (해외)", false, it.message.orEmpty(), TwelveDataClient.KEY_PAGE, pageLabel = "키 받는 곳 열기") },
         )
         add(
-            if (!keys.hasDart) SourceStatus("DART (공시·재무)", false, "키 없음", DartClient.KEY_PAGE)
+            if (!keys.hasDart) SourceStatus("DART (공시·재무)", false, "키 없음", DartClient.KEY_PAGE, pageLabel = "키 받는 곳 열기")
             else runCatching { SourceStatus("DART (공시·재무)", true, "최근 공시 ${dart.disclosures(null, now().toLocalDate().minusDays(3), now().toLocalDate(), 10).size}건 확인") }
-                .getOrElse { SourceStatus("DART (공시·재무)", false, it.message.orEmpty(), DartClient.KEY_PAGE) },
+                .getOrElse {
+                    SourceStatus(
+                        "DART (공시·재무)", false, it.message.orEmpty(), DartClient.KEY_PAGE,
+                        if ((it as? DataException)?.code == "NETWORK") "" else "DART 인증키는 opendart.fss.or.kr 에서 신청한 뒤 메일 인증까지 마쳐야 쓸 수 있습니다 (40자).",
+                        "키 받는 곳 열기",
+                    )
+                },
         )
         add(runCatching { SourceStatus("뉴스 (Google 뉴스)", true, "${newsClient.search("코스피", 5).size}건") }.getOrElse { SourceStatus("뉴스 (Google 뉴스)", false, it.message.orEmpty()) })
         add(runCatching { SourceStatus("환율", true, "1달러 ${Fmt.decimal(fx.usdKrw().first)}원") }.getOrElse { SourceStatus("환율", false, it.message.orEmpty()) })
+    }
+
+    private fun publicHelp(e: Throwable, api: String): String = when ((e as? DataException)?.code) {
+        "NETWORK", "429", "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR" -> ""
+        else ->
+            "공공데이터포털 키는 API 마다 따로 '활용신청'을 해야 열립니다. 다른 앱에서 잘 되던 키라도 '$api' 를 신청하지 않았으면 여기서는 안 됩니다. " +
+                "① 아래 [신청 페이지 열기] ② 로그인 ③ [활용신청] 을 누르면 바로 승인됩니다. 키는 지금 넣은 것을 그대로 쓰고, 신청 뒤 1~2시간쯤 지나 다시 점검하세요."
+    }
+
+    /** 한국투자증권 점검. 키가 반대쪽 서버(실전↔모의) 것이면 그쪽으로 되는지도 보고 알려 준다. 되는 쪽 연결을 함께 돌려준다. */
+    private fun kisStatus(): Pair<SourceStatus, KisClient?> {
+        val label = "한국투자증권 (실시간)"
+        if (!keys.hasKis) {
+            val half = keys.kisAppKey.isNotBlank() || keys.kisAppSecret.isNotBlank()
+            return SourceStatus(label, false, if (half) "앱키와 앱시크릿을 둘 다 넣어야 합니다." else "키 없음", KisClient.SIGNUP, pageLabel = "KIS Developers 열기") to null
+        }
+        fun server(v: Boolean) = if (v) "모의" else "실전"
+        fun price(c: KisClient) = Fmt.number(c.domesticQuote("005930", "삼성전자").price)
+        val first = runCatching { price(kis) }
+        first.getOrNull()?.let { return SourceStatus(label, true, "삼성전자 ${it}원 (${server(keys.kisVirtual)} 서버)") to kis }
+        val e = first.exceptionOrNull()
+        val code = (e as? DataException)?.code.orEmpty()
+        if (code == "KIS_KEY") {
+            val other = KisClient(keys.kisAppKey, keys.kisAppSecret, !keys.kisVirtual, tokenStore, http)
+            runCatching { price(other) }.getOrNull()?.let {
+                return SourceStatus(
+                    label, true, "삼성전자 ${it}원 (${server(!keys.kisVirtual)} 서버) · 이 키는 ${server(!keys.kisVirtual)}투자용이어서 서버 설정을 자동으로 바꿨습니다.",
+                    switchKisVirtual = !keys.kisVirtual,
+                ) to other
+            }
+        }
+        val help = when (code) {
+            "KIS_KEY" -> "실전·모의 두 서버 모두 이 키를 받아 주지 않았습니다. KIS Developers 의 [API 신청] 화면에 있는 앱키(36자)와 앱시크릿(180자)을 각각 맞는 칸에 처음부터 끝까지 복사했는지 확인하세요. 증권 앱 로그인 비밀번호나 계좌번호가 아닙니다. 키를 다시 발급받았다면 예전 키는 쓸 수 없습니다."
+            "NETWORK" -> "한국투자증권은 9443·29443 번 통로를 쓰는데, 회사·학교·공공 와이파이는 이 통로를 막는 곳이 많습니다. 와이파이를 끄고 모바일 데이터로 다시 점검해 보세요."
+            "KIS_WAIT" -> ""
+            else -> "KIS Developers 에서 서비스 신청(국내주식 시세)이 끝났는지, 키 유효기간이 지나지 않았는지 확인하세요."
+        }
+        return SourceStatus(label, false, e?.message.orEmpty(), KisClient.SIGNUP, help, "KIS Developers 열기") to null
     }
 
     fun clearCache() {

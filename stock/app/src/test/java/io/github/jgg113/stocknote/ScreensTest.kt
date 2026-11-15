@@ -8,6 +8,10 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.activity.ComponentActivity
 import android.graphics.Canvas
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
@@ -81,6 +85,12 @@ class ScreensTest {
     private fun swipeDown() {
         repeat(5) { compose.onRoot().performTouchInput { swipeDown(startY = height * 0.3f, endY = height * 0.85f, durationMillis = 300) } }
         repeat(20) { pump() }
+    }
+
+    /** 화면 밖에 있어도 누를 수 있게, 터치 대신 누르기 동작을 직접 부른다. */
+    private fun press(text: String) {
+        compose.onAllNodesWithText(text)[0].performSemanticsAction(SemanticsActions.OnClick)
+        repeat(5) { pump() }
     }
 
     private fun click(text: String) {
@@ -173,5 +183,58 @@ class ScreensTest {
         vm.setHomeMarket(Market.KR)
         waitFor(30, "home kr") { !vm.home.loading }
         shot("16_home_kr_without_keys")
+    }
+
+    /**
+     * 키를 넣기만 해도 저장되고, [연결 점검]이 그 키로 실제 서버에 물어 원인과 해결 방법을 보여 주는지 확인한다.
+     * (가짜 키를 쓰므로 서버가 거절하는 것이 정상이다.)
+     */
+    @Test
+    fun settingsKeysSaveAsTypedAndCheckExplains() {
+        compose.mainClock.autoAdvance = false
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = AppViewModel(app)
+        vm.setHomeMarket(Market.CRYPTO)
+        vm.tab = Tab.SETTINGS
+        compose.setContent { StockTheme { AppRoot(vm) } }
+        repeat(5) { pump() }
+
+        // 줄바꿈·빈칸이 섞인 채 붙여넣어도, [저장]을 누르지 않아도 정리되어 저장된다.
+        compose.onNodeWithText("공공데이터포털 인증키").performTextInput("fake key\n0123456789abcdef0123456789abcdef0123456789abcdef")
+        repeat(5) { pump() }
+        val expected = "fakekey0123456789abcdef0123456789abcdef0123456789abcdef"
+        check(vm.keys.dataGoKr == expected) { "화면 상태에 키가 반영되지 않았다: ${vm.keys.dataGoKr}" }
+        check(io.github.jgg113.stocknote.data.AppStore(app).keys.dataGoKr == expected) { "키가 저장되지 않았다" }
+        compose.onNodeWithText("한국투자증권 앱키").performTextInput("P".repeat(36))
+        repeat(5) { pump() }
+        shot("20_settings_keys_typed")
+
+        press("연결 점검")
+        waitFor(120, "checks") { vm.checks != null }
+        val rows = vm.checks ?: error("연결 점검이 끝나지 않았다")
+        rows.forEach { println("check ${if (it.ok) "OK" else if (it.unused) "--" else "XX"} ${it.name}: ${it.detail}") }
+        val stock = rows.first { it.name == "공공데이터포털 주식시세" }
+        check(!stock.ok && !stock.unused && stock.help.contains("활용신청")) { "가짜 키인데 안내가 없다: $stock" }
+        check(rows.first { it.name == "한국투자증권 (실시간)" }.detail.contains("둘 다")) { "앱시크릿이 빠진 것을 알려 주지 않는다" }
+        check(!vm.checksText().contains(expected)) { "복사하는 점검 결과에 키가 들어가면 안 된다" }
+        swipe(); shot("21_settings_check_result")
+        swipe(); shot("21_settings_check_result_2")
+
+        // AI: 고르는 즉시·넣는 즉시 저장되고, [AI 연결 테스트]가 결과를 보여 준다.
+        press("Gemini (무료 API 키)")
+        check(io.github.jgg113.stocknote.data.AppStore(app).aiProvider == io.github.jgg113.stocknote.core.AiProvider.GEMINI_API) { "AI 선택이 저장되지 않았다" }
+        compose.onNodeWithText("Gemini API 키").performTextInput("AIza fake key 0123456789")
+        repeat(5) { pump() }
+        check(io.github.jgg113.stocknote.data.AppStore(app).aiKey(io.github.jgg113.stocknote.core.AiProvider.GEMINI_API) == "AIzafakekey0123456789") { "AI 키가 저장되지 않았다" }
+        press("AI 연결 테스트")
+        waitFor(60, "ai test") { vm.aiTest?.loading == false }
+        println("ai test: ${vm.aiTest}")
+        check(vm.aiTest?.error?.contains("키가 맞지 않습니다") == true) { "가짜 키인데 알려 주지 않는다: ${vm.aiTest}" }
+        shot("22_settings_ai_test")
+
+        // 앱으로 넘기기: 앱이 없으면 웹으로 넘어가고 죽지 않는다.
+        press("Gemini 앱으로 넘기기")
+        press("넘기기 테스트")
+        shot("23_settings_ai_app")
     }
 }

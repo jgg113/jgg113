@@ -8,6 +8,27 @@ import kotlin.test.assertTrue
 class LiveTest {
     private fun live() = assumeTrue(System.getenv("LIVE") == "1")
 
+    /** 가짜 키로 각 서버에 실제 요청을 보내, 요청 형식이 받아들여지고 오류가 알기 쉬운 말로 바뀌는지 본다. */
+    @Test
+    fun serversAnswerDummyKeysWithReadableErrors() {
+        live()
+        fun show(name: String, block: () -> Any?) {
+            val r = runCatching(block)
+            println("[$name] " + (r.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" } ?: "응답: ${r.getOrNull().toString().take(160)}"))
+        }
+        show("공공데이터 주식시세") { PublicDataClient("dummykey123").latestDate() }
+        show("공공데이터 지수시세") { PublicDataClient("dummykey123").indices(listOf("코스피")) }
+        show("한국투자 실전") { KisClient("PSdummyAppKey0000000000000000000000", "dummySecret").domesticQuote("005930") }
+        show("한국투자 모의") { KisClient("PSdummyAppKey0000000000000000000000", "dummySecret", virtual = true).domesticQuote("005930") }
+        show("DART") { DartClient("0000000000000000000000000000000000000000").disclosures(null, java.time.LocalDate.now().minusDays(3)) }
+        show("Twelve Data 데모") { TwelveDataClient("demo").quote(Asset(Market.US, "AAPL", "애플", "NAS")) }
+        show("Twelve Data 가짜") { TwelveDataClient("bad").quote(Asset(Market.US, "AAPL", "애플", "NAS")) }
+        show("Gemini") { GeminiClient("AIzaDummyKey000000000000000000000000000").generate("안녕") }
+        show("Groq") { AiEngines.create(AiProvider.GROQ_API, "gsk_dummy")!!.generate("안녕") }
+        show("OpenRouter") { AiEngines.create(AiProvider.OPENROUTER_API, "sk-or-dummy")!!.generate("안녕") }
+        show("한투 종목파일") { KisMaster.download(UrlConnectionHttp()).size }
+    }
+
     /** 실제 Kronos 가중치로 구현이 맞는지 점검한다: KRONOS_DIR 에 가중치 두 파일이 있어야 한다. */
     @Test
     fun kronosSanity() {

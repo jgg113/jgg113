@@ -7,7 +7,7 @@ import java.time.format.DateTimeFormatter
 object ServiceKey {
     /** data.go.kr 의 Encoding 키(%2B…)와 Decoding 키(+/=) 를 모두 받아 Decoding 형태로 맞춘다. */
     fun normalize(raw: String): String {
-        val compact = raw.filterNot { it.isWhitespace() }
+        val compact = KeyText.clean(raw)
         if (!compact.contains('%')) return compact
         return runCatching { URLDecoder.decode(compact, "UTF-8") }.getOrDefault(compact)
     }

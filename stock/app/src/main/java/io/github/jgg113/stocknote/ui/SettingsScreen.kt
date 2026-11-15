@@ -3,6 +3,16 @@ package io.github.jgg113.stocknote.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.VisualTransformation
+import io.github.jgg113.stocknote.core.AiTest
+import io.github.jgg113.stocknote.core.KeyText
+import io.github.jgg113.stocknote.core.SourceStatus
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -47,7 +57,9 @@ import io.github.jgg113.stocknote.ui.theme.PriceColors
 @Composable
 fun SettingsScreen(vm: AppViewModel) {
     val context = LocalContext.current
-    var k by remember(vm.keys) { mutableStateOf(vm.keys) }
+    val k = vm.keys
+    // 화면을 떠날 때, 바뀐 키로 시세를 다시 받는다.
+    DisposableEffect(Unit) { onDispose { vm.applyKeyChanges() } }
     val saveBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) {
             val ok = runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(vm.exportBackup().toByteArray()) } != null }.getOrDefault(false)
@@ -65,49 +77,57 @@ fun SettingsScreen(vm: AppViewModel) {
 
         SectionCard("시세·자료 연결 (모두 무료)") {
             Text("코인(업비트)·뉴스·환율은 키 없이 됩니다. 아래 키는 넣은 것만 씁니다.", style = MaterialTheme.typography.bodySmall)
-            KeyBlock("공공데이터포털 인증키", "국내 주식 전 종목 시세(전날 종가)·지수. 마이페이지의 일반 인증키를 그대로 붙여넣으세요.", k.dataGoKr, { k = k.copy(dataGoKr = it) }) {
+            Notice("키는 넣는 즉시 이 휴대폰에 저장됩니다. 넣은 뒤 맨 아래 [연결 점검]을 눌러 실제로 되는지 확인하세요.")
+            KeyField(
+                "공공데이터포털 인증키", k.dataGoKr, { vm.updateKeys(vm.keys.copy(dataGoKr = it)) },
+                "국내 주식 전 종목 시세(전날 종가)·지수. 마이페이지의 일반 인증키를 그대로 붙여넣으세요. 다른 용도로 받아 둔 키가 있어도, 아래 두 API 를 각각 '활용신청'해야 이 앱에서 열립니다 (키는 같은 것을 씁니다).",
+                k.hintDataGoKr(),
+            ) {
                 TextButton(onClick = { openUrl(context, PublicDataClient.STOCK_PAGE) }) { Text("주식시세 신청") }
                 TextButton(onClick = { openUrl(context, PublicDataClient.INDEX_PAGE) }) { Text("지수시세 신청") }
             }
-            KeyBlock("한국투자증권 앱키", "국내·해외 실시간 시세와 분봉. 한국투자증권 계좌를 만든 뒤 KIS Developers 에서 신청합니다 (무료). 이 앱은 시세만 보고 주문은 하지 않습니다.", k.kisAppKey, { k = k.copy(kisAppKey = it) }) {
+            KeyField(
+                "한국투자증권 앱키", k.kisAppKey, { vm.updateKeys(vm.keys.copy(kisAppKey = it)) },
+                "국내·해외 실시간 시세와 분봉. 한국투자증권 계좌를 만든 뒤 KIS Developers 에서 신청합니다 (무료). 이 앱은 시세만 보고 주문은 하지 않습니다.",
+                k.hintKisKey(),
+            ) {
                 TextButton(onClick = { openUrl(context, KisClient.SIGNUP) }) { Text("KIS Developers") }
             }
-            OutlinedTextField(k.kisAppSecret, { k = k.copy(kisAppSecret = it.trim()) }, label = { Text("한국투자증권 앱시크릿") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            KeyField("한국투자증권 앱시크릿", k.kisAppSecret, { vm.updateKeys(vm.keys.copy(kisAppSecret = it)) }, "앱키와 함께 받는 긴 글자(약 180자)입니다.", k.hintKisSecret(), secret = true)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("모의투자 서버 키", modifier = Modifier.weight(1f))
-                Switch(k.kisVirtual, { k = k.copy(kisVirtual = it) })
+                Switch(k.kisVirtual, { vm.updateKeys(vm.keys.copy(kisVirtual = it)) })
             }
-            SmallLabel("모의투자용으로 받은 앱키면 켜세요. 모의 서버는 초당 호출이 적어 느리고 실시간 순위는 볼 수 없습니다.")
-            KeyBlock("DART 인증키", "국내 공시·재무제표. 회원가입 뒤 바로 받습니다.", k.dart, { k = k.copy(dart = it) }) {
+            SmallLabel("모의투자용으로 받은 앱키면 켜세요. 잘 모르겠으면 그대로 두고 [연결 점검]을 누르면 어느 쪽 키인지 알아서 맞춥니다. 모의 서버는 초당 호출이 적어 느리고 실시간 순위는 볼 수 없습니다.")
+            KeyField("DART 인증키", k.dart, { vm.updateKeys(vm.keys.copy(dart = it)) }, "국내 공시·재무제표. 회원가입 뒤 바로 받습니다.", k.hintDart()) {
                 TextButton(onClick = { openUrl(context, DartClient.KEY_PAGE) }) { Text("DART 키 받기") }
             }
-            KeyBlock("Twelve Data API 키", "한국투자증권이 없을 때 미국 주식 시세·일봉 (무료 하루 800회).", k.twelveData, { k = k.copy(twelveData = it) }) {
+            KeyField("Twelve Data API 키", k.twelveData, { vm.updateKeys(vm.keys.copy(twelveData = it)) }, "한국투자증권이 없을 때 미국 주식 시세·일봉 (무료 하루 800회).", null) {
                 TextButton(onClick = { openUrl(context, TwelveDataClient.KEY_PAGE) }) { Text("키 받기") }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                Button(onClick = { vm.saveKeys(k.copy(dataGoKr = k.dataGoKr.trim(), kisAppKey = k.kisAppKey.trim(), dart = k.dart.trim(), twelveData = k.twelveData.trim())) }) { Text("저장") }
-                OutlinedButton(onClick = { vm.runChecks() }, enabled = !vm.checking) { Text(if (vm.checking) "점검 중…" else "연결 점검") }
+            Button(onClick = { vm.runChecks() }, enabled = !vm.checking, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                Text(if (vm.checking) "점검 중… (길면 1분쯤 걸립니다)" else "연결 점검")
             }
             vm.checks?.let { list ->
                 Spacer(Modifier.height(8.dp))
-                list.forEach { s ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).let { m -> s.page?.let { p -> m.clickable { openUrl(context, p) } } ?: m }, verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (s.ok) "✓" else "✕", color = if (s.ok) PriceColors.up else MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, modifier = Modifier.padding(end = 8.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(s.name, style = MaterialTheme.typography.bodyMedium)
-                            SmallLabel(s.detail + if (!s.ok && s.page != null) " (눌러서 신청 페이지 열기)" else "")
-                        }
-                    }
-                }
+                val failed = list.count { !it.ok && !it.unused }
+                Text(
+                    if (failed == 0) "넣은 키는 모두 정상입니다." else "${failed}곳이 연결되지 않았습니다. 아래 설명대로 해 보세요.",
+                    style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold,
+                    color = if (failed == 0) OkGreen else MaterialTheme.colorScheme.error,
+                )
+                list.forEach { CheckRow(it) }
+                OutlinedButton(onClick = { copyText(context, vm.checksText()); vm.message("점검 결과를 복사했습니다. 키는 들어 있지 않습니다.") }) { Text("점검 결과 복사") }
+                SmallLabel("그래도 안 되면 복사한 점검 결과를 그대로 알려 주세요. 원인을 바로 찾을 수 있습니다.")
             }
         }
 
         SectionCard("AI 해설") {
-            var provider by remember { mutableStateOf(vm.store.aiProvider) }
-            var key by remember(provider) { mutableStateOf(vm.aiKey(provider)) }
+            val provider = vm.aiProvider
+            SmallLabel("고르는 즉시 저장됩니다. 고른 방법으로 종목 화면의 AI 해설·질문이 나갑니다.")
             AiProvider.entries.forEach { p ->
-                Row(Modifier.fillMaxWidth().clickable { provider = p; vm.store.aiProvider = p }, verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(provider == p, { provider = p; vm.store.aiProvider = p })
+                Row(Modifier.fillMaxWidth().clickable { vm.chooseAiProvider(p) }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(provider == p, { vm.chooseAiProvider(p) })
                     Column(Modifier.weight(1f)) {
                         Text(p.label)
                         SmallLabel(p.description)
@@ -115,11 +135,31 @@ fun SettingsScreen(vm: AppViewModel) {
                 }
             }
             if (provider.isApi) {
-                OutlinedTextField(key, { key = it }, label = { Text("${provider.label} 키") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                Row {
-                    TextButton(onClick = { vm.store.saveAiKey(provider, key); vm.message("AI 키를 저장했습니다.") }) { Text("키 저장") }
+                val key = vm.aiKey(provider)
+                KeyField("${provider.label.substringBefore(" (")} API 키", key, { vm.updateAiKey(provider, it) }, "", provider.keyHint(key), secret = true) {
                     provider.keyPage?.let { page -> TextButton(onClick = { openUrl(context, page) }) { Text("무료 키 받기") } }
                 }
+                val t = vm.aiTest
+                Button(onClick = { vm.testAi() }, enabled = t?.loading != true, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    Text(if (t?.loading == true) "테스트 중…" else "AI 연결 테스트")
+                }
+                when {
+                    t == null || t.loading -> Unit
+                    t.ok -> {
+                        Text("✓ 연결되었습니다 (${t.model})", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = OkGreen, modifier = Modifier.padding(top = 6.dp))
+                        SmallLabel("시험 답변: ${t.text}")
+                    }
+                    else -> Text("✕ ${t.error}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 6.dp))
+                }
+            }
+            if (provider.isAppHandoff) {
+                val installed = remember(provider) { aiAppInstalled(context, provider) }
+                Text(
+                    if (installed) "✓ 이 휴대폰에 앱이 설치되어 있습니다." else "이 휴대폰에서 앱을 찾지 못했습니다. 웹으로 열립니다.",
+                    style = MaterialTheme.typography.bodySmall, color = if (installed) OkGreen else MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 6.dp),
+                )
+                OutlinedButton(onClick = { handoffToAi(context, provider, AiTest.PROMPT) }) { Text("넘기기 테스트") }
+                SmallLabel("질문은 항상 복사해 둡니다. 앱이 열렸는데 입력창이 비어 있으면 입력창을 길게 눌러 붙여넣으세요. 답은 그 앱에서 봅니다 (키가 필요 없습니다).")
             }
             SmallLabel("'AI 예측' 점수는 앱 안에서 통계로 계산하므로 AI 키가 없어도 나옵니다. AI 해설은 그 숫자를 글로 풀어 주는 기능입니다.")
         }
@@ -204,14 +244,67 @@ fun SettingsScreen(vm: AppViewModel) {
     }
 }
 
+private val OkGreen = Color(0xFF43A047)
+
+/**
+ * 키 입력 칸. 넣는 즉시 [onChange] 로 저장되고, 저장된 길이를 보여 줘 제대로 들어갔는지 알 수 있다.
+ * 붙여넣다 섞이는 빈칸·줄바꿈은 걷어 낸다.
+ */
 @Composable
-private fun KeyBlock(title: String, help: String, value: String, onChange: (String) -> Unit, links: @Composable () -> Unit) {
+private fun KeyField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    help: String,
+    hint: String?,
+    secret: Boolean = false,
+    links: @Composable RowScope.() -> Unit = {},
+) {
+    val context = LocalContext.current
+    var show by remember { mutableStateOf(!secret) }
     Column(Modifier.padding(top = 10.dp)) {
-        OutlinedTextField(value, { onChange(it.trim()) }, label = { Text(title) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        SmallLabel(help)
-        Row { links() }
+        OutlinedTextField(
+            value, { onChange(KeyText.clean(it)) },
+            label = { Text(label) },
+            singleLine = true,
+            visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (help.isNotEmpty()) SmallLabel(help)
+        Text(
+            if (value.isEmpty()) "아직 넣지 않았습니다." else "저장됨 · " + if (show) KeyText.masked(value) else "${value.length}자",
+            style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium,
+            color = if (value.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else OkGreen,
+        )
+        if (hint != null) Text("확인해 보세요: $hint", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = {
+                val t = KeyText.clean(pasteText(context))
+                if (t.isEmpty()) showToast(context, "복사해 둔 키가 없습니다. 키를 먼저 복사하세요.") else onChange(t)
+            }) { Text("붙여넣기") }
+            if (value.isNotEmpty()) TextButton(onClick = { onChange("") }) { Text("지우기") }
+            if (secret) TextButton(onClick = { show = !show }) { Text(if (show) "가리기" else "보기") }
+            links()
+        }
     }
 }
 
-@Suppress("unused")
-private fun DataKeys.count() = listOf(hasPublic, hasKis, hasDart, hasTwelve).count { it }
+/** 연결 점검 한 줄: 서버가 한 말, 고치는 방법, 신청 페이지 버튼 */
+@Composable
+private fun CheckRow(s: SourceStatus) {
+    val context = LocalContext.current
+    val failed = !s.ok && !s.unused
+    val mark = if (s.ok) "✓" else if (s.unused) "–" else "✕"
+    val color = if (s.ok) OkGreen else if (s.unused) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
+        Text(mark, color = color, fontWeight = FontWeight.Bold, modifier = Modifier.padding(end = 8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(s.name, style = MaterialTheme.typography.bodyMedium)
+            Text(s.detail, style = MaterialTheme.typography.bodySmall, color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            if (failed && s.help.isNotEmpty()) SmallLabel(s.help, Modifier.padding(top = 2.dp))
+            val page = s.page
+            if (failed && page != null) OutlinedButton(onClick = { openUrl(context, page) }, modifier = Modifier.padding(top = 4.dp)) { Text(s.pageLabel) }
+        }
+    }
+}

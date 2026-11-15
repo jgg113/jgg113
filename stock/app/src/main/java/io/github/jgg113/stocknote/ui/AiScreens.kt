@@ -169,7 +169,7 @@ fun AiForecastTab(vm: AppViewModel) {
     }
 
     SectionCard("AI 해설") {
-        val provider = vm.store.aiProvider
+        val provider = vm.aiProvider
         Button(onClick = { vm.askAi(StockPrompt.Mode.SUMMARY) { p, text -> handoffToAi(context, p, text) } }) {
             Text(if (provider == io.github.jgg113.stocknote.core.AiProvider.NONE) "AI 해설 받기" else "AI 해설 받기 (${provider.label})")
         }

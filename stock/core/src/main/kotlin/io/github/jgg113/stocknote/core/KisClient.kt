@@ -94,18 +94,22 @@ class KisClient(
     private val tokens: KisTokenStore = MemoryTokenStore(),
     private val http: Http = UrlConnectionHttp(),
 ) {
-    private val key = appKey.trim()
-    private val secret = appSecret.trim()
+    private val key = KeyText.clean(appKey)
+    private val secret = KeyText.clean(appSecret)
     private val base = if (virtual) VIRTUAL else REAL
     private var lastCall = 0L
 
     val configured: Boolean get() = key.isNotEmpty() && secret.isNotEmpty()
 
+    /** 토큰은 앱키와 서버(실전·모의)마다 다르다. */
+    private val tokenTag = "$key|$base".hashCode()
+    private val serverName = if (virtual) "모의" else "실전"
+
     @Synchronized
     private fun token(): String {
         val saved = tokens.load()
         val now = System.currentTimeMillis() / 1000
-        if (saved != null && saved.appKeyHash == key.hashCode() && saved.expiresAt - 600 > now) return saved.token
+        if (saved != null && saved.appKeyHash == tokenTag && saved.expiresAt - 600 > now) return saved.token
         val body = buildJsonObject {
             put("grant_type", "client_credentials")
             put("appkey", key)
@@ -117,17 +121,15 @@ class KisClient(
         if (r.status != 200 || access.isEmpty()) {
             val code = o?.str("error_code").orEmpty()
             val desc = o?.str("error_description").orEmpty()
-            throw DataException(
-                when {
-                    code == "EGW00133" -> "한국투자증권 접근 토큰은 1분에 한 번만 받을 수 있습니다. 1분 뒤 다시 시도하세요."
-                    code == "EGW00103" || code == "EGW00105" || desc.contains("유효하지 않은") -> "한국투자증권 앱키·시크릿이 맞지 않습니다. 실전/모의 서버 선택도 확인하세요."
-                    else -> "한국투자증권 토큰을 받지 못했습니다: ${desc.ifBlank { "HTTP ${r.status}" }}"
-                },
-                "KIS_TOKEN$code",
-            )
+            val badKey = code == "EGW00103" || code == "EGW00105" || code == "EGW00002" || desc.contains("유효하지 않은") || desc.contains("AppKey", true) || desc.contains("AppSecret", true)
+            throw when {
+                code == "EGW00133" -> DataException("한국투자증권 접근 토큰은 1분에 한 번만 받을 수 있습니다. 1분 뒤 다시 시도하세요.", "KIS_WAIT", retryable = true)
+                badKey -> DataException("한국투자증권 $serverName 서버가 이 키를 받아 주지 않습니다: ${desc.ifBlank { code }}", "KIS_KEY")
+                else -> DataException("한국투자증권 토큰을 받지 못했습니다 ($serverName 서버): ${desc.ifBlank { "HTTP ${r.status}" }}", "KIS_TOKEN$code")
+            }
         }
         val expiresIn = o?.dbl("expires_in")?.toLong() ?: 86_400
-        tokens.save(KisToken(access, now + expiresIn, key.hashCode()))
+        tokens.save(KisToken(access, now + expiresIn, tokenTag))
         return access
     }
 

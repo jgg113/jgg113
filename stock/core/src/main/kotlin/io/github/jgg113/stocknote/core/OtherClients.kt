@@ -14,7 +14,7 @@ import javax.xml.parsers.DocumentBuilderFactory
  * Twelve Data (무료 키, 하루 800회·분당 8회). 한국투자증권 계좌가 없을 때 미국 주식 시세·일봉을 받는다.
  */
 class TwelveDataClient(apiKey: String, private val http: Http = UrlConnectionHttp()) {
-    private val key = apiKey.trim()
+    private val key = KeyText.clean(apiKey)
 
     private fun call(path: String, params: Map<String, String>): String {
         if (key.isBlank()) throw DataException("설정에서 Twelve Data API 키를 넣거나 한국투자증권을 연결하세요.", "NOKEY")
@@ -107,7 +107,7 @@ data class Financials(
 
 /** 금융감독원 DART Open API (무료 인증키): 공시 목록·재무제표 */
 class DartClient(apiKey: String, private val http: Http = UrlConnectionHttp()) {
-    private val key = apiKey.trim()
+    private val key = KeyText.clean(apiKey)
 
     private fun call(path: String, params: Map<String, String>): kotlinx.serialization.json.JsonObject {
         if (key.isBlank()) throw DataException("설정에서 DART 인증키를 넣으세요.", "NOKEY")

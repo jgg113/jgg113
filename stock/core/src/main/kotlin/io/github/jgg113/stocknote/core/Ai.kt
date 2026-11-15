@@ -33,6 +33,16 @@ enum class AiProvider(
     val isApi: Boolean get() = keyPage != null
     val isAppHandoff: Boolean get() = packageName != null
 
+    /** 다른 곳의 키를 넣은 것 같을 때 알려 줄 말. 문제없으면 null */
+    fun keyHint(key: String): String? = when {
+        key.isEmpty() -> null
+        this == GEMINI_API && (key.startsWith("gsk_") || key.startsWith("sk-")) -> "Gemini 키가 아닌 것 같습니다. Google AI Studio 키는 보통 AIza 로 시작합니다."
+        this == GROQ_API && !key.startsWith("gsk_") -> "Groq 키는 gsk_ 로 시작합니다. 다른 곳의 키가 아닌지 확인하세요."
+        this == OPENROUTER_API && !key.startsWith("sk-or-") -> "OpenRouter 키는 sk-or- 로 시작합니다. 다른 곳의 키가 아닌지 확인하세요."
+        key.length < 20 -> "키가 너무 짧습니다. 끝까지 복사됐는지 확인하세요."
+        else -> null
+    }
+
     fun webLink(prompt: String): String? = webUrl?.replace("{q}", URLEncoder.encode(prompt.take(1500), "UTF-8").replace("+", "%20"))
 }
 
@@ -69,7 +79,7 @@ class OpenAiCompatClient(
     private val http: Http = UrlConnectionHttp(),
     private val extraHeaders: Map<String, String> = emptyMap(),
 ) : AiEngine {
-    private val key = apiKey.trim()
+    private val key = KeyText.clean(apiKey)
 
     override fun generate(prompt: String): AiAnswer {
         var last: DataException? = null
@@ -83,29 +93,32 @@ class OpenAiCompatClient(
             val error = root?.get("error").obj()
             if (r.status != 200 || error != null) {
                 val message = error?.str("message").orEmpty()
-                val modelProblem = r.status == 404 || (r.status == 400 && message.contains("model", true))
-                if (modelProblem) { last = DataException("$name 모델 $model 을 쓸 수 없습니다."); continue }
-                throw when (r.status) {
-                    401 -> DataException("$name API 키가 맞지 않습니다.")
-                    402 -> DataException("$name 계정에 남은 크레딧이 없습니다.")
-                    429 -> DataException("$name 사용 한도를 넘었습니다. 잠시 뒤 다시 시도하세요.", retryable = true)
+                val e = when {
+                    r.status == 401 -> throw DataException("$name API 키가 맞지 않습니다. 키를 처음부터 끝까지 다시 복사해 넣어 보세요.", "AI_KEY")
+                    r.status == 402 -> DataException("$name 계정에 남은 크레딧이 없습니다.")
+                    r.status == 404 || (r.status == 400 && message.contains("model", true)) -> DataException("$name 모델 $model 을 쓸 수 없습니다.")
+                    r.status == 429 -> DataException("$name 사용 한도를 넘었습니다. 잠시 뒤 다시 시도하세요.", retryable = true)
                     else -> DataException("$name 오류 (${r.status}): ${message.ifBlank { r.body.take(120) }}", retryable = r.status >= 500)
                 }
+                // 한도·모델 문제는 모델마다 다르므로 다음 모델로 넘어가 본다.
+                if (last == null || r.status != 404) last = e
+                continue
             }
             val text = ((root?.get("choices") as? JsonArray)?.firstOrNull().obj()?.get("message").obj()?.get("content") as? JsonPrimitive)?.content?.trim().orEmpty()
-            if (text.isEmpty()) throw DataException("$name 가 빈 답을 보냈습니다. 다시 시도해 보세요.", retryable = true)
+            if (text.isEmpty()) { last = DataException("$name 가 빈 답을 보냈습니다. 다시 시도해 보세요.", retryable = true); continue }
             return AiAnswer(text, model)
         }
         throw last ?: DataException("사용할 수 있는 $name 모델이 없습니다.")
     }
 }
 
-class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(), private val models: List<String> = listOf("gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest")) : AiEngine {
-    private val key = apiKey.trim()
+class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(), private val models: List<String> = DEFAULT_MODELS) : AiEngine {
+    private val key = KeyText.clean(apiKey)
 
     override fun generate(prompt: String): AiAnswer {
         var last: DataException? = null
-        for (model in models) {
+        var allMissing = true
+        fun attempt(model: String): AiAnswer? {
             val body = buildJsonObject {
                 putJsonArray("contents") {
                     add(buildJsonObject {
@@ -113,17 +126,43 @@ class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(),
                         putJsonArray("parts") { add(buildJsonObject { put("text", prompt) }) }
                     })
                 }
-                putJsonObject("generationConfig") { put("temperature", 0.3); put("maxOutputTokens", 4096) }
+                putJsonObject("generationConfig") { put("temperature", 0.3); put("maxOutputTokens", 8192) }
             }.toString()
             val r = network("Gemini") { http.post("$BASE/$model:generateContent", mapOf("Content-Type" to "application/json; charset=UTF-8", "x-goog-api-key" to key), body) }
-            if (r.status == 404) { last = DataException("Gemini 모델 $model 을 찾지 못했습니다."); continue }
-            return AiAnswer(parse(r.status, r.body), model)
+            if (r.status == 404) { if (last == null) last = DataException("Gemini 모델 $model 을 찾지 못했습니다."); return null }
+            allMissing = false
+            return try {
+                AiAnswer(parse(r.status, r.body), model)
+            } catch (e: DataException) {
+                // 키가 틀린 것은 어느 모델이든 같으니 바로 알린다. 한도·권한·서버 문제는 모델마다 달라 다음 모델로 넘어간다.
+                if (e.code == "AI_KEY") throw e
+                last = e
+                null
+            }
         }
+        for (model in models) attempt(model)?.let { return it }
+        // 정해 둔 이름이 모두 없어졌으면, 이 키로 쓸 수 있는 모델을 물어 다시 해 본다.
+        if (allMissing) for (model in runCatching { discover() }.getOrDefault(emptyList()).filter { it !in models }.take(3)) attempt(model)?.let { return it }
         throw last ?: DataException("사용할 수 있는 Gemini 모델이 없습니다.")
+    }
+
+    /** 이 키로 글을 만들 수 있는 flash 계열 모델 이름 (정식판·새 버전 먼저) */
+    fun discover(): List<String> {
+        val r = network("Gemini") { http.get("$BASE?pageSize=200", mapOf("x-goog-api-key" to key)) }
+        return parseModels(r.body)
     }
 
     companion object {
         const val BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+        val DEFAULT_MODELS = listOf("gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest")
+        private val SKIP = listOf("image", "tts", "audio", "live", "embedding", "robotics", "computer")
+
+        fun parseModels(body: String): List<String> =
+            (parseJson(body).obj()?.get("models") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+                .filter { m -> (m["supportedGenerationMethods"] as? JsonArray).orEmpty().any { (it as? JsonPrimitive)?.content == "generateContent" } }
+                .map { it.str("name").removePrefix("models/") }
+                .filter { n -> n.startsWith("gemini") && "flash" in n && SKIP.none { it in n } }
+                .sortedWith(compareBy<String> { "preview" in it || "exp" in it }.thenBy { "lite" in it }.thenByDescending { it })
 
         fun parse(status: Int, body: String): String {
             val root = parseJson(body).obj()
@@ -132,20 +171,30 @@ class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(),
                 val message = error?.str("message").orEmpty()
                 val reason = error?.str("status").orEmpty()
                 throw when {
-                    status == 400 && message.contains("key", true) -> DataException("Gemini API 키가 맞지 않습니다.")
-                    status == 403 || reason == "PERMISSION_DENIED" -> DataException("이 키로 Gemini API 를 쓸 수 없습니다.")
-                    status == 429 || reason == "RESOURCE_EXHAUSTED" -> DataException("Gemini 무료 한도를 넘었습니다. 1분쯤 뒤나 내일 다시 쓰세요.", retryable = true)
+                    (status == 400 || status == 401) && (message.contains("API key", true) || message.contains("API_KEY", true)) ->
+                        DataException("Gemini API 키가 맞지 않습니다. Google AI Studio 에서 키를 다시 복사해 넣어 보세요.", "AI_KEY")
+                    status == 403 || reason == "PERMISSION_DENIED" -> DataException("이 키로 Gemini API 를 쓸 수 없습니다: ${message.take(160).ifBlank { "권한 없음" }}", "AI_DENIED")
+                    status == 429 || reason == "RESOURCE_EXHAUSTED" -> DataException("Gemini 무료 한도를 넘었습니다. 1분쯤 뒤나 내일 다시 쓰세요.", "AI_LIMIT", retryable = true)
                     status >= 500 -> DataException("Gemini 서버가 잠시 응답하지 않습니다.", retryable = true)
+                    reason == "FAILED_PRECONDITION" -> DataException("이 지역·계정에서는 Gemini 무료 API 를 쓸 수 없습니다: ${message.take(160)}", "AI_DENIED")
                     else -> DataException("Gemini 오류 ($status): ${message.ifBlank { body.take(120) }}")
                 }
             }
             val candidate = (root?.get("candidates") as? JsonArray)?.firstOrNull().obj()
             val parts = (candidate?.get("content").obj()?.get("parts") as? JsonArray).orEmpty()
             val text = parts.mapNotNull { ((it as? JsonObject)?.get("text") as? JsonPrimitive)?.content }.joinToString("").trim()
-            if (text.isEmpty()) throw DataException("Gemini 가 빈 답을 보냈습니다. 다시 시도해 보세요.", retryable = true)
+            if (text.isEmpty()) {
+                val why = candidate?.str("finishReason").orEmpty().ifBlank { root?.get("promptFeedback").obj()?.str("blockReason").orEmpty() }
+                throw DataException("Gemini 가 빈 답을 보냈습니다${if (why.isNotBlank()) " ($why)" else ""}. 다시 시도해 보세요.", retryable = true)
+            }
             return text
         }
     }
+}
+
+/** 설정 화면의 [연결 테스트]: 짧은 질문 하나로 키가 되는지 본다. */
+object AiTest {
+    const val PROMPT = "한 문장으로 답해 줘: 주가수익비율(PER)이란?"
 }
 
 object AiText {

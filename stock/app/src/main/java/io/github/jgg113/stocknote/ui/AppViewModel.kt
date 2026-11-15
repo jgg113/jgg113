@@ -85,6 +85,9 @@ data class AiUiState(
     val error: String? = null,
 )
 
+/** 설정 화면의 AI [연결 테스트] 결과 */
+data class AiTestState(val loading: Boolean = false, val ok: Boolean = false, val text: String = "", val model: String = "", val error: String = "")
+
 /** 미리 학습된 Kronos 모델의 상태 */
 data class KronosState(
     val installed: Boolean = false,
@@ -297,13 +300,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ───────── 설정 ─────────
 
-    fun saveKeys(k: DataKeys) {
-        store.keys = k
-        keys = k
+    /**
+     * 키는 넣는 즉시 저장한다. ([저장]을 따로 눌러야만 반영되던 탓에 키를 넣고도 연결되지 않던 문제를 없앤다.)
+     * 붙여넣다 섞인 빈칸·줄바꿈·보이지 않는 글자는 걷어 낸다.
+     */
+    fun updateKeys(k: DataKeys) {
+        val c = k.cleaned()
+        if (c == keys) return
+        store.keys = c
+        keys = c
         _data = null
-        message("저장했습니다. 연결 점검으로 확인해 보세요.")
+        keysChanged = true
+        checks = null
+    }
+
+    /** 설정 화면을 떠날 때: 키가 바뀌었으면 새 키로 시세를 다시 받는다. */
+    fun applyKeyChanges() {
+        if (!keysChanged) return
+        keysChanged = false
         refreshHome()
     }
+
+    private var keysChanged = false
 
     fun saveIndicators(list: List<IndicatorConfig>) {
         indicators = list
@@ -316,12 +334,76 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         AlertWorker.schedule(getApplication(), s)
     }
 
+    /** 지금 저장된 키로 각 서버에 실제로 물어본다. */
     fun runChecks() {
+        if (checking) return
         checking = true
         checks = null
+        val used = data
         viewModelScope.launch {
-            checks = withContext(Dispatchers.IO) { runCatching { data.check() }.getOrElse { listOf(SourceStatus("점검", false, err(it))) } }
+            val list = withContext(Dispatchers.IO) { runCatching { used.check() }.getOrElse { listOf(SourceStatus("점검", false, err(it))) } }
+            // 한국투자증권 키가 반대쪽 서버(실전↔모의) 것으로 확인되면 설정을 맞춰 준다.
+            list.firstNotNullOfOrNull { it.switchKisVirtual }?.let { v ->
+                if (keys.kisVirtual != v) {
+                    val k = keys.copy(kisVirtual = v)
+                    store.keys = k
+                    keys = k
+                    _data = null
+                }
+            }
+            checks = list
             checking = false
+            keysChanged = false
+            refreshHome()
+        }
+    }
+
+    /** 점검 결과를 글로 (도움을 청할 때 붙여넣을 수 있게). 키 자체는 넣지 않고 길이만 적는다. */
+    fun checksText(): String = buildString {
+        appendLine("주식노트 ${io.github.jgg113.stocknote.BuildConfig.VERSION_NAME} 연결 점검")
+        checks.orEmpty().forEach { s -> appendLine("${if (s.ok) "[정상]" else if (s.unused) "[키 없음]" else "[실패]"} ${s.name}: ${s.detail}") }
+        val k = keys
+        appendLine("키 길이: 공공데이터포털 ${k.dataGoKr.length}자, 한국투자 앱키 ${k.kisAppKey.length}자·시크릿 ${k.kisAppSecret.length}자 (${if (k.kisVirtual) "모의" else "실전"}), DART ${k.dart.length}자, Twelve Data ${k.twelveData.length}자")
+        append("AI: ${aiProvider.label}")
+        if (aiProvider.isApi) append(" (키 ${aiKey(aiProvider).length}자)")
+        aiTest?.let { t -> append(" · 테스트 ${if (t.loading) "중" else if (t.ok) "정상 (${t.model})" else "실패: ${t.error}"}") }
+    }
+
+    // ───────── AI 해설 설정 ─────────
+
+    var aiProvider by mutableStateOf(store.aiProvider); private set
+    var aiKeys by mutableStateOf(AiProvider.entries.filter { it.isApi }.associateWith { store.aiKey(it) }); private set
+    var aiTest by mutableStateOf<AiTestState?>(null); private set
+
+    /** 고르는 즉시 저장한다. */
+    fun chooseAiProvider(p: AiProvider) {
+        aiProvider = p
+        store.aiProvider = p
+        aiTest = null
+    }
+
+    /** 넣는 즉시 저장한다. */
+    fun updateAiKey(p: AiProvider, raw: String) {
+        val key = io.github.jgg113.stocknote.core.KeyText.clean(raw)
+        if (key == aiKeys[p]) return
+        store.saveAiKey(p, key)
+        aiKeys = aiKeys + (p to key)
+        aiTest = null
+    }
+
+    /** 짧은 질문 하나를 보내 키가 되는지 본다. */
+    fun testAi() {
+        val p = aiProvider
+        val engine = AiEngines.create(p, aiKey(p))
+        if (engine == null) {
+            aiTest = AiTestState(error = "키를 먼저 넣으세요.")
+            return
+        }
+        aiTest = AiTestState(loading = true)
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { engine.generate(io.github.jgg113.stocknote.core.AiTest.PROMPT) } }
+            if (aiProvider != p) return@launch
+            aiTest = r.fold({ AiTestState(ok = true, text = AiText.plain(it.text).take(240), model = it.model) }, { AiTestState(error = err(it)) })
         }
     }
 
@@ -332,7 +414,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cacheSize(): Long = cache.sizeBytes()
 
-    fun aiKey(p: AiProvider) = store.aiKey(p)
+    fun aiKey(p: AiProvider): String = aiKeys[p].orEmpty()
 
     // ───────── 시장 요약 ─────────
 
@@ -520,14 +602,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** AI 해설 (요약·이슈·질문). 앱 넘기기 방식이면 질문 글을 돌려준다. */
     fun askAi(mode: StockPrompt.Mode, question: String = "", handoff: (AiProvider, String) -> Unit) {
         val d = detail ?: return
-        val provider = store.aiProvider
+        val provider = aiProvider
         val prompt = StockPrompt.build(d.asset, d.quote, d.daily, d.forecast, d.report, d.financials, d.disclosures + d.news, mode, question, ai[aiHorizon]?.result)
         if (provider == AiProvider.NONE) {
             update(d.asset) { it.copy(aiError = "[설정] → AI 해설에서 Gemini 무료 키 등을 고르면 AI 해설을 받을 수 있습니다.") }
             return
         }
         if (provider.isAppHandoff) { handoff(provider, prompt); return }
-        val engine = AiEngines.create(provider, store.aiKey(provider))
+        val engine = AiEngines.create(provider, aiKey(provider))
         if (engine == null) {
             update(d.asset) { it.copy(aiError = "[설정]에서 ${provider.label} 키를 넣으세요.") }
             return
@@ -763,7 +845,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun importBackup(text: String): Boolean = try {
         store.importBackup(text)
-        keys = store.keys; _data = null
+        keys = store.keys; _data = null; checks = null
+        aiProvider = store.aiProvider; aiKeys = AiProvider.entries.filter { it.isApi }.associateWith { store.aiKey(it) }; aiTest = null
         watchlists = store.watchlists; customThemes = store.customThemes; accounts = store.accounts; gameStats = store.gameStats
         indicators = store.indicators; priceAlerts = store.priceAlerts; signalAlerts = store.signalAlerts; scanAlerts = store.scanAlerts
         alertSettings = store.alertSettings
