@@ -24,7 +24,14 @@ interface Http {
 }
 
 class UrlConnectionHttp(private val connectTimeoutMs: Int = 15_000, private val readTimeoutMs: Int = 45_000) : Http {
-    override fun get(url: String, headers: Map<String, String>): HttpResponse = request("GET", url, headers, null)
+    /** 조회는 연결이 중간에 끊기면(Connection reset 등) 한 번 더 해 본다. 시간 초과는 다시 하지 않는다. */
+    override fun get(url: String, headers: Map<String, String>): HttpResponse = try {
+        request("GET", url, headers, null)
+    } catch (e: java.net.SocketTimeoutException) {
+        throw e
+    } catch (e: IOException) {
+        request("GET", url, headers, null)
+    }
 
     override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse = request("POST", url, headers, body)
 
