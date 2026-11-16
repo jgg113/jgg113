@@ -26,14 +26,38 @@ interface Http {
 class UrlConnectionHttp(private val connectTimeoutMs: Int = 15_000, private val readTimeoutMs: Int = 45_000) : Http {
     /** 조회는 연결이 중간에 끊기면(Connection reset 등) 한 번 더 해 본다. 시간 초과는 다시 하지 않는다. */
     override fun get(url: String, headers: Map<String, String>): HttpResponse = try {
-        request("GET", url, headers, null)
+        beforeSend { request("GET", url, headers, null) }
     } catch (e: java.net.SocketTimeoutException) {
+        throw e
+    } catch (e: java.net.UnknownHostException) {
         throw e
     } catch (e: IOException) {
         request("GET", url, headers, null)
     }
 
-    override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse = request("POST", url, headers, body)
+    override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse = beforeSend { request("POST", url, headers, body) }
+
+    /**
+     * 서버 주소를 못 찾거나 연결이 거절된 경우는 아직 아무것도 보내지 않은 것이라 다시 해도 안전하다.
+     * 휴대폰은 와이파이↔데이터가 바뀌는 순간 주소 찾기가 잠깐 실패하는 일이 흔해, 조금 쉬었다가 두 번 더 해 본다.
+     */
+    private fun <T> beforeSend(block: () -> T): T {
+        var last: IOException? = null
+        for (attempt in 0 until 3) {
+            if (attempt > 0) Thread.sleep(retryPauseMs * attempt)
+            try {
+                return block()
+            } catch (e: java.net.UnknownHostException) {
+                last = e
+            } catch (e: java.net.ConnectException) {
+                last = e
+            }
+        }
+        throw last!!
+    }
+
+    /** 다시 하기 전에 쉬는 시간 (시험에서는 0 으로 둔다) */
+    var retryPauseMs: Long = 800
 
     private fun request(method: String, url: String, headers: Map<String, String>, body: String?): HttpResponse {
         val conn = URI(url).toURL().openConnection() as HttpURLConnection
@@ -93,12 +117,30 @@ object KeyText {
 
 /** 통신 오류를 쉬운 말로 바꾼다. */
 fun networkReason(e: Throwable): String = when (e) {
-    is java.net.UnknownHostException -> "서버 주소를 찾지 못했습니다. 인터넷(와이파이·모바일 데이터)이 켜져 있는지 확인하세요."
+    is java.net.UnknownHostException -> unknownHostReason(e)
     is java.net.SocketTimeoutException -> "서버가 응답하지 않아 끊겼습니다. 와이파이가 막는 경우가 있으니 모바일 데이터로 바꿔 다시 해 보세요."
     is javax.net.ssl.SSLException -> "보안 연결에 실패했습니다. 휴대폰 날짜·시간이 맞는지, VPN 이나 회사·학교 와이파이가 막고 있지 않은지 확인하세요. (${e.message ?: e.javaClass.simpleName})"
     is java.net.ConnectException, is java.net.NoRouteToHostException -> "서버에 연결하지 못했습니다. 와이파이가 막는 경우가 있으니 모바일 데이터로 바꿔 다시 해 보세요. (${e.message ?: e.javaClass.simpleName})"
     is IOException -> "인터넷 연결을 확인하세요. (${e.message ?: e.javaClass.simpleName})"
     else -> "요청을 보내지 못했습니다. 키에 빈칸·줄바꿈·한글이 섞이지 않았는지 확인하세요. (${e.javaClass.simpleName})"
+}
+
+/** 주소를 찾을 수 있는지 (시험에서 바꿔 끼운다) */
+var hostResolves: (String) -> Boolean = { host -> runCatching { java.net.InetAddress.getByName(host) }.isSuccess }
+
+/**
+ * 서버 주소를 못 찾은 까닭을 가린다: 인터넷 자체가 끊긴 것인지, 이 주소만 못 찾는 것인지.
+ * 이 주소만 못 찾는다면 휴대폰·공유기의 DNS(비공개 DNS, 광고 차단, VPN, 회사·학교 망)가 막고 있는 경우가 대부분이다.
+ */
+fun unknownHostReason(e: Throwable): String {
+    val host = Regex("\"([^\"]+)\"").find(e.message.orEmpty())?.groupValues?.get(1) ?: e.message.orEmpty().substringBefore(':').trim()
+    val othersOk = listOf("www.google.com", "api.upbit.com").any { it != host && hostResolves(it) }
+    return if (othersOk) {
+        "휴대폰이 이 서버 주소${if (host.isNotBlank()) "($host)" else ""}만 찾지 못합니다 (세 번 시도). 다른 곳은 연결되므로 인터넷은 정상이고, 서버도 정상입니다. " +
+            "휴대폰이나 공유기의 DNS 가 이 주소를 막고 있을 가능성이 큽니다. ① 와이파이를 끄고 모바일 데이터로 다시 ② 휴대폰 설정 → 연결 → 기타 연결 설정 → 비공개 DNS 를 '자동'으로 ③ VPN·광고 차단 앱을 끄고 다시 해 보세요."
+    } else {
+        "서버 주소를 찾지 못했습니다 (세 번 시도). 지금 인터넷이 끊겨 있는 것 같습니다. 와이파이·모바일 데이터가 켜져 있는지 확인하고 다시 해 보세요."
+    }
 }
 
 internal inline fun <T> network(name: String, block: () -> T): T = try {

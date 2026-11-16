@@ -63,7 +63,17 @@ class ConnectionTest {
         assertEquals("NETWORK", e.code)
         assertTrue(e.message!!.contains("키에 빈칸"))
         assertFalse(e.message!!.contains("secret-value"), "오류 글에 키가 드러나면 안 된다")
-        assertTrue(networkReason(java.net.UnknownHostException("x")).contains("인터넷"))
+        val saved = hostResolves
+        try {
+            // 인터넷 자체가 끊긴 경우와, 이 주소만 못 찾는 경우(DNS 차단)를 가려서 알려 준다.
+            hostResolves = { false }
+            assertTrue(networkReason(java.net.UnknownHostException("x")).contains("인터넷이 끊겨"))
+            hostResolves = { true }
+            val only = networkReason(java.net.UnknownHostException("Unable to resolve host \"generativelanguage.googleapis.com\": No address associated with hostname"))
+            assertTrue(only.contains("(generativelanguage.googleapis.com)만") && only.contains("비공개 DNS"), only)
+        } finally {
+            hostResolves = saved
+        }
         assertTrue(networkReason(java.net.SocketTimeoutException("connect timed out")).contains("모바일 데이터"))
         assertTrue(networkReason(javax.net.ssl.SSLHandshakeException("bad")).contains("날짜"))
     }
@@ -336,5 +346,15 @@ class ConnectionTest {
         val e = assertFailsWith<DataException> { PublicDataClient("key", renamed).probeStock() }
         assertEquals("FIELDS", e.code)
         assertTrue(e.message!!.contains("baseDate,shortCode,closePrice"), e.message)
+    }
+
+    @Test
+    fun addressLookupFailuresAreRetried() {
+        // 주소 찾기 실패·연결 거절은 아직 아무것도 보내지 않은 것이라, 보내기(POST)도 다시 해 본다. 그 밖의 오류는 다시 보내지 않는다.
+        val http = UrlConnectionHttp(connectTimeoutMs = 2000, readTimeoutMs = 2000).apply { retryPauseMs = 0 }
+        val start = System.nanoTime()
+        assertFailsWith<java.io.IOException> { http.post("https://no-such-host.invalid/x", emptyMap(), "{}") }
+        assertFailsWith<java.io.IOException> { http.get("https://no-such-host.invalid/x") }
+        assertTrue((System.nanoTime() - start) / 1e9 < 30)
     }
 }
