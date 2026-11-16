@@ -110,7 +110,8 @@ class ConnectionTest {
         val row = rows.first { it.name == "한국투자증권 (실시간)" }
         assertFalse(row.ok)
         assertTrue(row.detail.contains("유효하지 않은 AppKey"), row.detail)
-        assertTrue(row.help.contains("앱키(36자)"), row.help)
+        assertTrue(row.help.contains("36자") && row.help.contains("보낸 키: 앱키 PPPP…PPPP (36자) · 시크릿 180자"), row.help)
+        assertFalse(row.help.contains("s".repeat(20)), "시크릿이 화면에 드러나면 안 된다")
         // 두 서버 모두 물어봤다.
         assertTrue(http.calls.any { it.url.startsWith(KisClient.REAL) } && http.calls.any { it.url.startsWith(KisClient.VIRTUAL) })
         // 키를 넣지 않은 곳은 실패가 아니라 '안 씀'으로 본다.
@@ -230,5 +231,58 @@ class ConnectionTest {
         assertEquals("google/gemma-9-31b-it:free", a.model)
         // 첫 시도는 무료 모델로 알아서 보내 주는 주소다.
         assertTrue(http.calls.first().body!!.contains("openrouter/free"))
+    }
+
+    @Test
+    fun checkFixesSwappedKisKeys() {
+        // 앱키 칸에 시크릿을, 시크릿 칸에 앱키를 넣은 경우: 바꾼 조합으로 되면 바로잡으라고 알려 준다.
+        val appKey = "P".repeat(36)
+        val secret = "s".repeat(180)
+        val http = ScriptedHttp { url, headers, body ->
+            when {
+                !url.contains("koreainvestment.com") -> res(404, "")
+                url.contains("/oauth2/tokenP") ->
+                    if (body!!.contains("\"appkey\":\"$appKey\"") && body.contains("\"appsecret\":\"$secret\"") && url.startsWith(KisClient.REAL)) res(200, """{"access_token":"tok","expires_in":86400}""")
+                    else res(403, """{"error_description":"유효하지 않은 AppKey입니다.","error_code":"EGW00103"}""")
+                headers["authorization"] == "Bearer tok" -> res(200, kisQuote)
+                else -> res(500, """{"rt_cd":"1","msg1":"잘못된 요청"}""")
+            }
+        }
+        val row = MarketData(DataKeys(kisAppKey = secret, kisAppSecret = appKey), MemoryCache(), MemoryTokenStore(), http).check().first { it.name == "한국투자증권 (실시간)" }
+        assertTrue(row.ok, row.detail)
+        assertTrue(row.swapKisKeys)
+        assertEquals(false, row.switchKisVirtual)
+        assertTrue(row.detail.contains("바뀌어"), row.detail)
+        // 토큰 요청 헤더는 한국투자증권 공식 예제와 같다.
+        val token = http.calls.first { it.url.contains("tokenP") }
+        assertEquals("application/json", token.headers["Content-Type"])
+    }
+
+    @Test
+    fun publicDataCheckTellsWrongKeyFromUnappliedApi() {
+        // 포털은 '키가 틀림'과 '이 API 를 신청 안 함'을 같은 오류로 돌려준다. 다른 공공 API 에서 통하는지로 가린다.
+        val unregistered = """{"OpenAPI_ServiceResponse":{"cmmMsgHeader":{"errMsg":"SERVICE_KEY_IS_NOT_REGISTERED_ERROR","returnAuthMsg":"등록되지 않은 서비스키","returnReasonCode":"30"}}}"""
+        // ① 금융위원회 API 만 거절하고 온비드는 통하는 키: 키는 정상, 이 API 신청이 안 된 것.
+        val applied = ScriptedHttp { url, _, _ ->
+            when {
+                url.contains("/1160100/") -> res(403, unregistered)
+                url.contains("/B010003/") -> res(200, """{"response":{"header":{"resultCode":"00","resultMsg":"NORMAL SERVICE"},"body":{"totalCount":0}}}""")
+                url.contains("apis.data.go.kr") -> res(403, unregistered)
+                else -> res(404, "")
+            }
+        }
+        val key = "a".repeat(60) + "+/=="
+        val good = MarketData(DataKeys(dataGoKr = key), MemoryCache(), MemoryTokenStore(), applied).check().first { it.name == "공공데이터포털 주식시세" }
+        assertFalse(good.ok)
+        assertTrue(good.help.contains("키는 정상") && good.help.contains("금융위원회_주식시세정보"), good.help)
+        assertTrue(good.help.contains("보낸 키: aaaa…+/== (64자)"), good.help)
+        // ② 어디서도 모르는 키: 키가 잘못 복사됐거나 아직 아무것도 신청하지 않은 것.
+        val nowhere = ScriptedHttp { url, _, _ -> if (url.contains("apis.data.go.kr")) res(403, unregistered) else res(404, "") }
+        val bad = MarketData(DataKeys(dataGoKr = key), MemoryCache(), MemoryTokenStore(), nowhere).check().first { it.name == "공공데이터포털 주식시세" }
+        assertTrue(bad.help.contains("다른 공공 API") && bad.help.contains("잘못 복사"), bad.help)
+        // 다른 API 에도 같은 키를 한 번만 인코딩해서 보낸다.
+        assertTrue(nowhere.calls.any { it.url.contains("/B010003/") && it.url.endsWith("serviceKey=" + "a".repeat(60) + "%2B%2F%3D%3D") })
+        assertEquals(PublicDataClient.KeyStanding.KNOWN, PublicDataClient.standing(403, "<errMsg>SERVICE_ACCESS_DENIED_ERROR</errMsg>"))
+        assertEquals(PublicDataClient.KeyStanding.UNSURE, PublicDataClient.standing(500, "gateway error"))
     }
 }

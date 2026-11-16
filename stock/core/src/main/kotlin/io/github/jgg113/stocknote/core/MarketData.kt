@@ -137,6 +137,8 @@ data class SourceStatus(
     val help: String = "",
     val pageLabel: String = "신청 페이지 열기",
     val switchKisVirtual: Boolean? = null,
+    /** 참이면 한국투자증권 앱키와 시크릿을 서로 바꿔 넣은 것이어서 맞바꿔 저장해야 한다 */
+    val swapKisKeys: Boolean = false,
 ) {
     /** 키를 넣지 않아 안 쓰는 것뿐인 줄 (오류가 아니다) */
     val unused: Boolean get() = !ok && detail.startsWith("키 없음")
@@ -670,14 +672,31 @@ class MarketData(
         add(runCatching { SourceStatus("환율", true, "1달러 ${Fmt.decimal(fx.usdKrw().first)}원") }.getOrElse { SourceStatus("환율", false, it.message.orEmpty()) })
     }
 
-    private fun publicHelp(e: Throwable, api: String): String = when ((e as? DataException)?.code) {
-        "NETWORK", "429", "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR" -> ""
-        else ->
-            "공공데이터포털 키는 API 마다 따로 '활용신청'을 해야 열립니다. 다른 앱에서 잘 되던 키라도 '$api' 를 신청하지 않았으면 여기서는 안 됩니다. " +
-                "① 아래 [신청 페이지 열기] ② 로그인 ③ [활용신청] 을 누르면 바로 승인됩니다. 키는 지금 넣은 것을 그대로 쓰고, 신청 뒤 1~2시간쯤 지나 다시 점검하세요."
+    /** 공공데이터포털이 키를 거절했을 때, 다른 공공 API 로 같은 키를 물어 '키가 틀림'인지 '이 API 를 신청 안 함'인지 가린다. */
+    private val publicStanding by lazy { publicData.standingElsewhere() }
+
+    private fun publicHelp(e: Throwable, api: String): String {
+        val code = (e as? DataException)?.code.orEmpty()
+        if (code in setOf("NETWORK", "429", "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR")) return ""
+        val sent = "보낸 키: ${publicData.describeKey()}."
+        return when (publicStanding) {
+            PublicDataClient.KeyStanding.KNOWN ->
+                "$sent\n✔ 키는 정상입니다 — 같은 키가 다른 공공 API 에서는 통합니다. 문제는 '$api' 쪽입니다: 활용신청이 안 되어 있거나, 신청한 지 얼마 안 돼 아직 반영되지 않았습니다. " +
+                    "아래 [신청 페이지 열기]에서 버튼이 [활용신청]으로 보이면 아직 신청 전이니 눌러 주세요. 이미 신청했다면 보통 1~2시간, 길면 하루 뒤에 열립니다."
+            PublicDataClient.KeyStanding.UNKNOWN ->
+                "$sent\n✘ 이 키는 다른 공공 API(온비드·국토교통부)에서도 '등록되지 않은 키'로 나옵니다. 두 경우 중 하나입니다.\n" +
+                    "① 공공데이터포털에서 아직 아무 API 도 활용신청하지 않았다 → 아래 [신청 페이지 열기] → [활용신청].\n" +
+                    "② 다른 API 를 이미 쓰고 있다 → 키가 잘못 복사된 것입니다. 포털 마이페이지 → [인증키 발급현황]의 '일반 인증키'와 위의 앞뒤 글자·길이가 같은지 견줘 보고 다시 복사해 넣으세요."
+            PublicDataClient.KeyStanding.UNSURE ->
+                "$sent\n공공데이터포털 키는 API 마다 따로 '활용신청'을 해야 열립니다. 아래 [신청 페이지 열기] → 로그인 → [활용신청]. 신청 뒤 1~2시간쯤 지나 다시 점검하세요. " +
+                    "마이페이지 → [인증키 발급현황]의 '일반 인증키'와 위의 앞뒤 글자·길이가 같은지도 확인하세요."
+        }
     }
 
-    /** 한국투자증권 점검. 키가 반대쪽 서버(실전↔모의) 것이면 그쪽으로 되는지도 보고 알려 준다. 되는 쪽 연결을 함께 돌려준다. */
+    /**
+     * 한국투자증권 점검. 키를 받아 주지 않으면 ① 반대쪽 서버(실전↔모의) ② 앱키와 시크릿을 서로 바꿔 넣은 경우까지 해 보고,
+     * 되는 조합을 찾으면 설정을 그렇게 바꾸라고 알려 준다. 되는 쪽 연결을 함께 돌려준다.
+     */
     private fun kisStatus(): Pair<SourceStatus, KisClient?> {
         val label = "한국투자증권 (실시간)"
         if (!keys.hasKis) {
@@ -691,19 +710,29 @@ class MarketData(
         val e = first.exceptionOrNull()
         val code = (e as? DataException)?.code.orEmpty()
         if (code == "KIS_KEY") {
-            val other = KisClient(keys.kisAppKey, keys.kisAppSecret, !keys.kisVirtual, tokenStore, http)
-            runCatching { price(other) }.getOrNull()?.let {
-                return SourceStatus(
-                    label, true, "삼성전자 ${it}원 (${server(!keys.kisVirtual)} 서버) · 이 키는 ${server(!keys.kisVirtual)}투자용이어서 서버 설정을 자동으로 바꿨습니다.",
-                    switchKisVirtual = !keys.kisVirtual,
-                ) to other
+            // 앱키(약 36자)와 시크릿(약 180자)을 서로 바꿔 넣은 것처럼 보이면 바꾼 조합도 해 본다.
+            val looksSwapped = keys.kisAppKey.length > keys.kisAppSecret.length
+            val tries = buildList {
+                add(Triple(keys.kisAppKey, keys.kisAppSecret, !keys.kisVirtual))
+                if (looksSwapped) { add(Triple(keys.kisAppSecret, keys.kisAppKey, keys.kisVirtual)); add(Triple(keys.kisAppSecret, keys.kisAppKey, !keys.kisVirtual)) }
+            }
+            for ((k, sec, virtual) in tries) {
+                val other = KisClient(k, sec, virtual, tokenStore, http)
+                val p = runCatching { price(other) }.getOrNull() ?: continue
+                val swapped = k != keys.kisAppKey
+                val fixes = listOfNotNull(if (swapped) "앱키와 시크릿이 서로 바뀌어 있어 바로잡았습니다" else null, if (virtual != keys.kisVirtual) "이 키는 ${server(virtual)}투자용이어서 서버 설정을 바꿨습니다" else null)
+                return SourceStatus(label, true, "삼성전자 ${p}원 (${server(virtual)} 서버) · ${fixes.joinToString(", ")}.", switchKisVirtual = virtual, swapKisKeys = swapped) to other
             }
         }
+        val sent = "보낸 키: ${kis.describeKeys()}."
         val help = when (code) {
-            "KIS_KEY" -> "실전·모의 두 서버 모두 이 키를 받아 주지 않았습니다. KIS Developers 의 [API 신청] 화면에 있는 앱키(36자)와 앱시크릿(180자)을 각각 맞는 칸에 처음부터 끝까지 복사했는지 확인하세요. 증권 앱 로그인 비밀번호나 계좌번호가 아닙니다. 키를 다시 발급받았다면 예전 키는 쓸 수 없습니다."
+            "KIS_KEY" -> "$sent\n실전·모의 두 서버 모두 이 앱키를 모른다고 답했습니다. 요청 형식은 한국투자증권 공식 예제와 같으므로, 서버에 등록된 앱키와 글자가 다른 것입니다.\n" +
+                "① KIS Developers 로그인 → [API 신청] → 신청한 계좌의 App Key 를 열어, 위의 앞뒤 4글자·길이(보통 36자)와 같은지 견줘 보세요.\n" +
+                "② 앱키는 발급 뒤 1년이 지나면 만료됩니다. 만료됐거나 다시 발급받았다면 새 키를 넣어야 합니다.\n" +
+                "③ 증권 앱 로그인 비밀번호·계좌번호·HTS ID 는 앱키가 아닙니다."
             "NETWORK" -> "한국투자증권은 9443·29443 번 통로를 쓰는데, 회사·학교·공공 와이파이는 이 통로를 막는 곳이 많습니다. 와이파이를 끄고 모바일 데이터로 다시 점검해 보세요."
             "KIS_WAIT" -> ""
-            else -> "KIS Developers 에서 서비스 신청(국내주식 시세)이 끝났는지, 키 유효기간이 지나지 않았는지 확인하세요."
+            else -> "$sent\nKIS Developers 에서 서비스 신청(국내주식 시세)이 끝났는지, 키 유효기간이 지나지 않았는지 확인하세요."
         }
         return SourceStatus(label, false, e?.message.orEmpty(), KisClient.SIGNUP, help, "KIS Developers 열기") to null
     }

@@ -375,9 +375,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val list = withContext(Dispatchers.IO) { runCatching { used.check() }.getOrElse { listOf(SourceStatus("점검", false, err(it))) } }
             // 한국투자증권 키가 반대쪽 서버(실전↔모의) 것으로 확인되면 설정을 맞춰 준다.
-            list.firstNotNullOfOrNull { it.switchKisVirtual }?.let { v ->
-                if (keys.kisVirtual != v) {
-                    val k = keys.copy(kisVirtual = v)
+            list.firstOrNull { it.switchKisVirtual != null || it.swapKisKeys }?.let { row ->
+                val k = keys.copy(
+                    kisVirtual = row.switchKisVirtual ?: keys.kisVirtual,
+                    kisAppKey = if (row.swapKisKeys) keys.kisAppSecret else keys.kisAppKey,
+                    kisAppSecret = if (row.swapKisKeys) keys.kisAppKey else keys.kisAppSecret,
+                )
+                if (k != keys) {
                     store.keys = k
                     keys = k
                     _data = null

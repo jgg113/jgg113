@@ -101,6 +101,9 @@ class KisClient(
 
     val configured: Boolean get() = key.isNotEmpty() && secret.isNotEmpty()
 
+    /** 화면에 보여 줄 키 모양 (값은 앞뒤 몇 글자만) */
+    fun describeKeys(): String = "앱키 ${KeyText.masked(key)} · 시크릿 ${secret.length}자"
+
     /** 토큰은 앱키와 서버(실전·모의)마다 다르다. */
     private val tokenTag = "$key|$base".hashCode()
     private val serverName = if (virtual) "모의" else "실전"
@@ -115,7 +118,7 @@ class KisClient(
             put("appkey", key)
             put("appsecret", secret)
         }.toString()
-        val r = network("한국투자증권") { http.post("$base/oauth2/tokenP", mapOf("Content-Type" to "application/json; charset=UTF-8"), body) }
+        val r = network("한국투자증권") { http.post("$base/oauth2/tokenP", TOKEN_HEADERS, body) }
         val o = parseJson(r.body).obj()
         val access = o?.str("access_token").orEmpty()
         if (r.status != 200 || access.isEmpty()) {
@@ -306,6 +309,8 @@ class KisClient(
     }
 
     companion object {
+        /** 한국투자증권 공식 예제(kis_auth.py)와 똑같은 헤더 */
+        val TOKEN_HEADERS = mapOf("Content-Type" to "application/json", "Accept" to "text/plain", "charset" to "UTF-8")
         const val REAL = "https://openapi.koreainvestment.com:9443"
         const val VIRTUAL = "https://openapivts.koreainvestment.com:29443"
         const val SIGNUP = "https://apiportal.koreainvestment.com/intro"

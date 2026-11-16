@@ -11,6 +11,13 @@ object ServiceKey {
         if (!compact.contains('%')) return compact
         return runCatching { URLDecoder.decode(compact, "UTF-8") }.getOrDefault(compact)
     }
+
+    /** 어떤 종류의 키인지 (포털 마이페이지에 Encoding·Decoding 두 가지로 나온다) */
+    fun format(normalized: String): String = when {
+        normalized.matches(Regex("[0-9a-fA-F]{64}")) -> "영문·숫자 64자 키"
+        normalized.any { it == '+' || it == '/' || it == '=' } -> "기호(+ / =)가 든 키"
+        else -> "영문·숫자 키"
+    }
 }
 
 /**
@@ -26,6 +33,26 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
         val r = network("공공데이터포털") { http.get(url) }
         return parse(r.status, r.body)
     }
+
+    /**
+     * 이 키가 공공데이터포털에 등록된 키인지, 다른 공공 API(온비드·국토교통부)로 확인해 본다.
+     * 포털은 '키가 틀림'과 '이 API 를 신청하지 않음'을 같은 오류로 돌려주기 때문에, 다른 API 에서 통하는지 보면 둘을 가릴 수 있다.
+     */
+    fun standingElsewhere(): KeyStanding {
+        var refused = false
+        for (url in PROBES) {
+            val r = runCatching { http.get(url + "serviceKey=" + enc(key)) }.getOrNull() ?: continue
+            when (standing(r.status, r.body)) {
+                KeyStanding.KNOWN -> return KeyStanding.KNOWN
+                KeyStanding.UNKNOWN -> refused = true
+                KeyStanding.UNSURE -> {}
+            }
+        }
+        return if (refused) KeyStanding.UNKNOWN else KeyStanding.UNSURE
+    }
+
+    /** 화면에 보여 줄 키 모양 (값은 앞뒤 몇 글자만) */
+    fun describeKey(): String = "${KeyText.masked(key)}, ${ServiceKey.format(key)}"
 
     /** 가장 최근 시세가 있는 날짜 (삼성전자 기록으로 찾는다) */
     fun latestDate(today: LocalDate = LocalDate.now(KST)): LocalDate? {
@@ -76,6 +103,9 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
 
     class Page(val items: List<kotlinx.serialization.json.JsonObject>, val totalCount: Int)
 
+    /** KNOWN: 포털이 아는 키, UNKNOWN: 물어본 곳 모두 모르는 키라고 함, UNSURE: 확인하지 못함 */
+    enum class KeyStanding { KNOWN, UNKNOWN, UNSURE }
+
     companion object {
         const val BASE = "https://apis.data.go.kr/1160100/service"
         const val STOCK = "GetStockSecuritiesInfoService/getStockPriceInfo"
@@ -86,6 +116,22 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
         val YMD: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
 
         fun ymd(d: LocalDate): String = d.format(YMD)
+
+        /** 키가 등록됐는지만 보려고 물어보는 다른 공공 API (온비드 공매 물건, 국토교통부 아파트 실거래가·건축물대장) */
+        val PROBES = listOf(
+            "https://apis.data.go.kr/B010003/OnbidRlstListSrvc2/getRlstCltrList2?pageNo=1&numOfRows=1&resultType=json&",
+            "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade?LAWD_CD=11110&DEAL_YMD=202601&pageNo=1&numOfRows=1&",
+            "https://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo?sigunguCd=11110&bjdongCd=10100&numOfRows=1&pageNo=1&",
+        )
+
+        /** 응답 한 건으로 본 키 상태 */
+        fun standing(status: Int, body: String): KeyStanding = when {
+            body.contains("SERVICE_KEY_IS_NOT_REGISTERED") || body.contains("등록되지 않은") -> KeyStanding.UNKNOWN
+            // 신청은 안 했지만 키는 아는 경우, 한도·기한 문제, 또는 정상 응답이면 포털이 아는 키다.
+            body.contains("SERVICE_ACCESS_DENIED") || body.contains("LIMITED_NUMBER_OF_SERVICE_REQUESTS") || body.contains("DEADLINE_HAS_EXPIRED") ||
+                body.contains("UNREGISTERED_IP") || (status == 200 && body.contains("resultCode")) -> KeyStanding.KNOWN
+            else -> KeyStanding.UNSURE
+        }
 
         private val reasonText = mapOf(
             "SERVICE_KEY_IS_NOT_REGISTERED_ERROR" to "인증키가 등록되지 않았습니다. 마이페이지의 일반 인증키를 그대로 붙여넣었는지, 이 API 를 활용신청했는지 확인하세요. 신청 직후라면 1~2시간 뒤에 됩니다.",
