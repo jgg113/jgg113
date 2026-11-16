@@ -3,6 +3,9 @@ package io.github.jgg113.stocknote.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.text.KeyboardOptions
@@ -290,21 +293,30 @@ private fun KeyField(
     }
 }
 
-/** 연결 점검 한 줄: 서버가 한 말, 고치는 방법, 신청 페이지 버튼 */
+/** 연결 점검 한 줄: 상태, 서버가 한 말, 고치는 방법, 신청 페이지 버튼 */
 @Composable
 private fun CheckRow(s: SourceStatus) {
     val context = LocalContext.current
     val failed = !s.ok && !s.unused
-    val mark = if (s.ok) "✓" else if (s.unused) "–" else "✕"
-    val color = if (s.ok) OkGreen else if (s.unused) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
-        Text(mark, color = color, fontWeight = FontWeight.Bold, modifier = Modifier.padding(end = 8.dp))
-        Column(Modifier.weight(1f)) {
-            Text(s.name, style = MaterialTheme.typography.bodyMedium)
-            Text(s.detail, style = MaterialTheme.typography.bodySmall, color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-            if (failed && s.help.isNotEmpty()) SmallLabel(s.help, Modifier.padding(top = 2.dp))
-            val page = s.page
-            if (failed && page != null) OutlinedButton(onClick = { openUrl(context, page) }, modifier = Modifier.padding(top = 4.dp)) { Text(s.pageLabel) }
+    val color = if (s.ok) OkGreen else if (s.unused) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.error
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            .background(if (failed) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(s.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            Pill(if (s.ok) "정상" else if (s.unused) "키 없음" else "연결 안 됨", color)
         }
+        Text(
+            s.detail, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 2.dp),
+            color = if (failed) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (failed && s.help.isNotEmpty()) {
+            Text("이렇게 해 보세요", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+            Text(s.help, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+        }
+        val page = s.page
+        if (failed && page != null) FilledTonalButton(onClick = { openUrl(context, page) }, modifier = Modifier.padding(top = 8.dp)) { Text(s.pageLabel) }
     }
 }

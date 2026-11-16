@@ -44,7 +44,7 @@ fun SearchScreen(vm: AppViewModel, purpose: PickPurpose?) {
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { vm.back() }) { Text("←") }
+            androidx.compose.material3.IconButton(onClick = { vm.back() }) { androidx.compose.material3.Icon(io.github.jgg113.stocknote.ui.theme.AppIcons.Back, contentDescription = "뒤로") }
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it; vm.search(it) },

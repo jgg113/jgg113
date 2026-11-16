@@ -176,7 +176,7 @@ private fun DrawScope.drawChart(
     val plotW = size.width - RIGHT_AXIS
     val barW = plotW / n
     fun x(i: Int) = (i - start) * barW + barW / 2
-    val label = TextStyle(fontSize = 9.sp, color = c.text)
+    val label = TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 9.sp, color = c.text)
 
     // ── 가격 영역 범위
     var hi = Double.NEGATIVE_INFINITY
@@ -243,7 +243,7 @@ private fun DrawScope.drawChart(
     levels.forEach { lv ->
         val yy = y(lv.price)
         drawLine(lv.color, Offset(0f, yy), Offset(plotW, yy), 2.5f)
-        drawText(tm, "${lv.label} ${Fmt.price(lv.price, currency)}", Offset(6f, (yy - 30f).coerceAtLeast(0f)), TextStyle(fontSize = 10.sp, color = lv.color))
+        drawText(tm, "${lv.label} ${Fmt.price(lv.price, currency)}", Offset(6f, (yy - 30f).coerceAtLeast(0f)), TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 10.sp, color = lv.color))
     }
 
     // 예상 경로
@@ -278,7 +278,7 @@ private fun DrawScope.drawChart(
         fun mark(i: Int, value: Double, isHigh: Boolean) {
             val pct = (lastClose / value - 1) * 100
             val text = "${if (isHigh) "최고" else "최저"} ${Fmt.price(value, currency)} (${Fmt.signedRate(pct)}) ${Fmt.date(candles[i].time)}"
-            val layout = tm.measure(text, TextStyle(fontSize = 9.sp, color = if (isHigh) c.up else c.down))
+            val layout = tm.measure(text, TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 9.sp, color = if (isHigh) c.up else c.down))
             val px = x(i)
             val leftSide = px > plotW / 2
             val tx = if (leftSide) px - layout.size.width - 8f else px + 8f
@@ -363,7 +363,7 @@ private fun DrawScope.drawChart(
             overlays.flatMap { it.series }.take(6).forEach { s -> val v = s.values[cross]; if (!v.isNaN()) append("\n").append(s.label).append(' ').append(Fmt.price(v, currency)) }
             markers[cross]?.forEach { m -> append("\n").append(m.signal.label).append(" ").append(Fmt.price(m.price, currency)) }
         }
-        val layout = tm.measure(lines, TextStyle(fontSize = 10.sp, color = c.cross))
+        val layout = tm.measure(lines, TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 10.sp, color = c.cross))
         val boxX = if (cx > plotW / 2) 6f else plotW - layout.size.width - 14f
         drawRect(c.bg.copy(alpha = 0.92f), Offset(boxX, 8f), Size(layout.size.width + 10f, layout.size.height + 8f))
         drawRect(c.grid, Offset(boxX, 8f), Size(layout.size.width + 10f, layout.size.height + 8f), style = Stroke(1f))
@@ -411,7 +411,7 @@ fun LineChart(
         for (k in 0..3) {
             val v = lo + (hi - lo) * k / 3
             drawLine(grid, Offset(0f, y(v)), Offset(w, y(v)), 1f)
-            drawText(measurer, format(v), Offset(w + 6f, y(v) - 14f), TextStyle(fontSize = 9.sp, color = text))
+            drawText(measurer, format(v), Offset(w + 6f, y(v) - 14f), TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 9.sp, color = text))
         }
         baseline?.let { drawLine(text.copy(alpha = 0.6f), Offset(0f, y(it)), Offset(w, y(it)), 1f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f))) }
         series.forEach { (values, color) ->
@@ -460,11 +460,11 @@ fun BarChart(values: List<Pair<String, Double?>>, color: Color, negative: Color,
         val slot = size.width / values.size
         values.forEachIndexed { i, (name, v) ->
             val cx = slot * i + slot / 2
-            drawText(measurer, name, Offset(cx - 30f, size.height - labelH + 4f), TextStyle(fontSize = 9.sp, color = text))
+            drawText(measurer, name, Offset(cx - 30f, size.height - labelH + 4f), TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 9.sp, color = text))
             if (v == null) return@forEachIndexed
             val top = min(y(v), y(0.0)); val bottom = max(y(v), y(0.0))
             drawRect(if (v >= 0) color else negative, Offset(cx - slot * 0.25f, top), Size(slot * 0.5f, (bottom - top).coerceAtLeast(1f)))
-            drawText(measurer, Fmt.big(v), Offset(cx - 34f, (top - 24f).coerceAtLeast(0f)), TextStyle(fontSize = 9.sp, color = text))
+            drawText(measurer, Fmt.big(v), Offset(cx - 34f, (top - 24f).coerceAtLeast(0f)), TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 9.sp, color = text))
         }
     }
 }

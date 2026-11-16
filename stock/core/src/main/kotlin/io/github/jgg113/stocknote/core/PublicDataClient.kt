@@ -134,7 +134,7 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
         }
 
         private val reasonText = mapOf(
-            "SERVICE_KEY_IS_NOT_REGISTERED_ERROR" to "인증키가 등록되지 않았습니다. 마이페이지의 일반 인증키를 그대로 붙여넣었는지, 이 API 를 활용신청했는지 확인하세요. 신청 직후라면 1~2시간 뒤에 됩니다.",
+            "SERVICE_KEY_IS_NOT_REGISTERED_ERROR" to "공공데이터포털이 '등록되지 않은 인증키'라고 답했습니다. 키가 틀렸거나 이 API 를 활용신청하지 않았을 때 나옵니다. [설정 → 연결 점검]에서 어느 쪽인지 알려 줍니다.",
             "SERVICE_ACCESS_DENIED_ERROR" to "이 API 활용신청이 안 되어 있습니다. 공공데이터포털에서 활용신청하세요.",
             "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR" to "오늘 호출 한도를 넘었습니다. 내일 다시 됩니다.",
             "SERVICE_KEY_IS_NOT_REGISTERED" to "인증키가 등록되지 않았습니다.",

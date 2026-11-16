@@ -207,7 +207,7 @@ fun StrategyDetailScreen(vm: AppViewModel, asset: Asset, strategyId: String) {
     val r = remember(candles, strategyId, d?.report) { d?.report?.results?.firstOrNull { it.strategy.id == strategyId } ?: vm.singleBacktest(asset, candles, strategyId) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { vm.back() }) { Text("←") }
+            androidx.compose.material3.IconButton(onClick = { vm.back() }) { androidx.compose.material3.Icon(io.github.jgg113.stocknote.ui.theme.AppIcons.Back, contentDescription = "뒤로") }
             Column(Modifier.weight(1f)) {
                 Text(strategy.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 SmallLabel("${asset.name} · ${strategy.horizon.label}(${strategy.horizon.period}) · ${strategy.group.label}")
@@ -267,7 +267,7 @@ private fun EquityChart(equity: DoubleArray, candles: List<Candle>) {
         for (k in 0..3) {
             val v = lo + (hi - lo) * k / 3
             drawLine(grid, Offset(left, y(v)), Offset(size.width, y(v)), 1f)
-            drawText(measurer, "${Fmt.decimal(v).substringBefore('.')}%", Offset(0f, y(v) - 14f), TextStyle(fontSize = 9.sp, color = text))
+            drawText(measurer, "${Fmt.decimal(v).substringBefore('.')}%", Offset(0f, y(v) - 14f), TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 9.sp, color = text))
         }
         drawLine(text.copy(alpha = 0.5f), Offset(left, y(0.0)), Offset(size.width, y(0.0)), 1f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f)))
         val path = Path()
@@ -278,7 +278,7 @@ private fun EquityChart(equity: DoubleArray, candles: List<Candle>) {
         candles.forEachIndexed { i, c ->
             val yr = c.date.year
             if (yr != lastYear && c.date.monthValue == 1 && i > 0) {
-                drawText(measurer, "$yr.01", Offset(x(i) - 24f, size.height - 26f), TextStyle(fontSize = 9.sp, color = text))
+                drawText(measurer, "$yr.01", Offset(x(i) - 24f, size.height - 26f), TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 9.sp, color = text))
             }
             lastYear = yr
         }
@@ -287,7 +287,7 @@ private fun EquityChart(equity: DoubleArray, candles: List<Candle>) {
             drawLine(text.copy(alpha = 0.4f), Offset(px, 0f), Offset(px, size.height - 30f), 1f)
             drawCircle(if (pct[sel] >= 0) up else down, 8f, Offset(px, py))
             val label = "${Fmt.date(candles[sel].time)}\n${Fmt.signedRate(pct[sel])}"
-            val layout = measurer.measure(label, TextStyle(fontSize = 11.sp, color = if (pct[sel] >= 0) up else down, fontWeight = FontWeight.Bold))
+            val layout = measurer.measure(label, TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 11.sp, color = if (pct[sel] >= 0) up else down, fontWeight = FontWeight.Bold))
             val bx = (px - layout.size.width / 2).coerceIn(left, size.width - layout.size.width - 12f)
             val by = (py - layout.size.height - 24f).coerceAtLeast(0f)
             drawRect(surface, Offset(bx - 6f, by - 4f), Size(layout.size.width + 12f, layout.size.height + 8f))

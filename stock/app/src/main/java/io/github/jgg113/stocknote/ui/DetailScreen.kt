@@ -90,7 +90,7 @@ fun DetailScreen(vm: AppViewModel) {
     Column(Modifier.fillMaxSize()) {
         // 머리
         Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { vm.back() }) { Text("←") }
+            androidx.compose.material3.IconButton(onClick = { vm.back() }) { androidx.compose.material3.Icon(io.github.jgg113.stocknote.ui.theme.AppIcons.Back, contentDescription = "뒤로") }
             Column(Modifier.weight(1f)) {
                 Text(asset.name.ifBlank { d.quote?.asset?.name ?: asset.code }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1)
                 SmallLabel(listOf(asset.market.label, asset.shortCode, (d.quote?.asset?.exchange ?: asset.exchange).let { if (asset.market == Market.US) UsStocks.exchangeLabel(it) else it }.takeIf { it != "UPBIT" }.orEmpty()).filter { it.isNotBlank() }.joinToString(" · "))

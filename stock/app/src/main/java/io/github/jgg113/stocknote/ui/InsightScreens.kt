@@ -201,7 +201,7 @@ fun RadarChart(axes: List<AxisScore>, modifier: Modifier = Modifier) {
     val measurer = rememberTextMeasurer()
     val grid = MaterialTheme.colorScheme.outlineVariant
     val fill = MaterialTheme.colorScheme.primary
-    val labelStyle = TextStyle(fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val labelStyle = TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Canvas(modifier) {
         val n = axes.size
         if (n < 3) {
@@ -489,10 +489,10 @@ fun HeatmapCard(quotes: List<Quote>, market: Market, onClick: (Quote) -> Unit) {
                 if (r.w > 70f && r.h > 44f) {
                     val big = r.w > 190f && r.h > 110f
                     val name = measurer.measure(
-                        q.asset.name, TextStyle(color = Color.White, fontSize = if (big) 14.sp else 11.sp, fontWeight = FontWeight.Bold),
+                        q.asset.name, TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, color = Color.White, fontSize = if (big) 14.sp else 11.sp, fontWeight = FontWeight.Bold),
                         overflow = TextOverflow.Ellipsis, maxLines = 1, constraints = Constraints(maxWidth = (r.w - 12f).roundToInt().coerceAtLeast(1)),
                     )
-                    val rate = measurer.measure(Fmt.signedRate(q.changeRate), TextStyle(color = Color.White, fontSize = if (big) 13.sp else 10.sp))
+                    val rate = measurer.measure(Fmt.signedRate(q.changeRate), TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, color = Color.White, fontSize = if (big) 13.sp else 10.sp))
                     val total = name.size.height + rate.size.height
                     if (total < r.h - 6f) {
                         drawText(name, topLeft = Offset(r.x + (r.w - name.size.width) / 2, r.y + (r.h - total) / 2))

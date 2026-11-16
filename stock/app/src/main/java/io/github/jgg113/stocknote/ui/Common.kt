@@ -55,11 +55,11 @@ import io.github.jgg113.stocknote.ui.theme.PriceColors
 @Composable
 fun SectionCard(title: String? = null, modifier: Modifier = Modifier, action: (@Composable RowScope.() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
     Card(
-        modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(18.dp),
     ) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
             if (title != null || action != null) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     if (title != null) Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -128,8 +128,8 @@ fun Loading(text: String = "불러오는 중…", progress: Pair<Int, Int>? = nu
 
 @Composable
 fun Notice(text: String, color: Color = MaterialTheme.colorScheme.secondaryContainer, action: String? = null, onAction: (() -> Unit)? = null) {
-    Surface(color = color, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Surface(color = color, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
             if (action != null && onAction != null) TextButton(onClick = onAction) { Text(action) }
         }

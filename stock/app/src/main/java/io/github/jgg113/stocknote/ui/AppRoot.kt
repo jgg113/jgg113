@@ -15,6 +15,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.ui.unit.dp
+import io.github.jgg113.stocknote.ui.theme.AppIcons
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -26,7 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.sp
 
-private val tabIcons = mapOf(Tab.HOME to "▤", Tab.WATCH to "★", Tab.DISCOVER to "◎", Tab.INVEST to "₩", Tab.SETTINGS to "⚙")
+private val tabIcons = mapOf(Tab.HOME to AppIcons.Market, Tab.WATCH to AppIcons.Watch, Tab.DISCOVER to AppIcons.Discover, Tab.INVEST to AppIcons.Invest, Tab.SETTINGS to AppIcons.Settings)
 
 @Composable
 fun AppRoot(vm: AppViewModel) {
@@ -54,14 +59,24 @@ fun AppRoot(vm: AppViewModel) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
-            if (top == null) NavigationBar {
-                Tab.entries.forEach { t ->
-                    NavigationBarItem(
-                        selected = vm.tab == t,
-                        onClick = { vm.tab = t },
-                        icon = { Text(tabIcons[t].orEmpty(), fontSize = 18.sp) },
-                        label = { Text(t.label) },
-                    )
+            if (top == null) Column {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                    Tab.entries.forEach { t ->
+                        NavigationBarItem(
+                            selected = vm.tab == t,
+                            onClick = { vm.tab = t },
+                            icon = { Icon(tabIcons.getValue(t), contentDescription = null) },
+                            label = { Text(t.label, style = MaterialTheme.typography.labelMedium) },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                unselectedIconColor = MaterialTheme.colorScheme.outline,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                        )
+                    }
                 }
             }
         },
