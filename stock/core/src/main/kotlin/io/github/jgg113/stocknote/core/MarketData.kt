@@ -633,7 +633,7 @@ class MarketData(
         add(runCatching { SourceStatus("업비트 (코인)", true, "${upbit.allTickers(cryptoNameMap()).size}개 마켓") }.getOrElse { SourceStatus("업비트 (코인)", false, it.message.orEmpty()) })
         add(
             if (!keys.hasPublic) SourceStatus("공공데이터포털 주식시세", false, "키 없음", PublicDataClient.STOCK_PAGE)
-            else runCatching { SourceStatus("공공데이터포털 주식시세", true, "최근 ${publicData.latestDate(now().toLocalDate()) ?: "-"} 시세") }
+            else runCatching { SourceStatus("공공데이터포털 주식시세", true, publicData.probeStock(now().toLocalDate()) + " (${publicData.endpointNote(PublicDataClient.Service.STOCK)})") }
                 .getOrElse { SourceStatus("공공데이터포털 주식시세", false, it.message.orEmpty(), PublicDataClient.STOCK_PAGE, publicHelp(it, "금융위원회_주식시세정보")) },
         )
         add(
@@ -678,6 +678,7 @@ class MarketData(
     private fun publicHelp(e: Throwable, api: String): String {
         val code = (e as? DataException)?.code.orEmpty()
         if (code in setOf("NETWORK", "429", "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR")) return ""
+        if (code == "FIELDS" || code == "EMPTY" || code == "PARSE") return "키와 신청은 정상입니다. 포털의 응답 모양이 앱이 아는 것과 달라 읽지 못했습니다. 이 화면을 그대로 알려 주시면 바로 고칠 수 있습니다."
         val sent = "보낸 키: ${publicData.describeKey()}."
         return when (publicStanding) {
             PublicDataClient.KeyStanding.KNOWN ->

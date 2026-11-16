@@ -27,11 +27,35 @@ object ServiceKey {
 class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectionHttp()) {
     private val key = ServiceKey.normalize(serviceKey)
 
-    private fun call(path: String, params: Map<String, String>): Page {
+    /** 서비스마다 지금 통하는 주소가 몇 번째인지 (새 주소 → 옛 주소 순으로 해 보고 기억해 둔다) */
+    private val working = java.util.concurrent.ConcurrentHashMap<Service, Int>()
+
+    /**
+     * 금융위원회 API 는 주소가 새 버전(_V2)으로 바뀌었고, 활용신청 승인은 신청한 시점의 주소에만 붙는다.
+     * 그래서 새 주소를 먼저 부르고, 키가 그 주소에 등록돼 있지 않다고 하면 옛 주소로도 해 본다.
+     */
+    private fun call(service: Service, params: Map<String, String>): Page {
         if (key.isBlank()) throw DataException("설정에서 공공데이터포털 인증키를 넣으세요.", "NOKEY")
-        val url = "$BASE/$path?" + query(linkedMapOf("serviceKey" to key, "resultType" to "json") + params)
-        val r = network("공공데이터포털") { http.get(url) }
-        return parse(r.status, r.body)
+        val q = query(linkedMapOf("serviceKey" to key, "resultType" to "json") + params)
+        val start = working[service] ?: 0
+        var first: DataException? = null
+        for (step in service.urls.indices) {
+            val i = (start + step) % service.urls.size
+            try {
+                val r = network("공공데이터포털") { http.get(service.urls[i] + "?" + q) }
+                return parse(r.status, r.body).also { working[service] = i }
+            } catch (e: DataException) {
+                if (first == null) first = e
+                // 키·신청 문제나 없어진 주소일 때만 다른 주소로 넘어간다 (통신 오류·한도 초과는 주소를 바꿔도 같다).
+                if (e.code !in MOVED_CODES) throw e
+            }
+        }
+        throw first!!
+    }
+
+    enum class Service(val urls: List<String>) {
+        STOCK(listOf("$HOST/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2", "$HOST/service/GetStockSecuritiesInfoService/getStockPriceInfo")),
+        INDEX(listOf("$HOST/GetMarketIndexInfoService_V2/getStockMarketIndex_V2", "$HOST/service/GetMarketIndexInfoService/getStockMarketIndex")),
     }
 
     /**
@@ -56,16 +80,32 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
 
     /** 가장 최근 시세가 있는 날짜 (삼성전자 기록으로 찾는다) */
     fun latestDate(today: LocalDate = LocalDate.now(KST)): LocalDate? {
-        val page = call(STOCK, mapOf("likeSrtnCd" to "005930", "beginBasDt" to ymd(today.minusDays(15)), "numOfRows" to "30", "pageNo" to "1"))
+        val page = call(Service.STOCK, mapOf("likeSrtnCd" to "005930", "beginBasDt" to ymd(today.minusDays(15)), "numOfRows" to "30", "pageNo" to "1"))
         return page.items.mapNotNull { runCatching { LocalDate.parse(it.str("basDt"), YMD) }.getOrNull() }.maxOrNull()
     }
+
+    /**
+     * 연결 점검용: 주식시세를 실제로 받아 읽을 수 있는지 본다. 응답은 왔는데 읽지 못하면(항목 이름이 바뀐 경우)
+     * 어떤 항목 이름으로 왔는지를 알려 줘 바로 고칠 수 있게 한다.
+     */
+    fun probeStock(today: LocalDate = LocalDate.now(KST)): String {
+        val page = call(Service.STOCK, mapOf("likeSrtnCd" to "005930", "beginBasDt" to ymd(today.minusDays(15)), "numOfRows" to "30", "pageNo" to "1"))
+        val quotes = page.items.mapNotNull { toQuote(it) }
+        val latest = quotes.maxByOrNull { it.time }
+        if (latest != null) return "최근 ${Fmt.date(latest.time)} 시세 · 삼성전자 ${Fmt.number(latest.price)}원"
+        if (page.items.isEmpty()) throw DataException("연결은 됐지만 최근 15일 시세가 비어 있습니다 (전체 ${page.totalCount}건).", "EMPTY")
+        throw DataException("연결은 됐지만 응답을 읽지 못했습니다. 항목 이름: ${page.items.first().keys.take(25).joinToString(",")}", "FIELDS")
+    }
+
+    /** 지금 통하고 있는 주소가 새 버전(V2)인지 옛 주소인지 (점검 화면에 보여 준다) */
+    fun endpointNote(service: Service): String = when (working[service]) { 0 -> "새 주소 V2"; null -> ""; else -> "옛 주소" }
 
     /** 그날 전 종목 시세 */
     fun snapshot(date: LocalDate, rows: Int = 1000): List<Quote> {
         val out = ArrayList<Quote>()
         var page = 1
         while (page <= 10) {
-            val p = call(STOCK, mapOf("basDt" to ymd(date), "numOfRows" to rows.toString(), "pageNo" to page.toString()))
+            val p = call(Service.STOCK, mapOf("basDt" to ymd(date), "numOfRows" to rows.toString(), "pageNo" to page.toString()))
             out += p.items.mapNotNull { toQuote(it) }
             if (p.items.isEmpty() || out.size >= p.totalCount) break
             page++
@@ -78,7 +118,7 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
         val out = ArrayList<Candle>()
         var page = 1
         while (page <= 5) {
-            val p = call(STOCK, mapOf("likeSrtnCd" to code, "beginBasDt" to ymd(from), "numOfRows" to "1000", "pageNo" to page.toString()))
+            val p = call(Service.STOCK, mapOf("likeSrtnCd" to code, "beginBasDt" to ymd(from), "numOfRows" to "1000", "pageNo" to page.toString()))
             out += p.items.filter { it.str("srtnCd").removePrefix("A") == code }.mapNotNull { toCandle(it) }
             if (p.items.isEmpty() || page * 1000 >= p.totalCount) break
             page++
@@ -88,7 +128,7 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
 
     /** 지수 (코스피·코스닥·코스피 200 …) 최근 값 */
     fun indices(names: List<String> = INDEX_NAMES, today: LocalDate = LocalDate.now(KST)): List<IndexQuote> = names.mapNotNull { name ->
-        val items = call(INDEX, mapOf("idxNm" to name, "beginBasDt" to ymd(today.minusDays(15)), "numOfRows" to "30", "pageNo" to "1")).items
+        val items = call(Service.INDEX, mapOf("idxNm" to name, "beginBasDt" to ymd(today.minusDays(15)), "numOfRows" to "30", "pageNo" to "1")).items
         val latest = items.maxByOrNull { it.str("basDt") } ?: return@mapNotNull null
         IndexQuote(
             name, latest.dbl("clpr") ?: return@mapNotNull null, latest.dbl("vs") ?: 0.0, latest.dbl("fltRt") ?: 0.0,
@@ -98,7 +138,7 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
 
     /** 지수 일봉 */
     fun indexHistory(name: String, from: LocalDate): List<Candle> =
-        call(INDEX, mapOf("idxNm" to name, "beginBasDt" to ymd(from), "numOfRows" to "1000", "pageNo" to "1")).items
+        call(Service.INDEX, mapOf("idxNm" to name, "beginBasDt" to ymd(from), "numOfRows" to "1000", "pageNo" to "1")).items
             .filter { it.str("idxNm") == name }.mapNotNull { toCandle(it) }.distinctBy { it.time }.sortedBy { it.time }
 
     class Page(val items: List<kotlinx.serialization.json.JsonObject>, val totalCount: Int)
@@ -107,9 +147,11 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
     enum class KeyStanding { KNOWN, UNKNOWN, UNSURE }
 
     companion object {
-        const val BASE = "https://apis.data.go.kr/1160100/service"
-        const val STOCK = "GetStockSecuritiesInfoService/getStockPriceInfo"
-        const val INDEX = "GetMarketIndexInfoService/getStockMarketIndex"
+        const val HOST = "https://apis.data.go.kr/1160100"
+        private val MOVED_CODES = setOf(
+            "SERVICE_KEY_IS_NOT_REGISTERED_ERROR", "SERVICE_KEY_IS_NOT_REGISTERED", "SERVICE_ACCESS_DENIED_ERROR", "NO_OPENAPI_SERVICE_ERROR",
+            "HTTP400", "HTTP401", "HTTP403", "HTTP404",
+        )
         const val STOCK_PAGE = "https://www.data.go.kr/data/15094808/openapi.do"
         const val INDEX_PAGE = "https://www.data.go.kr/data/15094807/openapi.do"
         val INDEX_NAMES = listOf("코스피", "코스닥", "코스피 200")
@@ -138,6 +180,7 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
             "SERVICE_ACCESS_DENIED_ERROR" to "이 API 활용신청이 안 되어 있습니다. 공공데이터포털에서 활용신청하세요.",
             "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR" to "오늘 호출 한도를 넘었습니다. 내일 다시 됩니다.",
             "SERVICE_KEY_IS_NOT_REGISTERED" to "인증키가 등록되지 않았습니다.",
+            "NO_OPENAPI_SERVICE_ERROR" to "공공데이터포털에서 이 API 주소가 없어졌다고 답했습니다. 앱을 새 버전으로 바꿔야 합니다.",
             "TEMPORARILY_DISABLE_THE_SERVICEKEY_ERROR" to "인증키가 잠시 쓸 수 없게 되었습니다. 잠시 후 다시 시도하세요.",
         )
 
@@ -158,7 +201,9 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
             val code = header?.str("resultCode").orEmpty()
             if (code.isNotEmpty() && code != "00") throw DataException("공공데이터포털 오류 ($code): ${header?.str("resultMsg")}", code)
             val bodyObj = response["body"].obj()
-            val items = bodyObj?.get("items").obj()?.get("item").asList()
+            // 항목은 items.item 아래에 오지만, 버전에 따라 items 가 바로 목록일 수도 있어 둘 다 읽는다.
+            val itemsEl = bodyObj?.get("items")
+            val items = (itemsEl.obj()?.get("item") ?: itemsEl).asList()
             val total = bodyObj?.str("totalCount")?.toIntOrNull() ?: items.size
             return Page(items, total)
         }
@@ -169,7 +214,7 @@ class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectio
             val vs = o.dbl("vs") ?: 0.0
             val date = runCatching { LocalDate.parse(o.str("basDt"), YMD) }.getOrNull()
             return Quote(
-                asset = Asset(Market.KR, code, o.str("itmsNm"), o.str("mrktCtg")),
+                asset = Asset(Market.KR, code, o.str("itmsNm"), o.str("mrktCtg").ifBlank { o.str("mrktCls") }),
                 price = close,
                 change = vs,
                 changeRate = o.dbl("fltRt") ?: 0.0,

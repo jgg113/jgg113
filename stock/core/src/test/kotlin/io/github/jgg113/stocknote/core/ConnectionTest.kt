@@ -285,4 +285,56 @@ class ConnectionTest {
         assertEquals(PublicDataClient.KeyStanding.KNOWN, PublicDataClient.standing(403, "<errMsg>SERVICE_ACCESS_DENIED_ERROR</errMsg>"))
         assertEquals(PublicDataClient.KeyStanding.UNSURE, PublicDataClient.standing(500, "gateway error"))
     }
+
+    private val stockPage = """{"response":{"header":{"resultCode":"00","resultMsg":"NORMAL SERVICE."},"body":{"numOfRows":30,"pageNo":1,"totalCount":1,"items":{"item":[
+        {"basDt":"20261113","srtnCd":"005930","isinCd":"KR7005930003","itmsNm":"삼성전자","mrktCtg":"KOSPI","clpr":"195000","vs":"1000","fltRt":".52","mkp":"194000","hipr":"196000","lopr":"193500","trqu":"12000000","trPrc":"2340000000000","lstgStCnt":"5919637922","mrktTotAmt":"1154329394790000"}]}}}}"""
+    private val unregistered = """{"OpenAPI_ServiceResponse":{"cmmMsgHeader":{"errMsg":"SERVICE_KEY_IS_NOT_REGISTERED_ERROR","returnAuthMsg":"등록되지 않은 서비스키","returnReasonCode":"30"}}}"""
+
+    @Test
+    fun publicDataUsesTheNewV2AddressFirst() {
+        // 금융위원회 API 는 주소가 _V2 로 바뀌었다. 지금 승인받은 키는 새 주소에서만 통한다 (옛 주소는 '등록되지 않은 키').
+        val http = ScriptedHttp { url, _, _ -> if (url.contains("GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2?")) res(200, stockPage) else res(403, unregistered) }
+        val c = PublicDataClient("7ecf" + "0".repeat(56) + "b8a0", http)
+        assertEquals(java.time.LocalDate.of(2026, 11, 13), c.latestDate(java.time.LocalDate.of(2026, 11, 16)))
+        assertTrue(http.calls.all { it.url.startsWith("https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2?serviceKey=7ecf") }, http.calls.map { it.url }.toString())
+        assertEquals("새 주소 V2", c.endpointNote(PublicDataClient.Service.STOCK))
+        assertTrue(c.probeStock(java.time.LocalDate.of(2026, 11, 16)).contains("195,000"))
+        // 지수도 새 주소로 부른다.
+        runCatching { c.indices(listOf("코스피"), java.time.LocalDate.of(2026, 11, 16)) }
+        val indexCalls = http.calls.filter { it.url.contains("MarketIndex") }
+        assertTrue(indexCalls.first().url.startsWith("https://apis.data.go.kr/1160100/GetMarketIndexInfoService_V2/getStockMarketIndex_V2?"), indexCalls.map { it.url }.toString())
+    }
+
+    @Test
+    fun publicDataFallsBackToTheOldAddress() {
+        // 예전에 승인받은 키는 옛 주소에서만 통할 수 있다. 새 주소가 거절하면 옛 주소로 넘어가고, 그 뒤로는 바로 옛 주소를 쓴다.
+        val http = ScriptedHttp { url, _, _ -> if (url.contains("/service/GetStockSecuritiesInfoService/getStockPriceInfo?")) res(200, stockPage) else res(403, unregistered) }
+        val c = PublicDataClient("key", http)
+        assertEquals(1, c.snapshot(java.time.LocalDate.of(2026, 11, 13)).size)
+        assertEquals(2, http.calls.size)
+        c.history("005930", java.time.LocalDate.of(2026, 11, 1))
+        assertEquals(3, http.calls.size)
+        assertEquals("옛 주소", c.endpointNote(PublicDataClient.Service.STOCK))
+        // 두 주소 모두 거절하면 처음(새 주소) 오류를 알린다.
+        val none = ScriptedHttp { _, _, _ -> res(403, unregistered) }
+        val e = assertFailsWith<DataException> { PublicDataClient("key", none).latestDate() }
+        assertEquals("SERVICE_KEY_IS_NOT_REGISTERED_ERROR", e.code)
+        assertEquals(2, none.calls.size)
+        // 통신 오류는 주소를 바꿔 다시 하지 않는다.
+        val down = ScriptedHttp { _, _, _ -> throw java.io.IOException("reset") }
+        assertEquals("NETWORK", assertFailsWith<DataException> { PublicDataClient("key", down).latestDate() }.code)
+        assertEquals(1, down.calls.size)
+    }
+
+    @Test
+    fun publicDataReportsUnreadableResponses() {
+        // 응답 모양이 달라 읽지 못하면 어떤 항목 이름으로 왔는지 알려 준다. items 가 바로 목록으로 와도 읽는다.
+        val flat = """{"response":{"header":{"resultCode":"00"},"body":{"totalCount":1,"items":[{"basDt":"20261113","srtnCd":"005930","itmsNm":"삼성전자","mrktCls":"KOSPI","clpr":"195000","vs":"1000","fltRt":"0.52"}]}}}"""
+        val q = PublicDataClient.parse(200, flat).items.mapNotNull { PublicDataClient.toQuote(it) }.single()
+        assertEquals("KOSPI", q.asset.exchange)
+        val renamed = ScriptedHttp { _, _, _ -> res(200, """{"response":{"header":{"resultCode":"00"},"body":{"totalCount":1,"items":{"item":[{"baseDate":"20261113","shortCode":"005930","closePrice":"195000"}]}}}}""") }
+        val e = assertFailsWith<DataException> { PublicDataClient("key", renamed).probeStock() }
+        assertEquals("FIELDS", e.code)
+        assertTrue(e.message!!.contains("baseDate,shortCode,closePrice"), e.message)
+    }
 }
