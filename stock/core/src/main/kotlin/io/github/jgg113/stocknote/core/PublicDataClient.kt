@@ -24,7 +24,7 @@ object ServiceKey {
  * 공공데이터포털 '금융위원회_주식시세정보'·'금융위원회_지수시세정보' (무료 인증키).
  * 장이 끝난 다음 영업일 오후에 전날 종가가 올라오므로 실시간이 아니다.
  */
-class PublicDataClient(serviceKey: String, private val http: Http = UrlConnectionHttp()) {
+class PublicDataClient(serviceKey: String, private val http: Http = NetHttp()) {
     private val key = ServiceKey.normalize(serviceKey)
 
     /** 서비스마다 지금 통하는 주소가 몇 번째인지 (새 주소 → 옛 주소 순으로 해 보고 기억해 둔다) */

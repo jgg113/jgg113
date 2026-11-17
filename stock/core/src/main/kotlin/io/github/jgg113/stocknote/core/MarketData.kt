@@ -152,7 +152,7 @@ class MarketData(
     rawKeys: DataKeys,
     private val cache: DataCache,
     private val tokenStore: KisTokenStore = MemoryTokenStore(),
-    private val http: Http = UrlConnectionHttp(),
+    private val http: Http = NetHttp(),
     private val now: () -> LocalDateTime = { LocalDateTime.now(KST) },
 ) {
     private val keys: DataKeys = rawKeys.cleaned()

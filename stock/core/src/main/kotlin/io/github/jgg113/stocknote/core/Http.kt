@@ -5,9 +5,10 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URI
 import java.net.URLEncoder
 
 class HttpResponse(val status: Int, val bytes: ByteArray) {
@@ -23,24 +24,83 @@ interface Http {
     fun post(url: String, headers: Map<String, String>, body: String): HttpResponse
 }
 
-class UrlConnectionHttp(private val connectTimeoutMs: Int = 15_000, private val readTimeoutMs: Int = 45_000) : Http {
+/**
+ * 실제 통신 (OkHttp).
+ * - 서버 주소(IP)가 여러 개면 붙지 않는 주소를 건너뛰고 다음 주소로 붙는다. IPv4 주소를 먼저 쓴다
+ *   (IPv6 경로가 끊긴 망에서 연결이 멈춰 버리는 일을 막는다).
+ * - 휴대폰 DNS 가 주소를 못 찾으면 공개 DNS(Google·Cloudflare, 보안 연결)로 한 번 더 찾는다.
+ * - 아직 아무것도 보내지 않은 단계(주소 찾기·연결)에서 실패하면 잠깐 쉬었다가 두 번 더 해 본다.
+ */
+class NetHttp(private val connectTimeoutMs: Int = 10_000, private val readTimeoutMs: Int = 45_000) : Http {
+    private val client: okhttp3.OkHttpClient by lazy {
+        shared.newBuilder()
+            .connectTimeout(connectTimeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+            .readTimeout(readTimeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+            .writeTimeout(readTimeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+            .build()
+    }
+
+    /** 다시 하기 전에 쉬는 시간 (시험에서는 0 으로 둔다) */
+    var retryPauseMs: Long = 800
+
     /** 조회는 연결이 중간에 끊기면(Connection reset 등) 한 번 더 해 본다. 시간 초과는 다시 하지 않는다. */
     override fun get(url: String, headers: Map<String, String>): HttpResponse = try {
-        beforeSend { request("GET", url, headers, null) }
+        beforeSend { execute(build(url, headers, null)) }
     } catch (e: java.net.SocketTimeoutException) {
         throw e
     } catch (e: java.net.UnknownHostException) {
         throw e
     } catch (e: IOException) {
-        request("GET", url, headers, null)
+        execute(build(url, headers, null))
     }
 
-    override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse = beforeSend { request("POST", url, headers, body) }
+    override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse = beforeSend { execute(build(url, headers, body)) }
 
-    /**
-     * 서버 주소를 못 찾거나 연결이 거절된 경우는 아직 아무것도 보내지 않은 것이라 다시 해도 안전하다.
-     * 휴대폰은 와이파이↔데이터가 바뀌는 순간 주소 찾기가 잠깐 실패하는 일이 흔해, 조금 쉬었다가 두 번 더 해 본다.
-     */
+    private fun build(url: String, headers: Map<String, String>, body: String?): okhttp3.Request {
+        val b = okhttp3.Request.Builder().url(url)
+        if (headers.keys.none { it.equals("User-Agent", true) }) b.header("User-Agent", "Mozilla/5.0 (Android) StockNote")
+        val contentType = headers.entries.firstOrNull { it.key.equals("Content-Type", true) }?.value
+        headers.forEach { (k, v) -> if (!k.equals("Content-Type", true)) b.header(k, v) }
+        if (body != null) {
+            val type = (contentType ?: "application/json; charset=UTF-8").toMediaTypeOrNull()
+            b.post(body.toByteArray(Charsets.UTF_8).toRequestBody(type))
+        }
+        return b.build()
+    }
+
+    private fun execute(request: okhttp3.Request): HttpResponse = try {
+        client.newCall(request).execute().use { r -> HttpResponse(r.code, r.body?.bytes() ?: ByteArray(0)) }
+    } catch (e: javax.net.ssl.SSLHandshakeException) {
+        // 오래된 암호 방식만 받는 서버(정부·공공기관에 많다)와 보안 연결이 안 되면, 휴대폰 기본 통신으로 한 번 더 해 본다.
+        // 보안 연결 전 단계라 아직 아무것도 보내지 않았으므로 다시 해도 안전하다.
+        runCatching { legacy(request) }.getOrElse { throw e }
+    }
+
+    /** 휴대폰(자바) 기본 통신. 예전에 쓰던 방식 그대로다. */
+    private fun legacy(request: okhttp3.Request): HttpResponse {
+        val conn = java.net.URI(request.url.toString()).toURL().openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = request.method
+        conn.connectTimeout = connectTimeoutMs
+        conn.readTimeout = readTimeoutMs
+        for (i in 0 until request.headers.size) conn.setRequestProperty(request.headers.name(i), request.headers.value(i))
+        try {
+            val body = request.body
+            if (body != null) {
+                body.contentType()?.let { conn.setRequestProperty("Content-Type", it.toString()) }
+                val buffer = okio.Buffer()
+                body.writeTo(buffer)
+                conn.doOutput = true
+                conn.outputStream.use { it.write(buffer.readByteArray()) }
+            }
+            val status = conn.responseCode
+            val stream = if (status >= 400) conn.errorStream else conn.inputStream
+            return HttpResponse(status, stream?.use { it.readBytes() } ?: ByteArray(0))
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** 주소를 못 찾았거나 연결이 거절된 경우는 아직 아무것도 보내지 않은 것이라 다시 해도 안전하다. */
     private fun <T> beforeSend(block: () -> T): T {
         var last: IOException? = null
         for (attempt in 0 until 3) {
@@ -51,32 +111,46 @@ class UrlConnectionHttp(private val connectTimeoutMs: Int = 15_000, private val 
                 last = e
             } catch (e: java.net.ConnectException) {
                 last = e
+            } catch (e: java.net.SocketTimeoutException) {
+                // 연결 단계의 시간 초과만 다시 한다 (답을 기다리다 끊긴 것은 서버가 이미 받았을 수 있다).
+                if (!isConnectTimeout(e)) throw e
+                last = e
             }
         }
         throw last!!
     }
 
-    /** 다시 하기 전에 쉬는 시간 (시험에서는 0 으로 둔다) */
-    var retryPauseMs: Long = 800
+    companion object {
+        private val dohBootstrap by lazy { okhttp3.OkHttpClient.Builder().connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS).readTimeout(5, java.util.concurrent.TimeUnit.SECONDS).build() }
 
-    private fun request(method: String, url: String, headers: Map<String, String>, body: String?): HttpResponse {
-        val conn = URI(url).toURL().openConnection() as HttpURLConnection
-        conn.requestMethod = method
-        conn.connectTimeout = connectTimeoutMs
-        conn.readTimeout = readTimeoutMs
-        if (headers.keys.none { it.equals("User-Agent", true) }) conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) StockNote")
-        headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
-        try {
-            if (body != null) {
-                conn.doOutput = true
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            }
-            val status = conn.responseCode
-            val stream = if (status >= 400) conn.errorStream else conn.inputStream
-            return HttpResponse(status, stream?.use { it.readBytes() } ?: ByteArray(0))
-        } finally {
-            conn.disconnect()
+        private fun doh(url: String, vararg ips: String): okhttp3.Dns = okhttp3.dnsoverhttps.DnsOverHttps.Builder()
+            .client(dohBootstrap)
+            .url(url.toHttpUrl())
+            .bootstrapDnsHosts(ips.map { java.net.InetAddress.getByName(it) }) // 숫자 주소라 DNS 를 쓰지 않는다
+            .includeIPv6(true)
+            .build()
+
+        /** 휴대폰 DNS → 실패하면 공개 DNS 두 곳. IPv4 주소를 앞에 둔다. */
+        val dns = FallbackDns(okhttp3.Dns.SYSTEM, lazy { listOf(doh("https://dns.google/dns-query", "8.8.8.8", "8.8.4.4"), doh("https://cloudflare-dns.com/dns-query", "1.1.1.1", "1.0.0.1")) })
+
+        val shared: okhttp3.OkHttpClient by lazy {
+            okhttp3.OkHttpClient.Builder().dns(dns).retryOnConnectionFailure(true).followRedirects(true).build()
         }
+
+        fun isConnectTimeout(e: java.net.SocketTimeoutException): Boolean = e.message.orEmpty().contains("connect", ignoreCase = true)
+    }
+}
+
+/** 휴대폰 DNS 로 먼저 찾고, 못 찾으면 [fallbacks] 로 찾는다. 찾은 주소는 IPv4 를 앞에 둔다. */
+class FallbackDns(private val primary: okhttp3.Dns, private val fallbacks: Lazy<List<okhttp3.Dns>>) : okhttp3.Dns {
+    override fun lookup(hostname: String): List<java.net.InetAddress> {
+        val found = try {
+            primary.lookup(hostname)
+        } catch (e: java.net.UnknownHostException) {
+            // 숫자 주소이거나 대체 DNS 도 못 찾으면 원래 오류를 그대로 낸다.
+            fallbacks.value.firstNotNullOfOrNull { d -> runCatching { d.lookup(hostname) }.getOrNull()?.takeIf { it.isNotEmpty() } } ?: throw e
+        }
+        return found.sortedBy { if (it is java.net.Inet4Address) 0 else 1 }
     }
 }
 
@@ -118,7 +192,9 @@ object KeyText {
 /** 통신 오류를 쉬운 말로 바꾼다. */
 fun networkReason(e: Throwable): String = when (e) {
     is java.net.UnknownHostException -> unknownHostReason(e)
-    is java.net.SocketTimeoutException -> "서버가 응답하지 않아 끊겼습니다. 와이파이가 막는 경우가 있으니 모바일 데이터로 바꿔 다시 해 보세요."
+    is java.net.SocketTimeoutException ->
+        if (NetHttp.isConnectTimeout(e)) "서버에 연결하지 못했습니다 (세 번 시도, 매번 10초 동안 응답 없음). 이 망이 이 서버로 가는 길을 막고 있을 수 있습니다. 와이파이를 끄고 모바일 데이터로 다시 해 보세요."
+        else "서버에 연결은 됐지만 답이 제때 오지 않았습니다. 서버가 붐비거나 답이 길어 오래 걸린 것일 수 있으니 잠시 뒤 다시 해 보세요."
     is javax.net.ssl.SSLException -> "보안 연결에 실패했습니다. 휴대폰 날짜·시간이 맞는지, VPN 이나 회사·학교 와이파이가 막고 있지 않은지 확인하세요. (${e.message ?: e.javaClass.simpleName})"
     is java.net.ConnectException, is java.net.NoRouteToHostException -> "서버에 연결하지 못했습니다. 와이파이가 막는 경우가 있으니 모바일 데이터로 바꿔 다시 해 보세요. (${e.message ?: e.javaClass.simpleName})"
     is IOException -> "인터넷 연결을 확인하세요. (${e.message ?: e.javaClass.simpleName})"

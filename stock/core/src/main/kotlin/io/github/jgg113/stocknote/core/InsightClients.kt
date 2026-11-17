@@ -39,7 +39,7 @@ data class DividendInfo(
 data class FearGreed(val value: Int, val label: String, val time: Long, val history: List<Int>)
 
 /** 키 없이 쓰는 공개 자료: 코인 공포·탐욕 지수 */
-class FearGreedClient(private val http: Http = UrlConnectionHttp()) {
+class FearGreedClient(private val http: Http = NetHttp()) {
     fun crypto(days: Int = 30): FearGreed? = parse(network("공포·탐욕 지수") { http.get("$URL?limit=$days") }.body)
 
     companion object {
@@ -62,7 +62,7 @@ class FearGreedClient(private val http: Http = UrlConnectionHttp()) {
  * 해외 거래소의 코인 달러(USDT) 가격. 키 없이 쓰는 공개 시세다.
  * 한 곳이 막혀 있어도 되도록 OKX → 바이낸스 순으로 물어본다.
  */
-class GlobalCoinClient(private val http: Http = UrlConnectionHttp()) {
+class GlobalCoinClient(private val http: Http = NetHttp()) {
     /** 코인 기호(BTC…) → 달러 가격, 그리고 어디서 받았는지 */
     fun usdPrices(): Pair<Map<String, Double>, String> {
         var last: Exception? = null

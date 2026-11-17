@@ -4,7 +4,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 
 /** 업비트 공개 시세 API (키 필요 없음, 실시간). 원화(KRW) 마켓만 쓴다. */
-class UpbitClient(private val http: Http = UrlConnectionHttp()) {
+class UpbitClient(private val http: Http = NetHttp()) {
     private fun call(path: String, params: Map<String, String> = emptyMap()): String {
         val url = BASE + path + if (params.isEmpty()) "" else "?" + query(params)
         val r = network("업비트") { http.get(url, mapOf("Accept" to "application/json")) }

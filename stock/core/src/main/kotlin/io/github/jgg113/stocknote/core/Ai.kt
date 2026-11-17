@@ -52,8 +52,11 @@ fun interface AiEngine {
     fun generate(prompt: String): AiAnswer
 }
 
+/** AI 는 답을 다 만든 뒤에 한꺼번에 보내므로, 긴 해설은 1분 넘게 걸릴 수 있다. */
+const val AI_READ_TIMEOUT_MS = 120_000
+
 object AiEngines {
-    fun create(provider: AiProvider, key: String, http: Http = UrlConnectionHttp()): AiEngine? {
+    fun create(provider: AiProvider, key: String, http: Http = NetHttp(readTimeoutMs = AI_READ_TIMEOUT_MS)): AiEngine? {
         if (key.isBlank()) return null
         return when (provider) {
             AiProvider.GEMINI_API -> GeminiClient(key, http)
@@ -78,7 +81,7 @@ class OpenAiCompatClient(
     private val endpoint: String,
     apiKey: String,
     private val models: List<String>,
-    private val http: Http = UrlConnectionHttp(),
+    private val http: Http = NetHttp(readTimeoutMs = AI_READ_TIMEOUT_MS),
     private val extraHeaders: Map<String, String> = emptyMap(),
     /** 정해 둔 모델이 모두 안 될 때, 지금 쓸 수 있는 모델 이름을 알아 오는 방법 (없으면 null) */
     private val discover: (() -> List<String>)? = null,
@@ -119,22 +122,32 @@ class OpenAiCompatClient(
     }
 }
 
-class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(), private val models: List<String> = DEFAULT_MODELS) : AiEngine {
+class GeminiClient(apiKey: String, private val http: Http = NetHttp(readTimeoutMs = AI_READ_TIMEOUT_MS), private val models: List<String> = DEFAULT_MODELS) : AiEngine {
     private val key = KeyText.clean(apiKey)
+
+    private fun body(prompt: String, thinking: Boolean) = buildJsonObject {
+        putJsonArray("contents") {
+            add(buildJsonObject {
+                put("role", "user")
+                putJsonArray("parts") { add(buildJsonObject { put("text", prompt) }) }
+            })
+        }
+        putJsonObject("generationConfig") {
+            put("temperature", 0.3)
+            put("maxOutputTokens", 8192)
+            // Gemini 3 계열은 답하기 전에 '생각'을 하는데 기본값(중간)이면 오래 걸린다. 숫자를 풀어 쓰는 일이라 짧게 생각해도 충분하다.
+            if (thinking) putJsonObject("thinkingConfig") { put("thinkingLevel", "low") }
+        }
+    }.toString()
+
+    private val headers get() = mapOf("Content-Type" to "application/json; charset=UTF-8", "x-goog-api-key" to key)
 
     override fun generate(prompt: String): AiAnswer {
         var last: DataException? = null
         fun attempt(model: String): AiAnswer? {
-            val body = buildJsonObject {
-                putJsonArray("contents") {
-                    add(buildJsonObject {
-                        put("role", "user")
-                        putJsonArray("parts") { add(buildJsonObject { put("text", prompt) }) }
-                    })
-                }
-                putJsonObject("generationConfig") { put("temperature", 0.3); put("maxOutputTokens", 8192) }
-            }.toString()
-            val r = network("Gemini") { http.post("$BASE/$model:generateContent", mapOf("Content-Type" to "application/json; charset=UTF-8", "x-goog-api-key" to key), body) }
+            var r = network("Gemini") { http.post("$BASE/$model:generateContent", headers, body(prompt, thinking = true)) }
+            // 생각 설정을 모르는 모델이면 빼고 다시 보낸다.
+            if (r.status == 400 && r.body.contains("thinking", ignoreCase = true)) r = network("Gemini") { http.post("$BASE/$model:generateContent", headers, body(prompt, thinking = false)) }
             if (r.status == 404) { if (last == null) last = DataException("Gemini 모델 $model 을 찾지 못했습니다."); return null }
             return try {
                 AiAnswer(parse(r.status, r.body), model)
@@ -157,6 +170,16 @@ class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(),
         return parseModels(r.body)
     }
 
+    /**
+     * 연결 테스트 1단계: 답을 만들지 않고 모델 목록만 받아, 서버에 닿는지와 키가 맞는지를 몇 초 안에 가린다.
+     * 쓸 수 있는 모델 수를 돌려준다.
+     */
+    fun checkKey(): Int {
+        val r = network("Gemini") { http.get("$BASE?pageSize=200", mapOf("x-goog-api-key" to key)) }
+        if (r.status != 200) parse(r.status, r.body)
+        return parseModels(r.body).size
+    }
+
     companion object {
         const val BASE = "https://generativelanguage.googleapis.com/v1beta/models"
         // 2.5 계열은 새 키로는 쓸 수 없게 되었다(2026-11 확인). 이름이 또 바뀌어도 아래 목록이 모두 안 되면 쓸 수 있는 모델을 물어 찾는다.
@@ -177,8 +200,11 @@ class GeminiClient(apiKey: String, private val http: Http = UrlConnectionHttp(),
                 val message = error?.str("message").orEmpty()
                 val reason = error?.str("status").orEmpty()
                 throw when {
-                    (status == 400 || status == 401) && (message.contains("API key", true) || message.contains("API_KEY", true)) ->
-                        DataException("Gemini API 키가 맞지 않습니다. Google AI Studio 에서 키를 다시 복사해 넣어 보세요.", "AI_KEY")
+                    // 2026-05 부터 AI Studio 는 'AQ.' 로 시작하는 새 형식 키만 만든다. 일부 계정에서 이 키가 거절되는 알려진 문제가 있다.
+                    status == 401 && body.contains("ACCESS_TOKEN_TYPE_UNSUPPORTED") ->
+                        DataException("Google 이 이 키 형식을 받아 주지 않았습니다 (ACCESS_TOKEN_TYPE_UNSUPPORTED). AI Studio 에서 키를 새로 만들어 넣거나, 키의 프로젝트에서 'Generative Language API' 가 켜져 있는지 확인하세요.", "AI_KEY")
+                    status == 401 || ((status == 400 || status == 403) && (message.contains("API key", true) || message.contains("API_KEY", true))) ->
+                        DataException("Gemini API 키가 맞지 않습니다. Google AI Studio 의 [API 키 세부정보]에서 복사 버튼으로 다시 복사해 넣어 보세요. (${message.take(100)})", "AI_KEY")
                     status == 403 || reason == "PERMISSION_DENIED" -> DataException("이 키로 Gemini API 를 쓸 수 없습니다: ${message.take(160).ifBlank { "권한 없음" }}", "AI_DENIED")
                     status == 429 || reason == "RESOURCE_EXHAUSTED" -> DataException("Gemini 무료 한도를 넘었습니다. 1분쯤 뒤나 내일 다시 쓰세요.", "AI_LIMIT", retryable = true)
                     status >= 500 -> DataException("Gemini 서버가 잠시 응답하지 않습니다.", retryable = true)

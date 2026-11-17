@@ -13,7 +13,7 @@ import javax.xml.parsers.DocumentBuilderFactory
 /**
  * Twelve Data (무료 키, 하루 800회·분당 8회). 한국투자증권 계좌가 없을 때 미국 주식 시세·일봉을 받는다.
  */
-class TwelveDataClient(apiKey: String, private val http: Http = UrlConnectionHttp()) {
+class TwelveDataClient(apiKey: String, private val http: Http = NetHttp()) {
     private val key = KeyText.clean(apiKey)
 
     private fun call(path: String, params: Map<String, String>): String {
@@ -106,7 +106,7 @@ data class Financials(
 }
 
 /** 금융감독원 DART Open API (무료 인증키): 공시 목록·재무제표 */
-class DartClient(apiKey: String, private val http: Http = UrlConnectionHttp()) {
+class DartClient(apiKey: String, private val http: Http = NetHttp()) {
     private val key = KeyText.clean(apiKey)
 
     private fun call(path: String, params: Map<String, String>): kotlinx.serialization.json.JsonObject {
@@ -301,7 +301,7 @@ class DartClient(apiKey: String, private val http: Http = UrlConnectionHttp()) {
 }
 
 /** Google 뉴스 RSS (키 필요 없음, 개인용 읽기) */
-class NewsClient(private val http: Http = UrlConnectionHttp()) {
+class NewsClient(private val http: Http = NetHttp()) {
     fun search(query: String, limit: Int = 30): List<NewsItem> {
         val url = "https://news.google.com/rss/search?q=" + enc(query) + "&hl=ko&gl=KR&ceid=KR:ko"
         val r = network("뉴스") { http.get(url, mapOf("Accept" to "application/rss+xml")) }
@@ -335,7 +335,7 @@ class NewsClient(private val http: Http = UrlConnectionHttp()) {
 }
 
 /** 환율 (open.er-api.com, 키 필요 없음, 하루 한 번 갱신) */
-class FxClient(private val http: Http = UrlConnectionHttp()) {
+class FxClient(private val http: Http = NetHttp()) {
     /** 1달러 = 몇 원 */
     fun usdKrw(): Pair<Double, Long> {
         val r = network("환율") { http.get("https://open.er-api.com/v6/latest/USD") }

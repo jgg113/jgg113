@@ -351,10 +351,44 @@ class ConnectionTest {
     @Test
     fun addressLookupFailuresAreRetried() {
         // 주소 찾기 실패·연결 거절은 아직 아무것도 보내지 않은 것이라, 보내기(POST)도 다시 해 본다. 그 밖의 오류는 다시 보내지 않는다.
-        val http = UrlConnectionHttp(connectTimeoutMs = 2000, readTimeoutMs = 2000).apply { retryPauseMs = 0 }
+        val http = NetHttp(connectTimeoutMs = 2000, readTimeoutMs = 2000).apply { retryPauseMs = 0 }
         val start = System.nanoTime()
         assertFailsWith<java.io.IOException> { http.post("https://no-such-host.invalid/x", emptyMap(), "{}") }
         assertFailsWith<java.io.IOException> { http.get("https://no-such-host.invalid/x") }
         assertTrue((System.nanoTime() - start) / 1e9 < 30)
+    }
+
+    @Test
+    fun fallbackDnsUsesBackupAndPutsIpv4First() {
+        val v6 = java.net.InetAddress.getByName("2001:db8::1")
+        val v4 = java.net.InetAddress.getByName("192.0.2.1")
+        // 휴대폰 DNS 가 찾으면 그대로 쓰되 IPv4 를 앞에 둔다.
+        fun dnsOf(f: (String) -> List<java.net.InetAddress>) = object : okhttp3.Dns { override fun lookup(hostname: String) = f(hostname) }
+        val ok = FallbackDns(dnsOf { listOf(v6, v4) }, lazy { error("대체 DNS 를 쓰면 안 된다") })
+        assertEquals(listOf(v4, v6), ok.lookup("example.com"))
+        // 못 찾으면 대체 DNS 로 찾는다.
+        val failing = dnsOf { throw java.net.UnknownHostException(it) }
+        val backup = FallbackDns(failing, lazy { listOf(failing, dnsOf { listOf(v4) }) })
+        assertEquals(listOf(v4), backup.lookup("generativelanguage.googleapis.com"))
+        // 대체 DNS 도 못 찾으면 원래 오류를 낸다.
+        assertFailsWith<java.net.UnknownHostException> { FallbackDns(failing, lazy { listOf(failing) }).lookup("x.invalid") }
+    }
+
+    @Test
+    fun geminiSendsLowThinkingAndRetriesWithoutIt() {
+        val ok = """{"candidates":[{"content":{"parts":[{"text":"답"}]},"finishReason":"STOP"}]}"""
+        // 생각 설정을 모르는 모델이면 빼고 다시 보낸다.
+        val http = ScriptedHttp { _, _, body -> if (body!!.contains("thinkingConfig")) res(400, """{"error":{"code":400,"message":"Unknown name \"thinkingConfig\"","status":"INVALID_ARGUMENT"}}""") else res(200, ok) }
+        assertEquals("답", GeminiClient("AQ.key", http).generate("q").text)
+        assertTrue(http.calls[0].body!!.contains("\"thinkingLevel\":\"low\""))
+        assertFalse(http.calls[1].body!!.contains("thinkingConfig"))
+        // 새 형식(AQ.) 키가 거절되는 알려진 문제는 따로 알려 준다.
+        val rejected = ScriptedHttp { _, _, _ -> res(401, """{"error":{"code":401,"message":"Request had invalid authentication credentials.","status":"UNAUTHENTICATED","details":[{"reason":"ACCESS_TOKEN_TYPE_UNSUPPORTED"}]}}""") }
+        val e = assertFailsWith<DataException> { GeminiClient("AQ.key", rejected).checkKey() }
+        assertEquals("AI_KEY", e.code)
+        assertTrue(e.message!!.contains("ACCESS_TOKEN_TYPE_UNSUPPORTED"))
+        // 키 확인은 모델 목록만 받는다 (답을 만들지 않는다).
+        val list = ScriptedHttp { url, headers, _ -> if (url.endsWith("/models?pageSize=200") && headers["x-goog-api-key"] == "AQ.key") res(200, """{"models":[{"name":"models/gemini-3.8-flash","supportedGenerationMethods":["generateContent"]}]}""") else res(500, "") }
+        assertEquals(1, GeminiClient("AQ.key", list).checkKey())
     }
 }

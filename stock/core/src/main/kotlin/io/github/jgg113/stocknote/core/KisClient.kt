@@ -92,7 +92,7 @@ class KisClient(
     appSecret: String,
     private val virtual: Boolean = false,
     private val tokens: KisTokenStore = MemoryTokenStore(),
-    private val http: Http = UrlConnectionHttp(),
+    private val http: Http = NetHttp(),
 ) {
     private val key = KeyText.clean(appKey)
     private val secret = KeyText.clean(appSecret)

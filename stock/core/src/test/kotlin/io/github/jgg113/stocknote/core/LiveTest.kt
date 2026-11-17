@@ -26,7 +26,7 @@ class LiveTest {
         show("Gemini") { GeminiClient("AIzaDummyKey000000000000000000000000000").generate("안녕") }
         show("Groq") { AiEngines.create(AiProvider.GROQ_API, "gsk_dummy")!!.generate("안녕") }
         show("OpenRouter") { AiEngines.create(AiProvider.OPENROUTER_API, "sk-or-dummy")!!.generate("안녕") }
-        show("한투 종목파일") { KisMaster.download(UrlConnectionHttp()).size }
+        show("한투 종목파일") { KisMaster.download(NetHttp()).size }
     }
 
     /** 실제 Kronos 가중치로 구현이 맞는지 점검한다: KRONOS_DIR 에 가중치 두 파일이 있어야 한다. */

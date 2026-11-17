@@ -147,7 +147,8 @@ fun SettingsScreen(vm: AppViewModel) {
                     Text(if (t?.loading == true) "테스트 중…" else "AI 연결 테스트")
                 }
                 when {
-                    t == null || t.loading -> Unit
+                    t == null -> Unit
+                    t.loading -> SmallLabel(t.step, Modifier.padding(top = 6.dp))
                     t.ok -> {
                         Text("✓ 연결되었습니다 (${t.model})", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = OkGreen, modifier = Modifier.padding(top = 6.dp))
                         SmallLabel("시험 답변: ${t.text}")

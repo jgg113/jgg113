@@ -86,7 +86,7 @@ data class AiUiState(
 )
 
 /** 설정 화면의 AI [연결 테스트] 결과 */
-data class AiTestState(val loading: Boolean = false, val ok: Boolean = false, val text: String = "", val model: String = "", val error: String = "")
+data class AiTestState(val loading: Boolean = false, val ok: Boolean = false, val text: String = "", val model: String = "", val error: String = "", val step: String = "")
 
 /** 미리 학습된 Kronos 모델의 상태 */
 data class KronosState(
@@ -435,11 +435,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             aiTest = AiTestState(error = "키를 먼저 넣으세요.")
             return
         }
-        aiTest = AiTestState(loading = true)
+        aiTest = AiTestState(loading = true, step = "1/2 서버 연결·키 확인 중…")
         viewModelScope.launch {
+            // 1단계 (Gemini): 답을 만들지 않고 모델 목록만 받아 서버에 닿는지·키가 맞는지를 몇 초 안에 가린다.
+            var note = ""
+            if (engine is io.github.jgg113.stocknote.core.GeminiClient) {
+                val k = withContext(Dispatchers.IO) { runCatching { engine.checkKey() } }
+                if (aiProvider != p) return@launch
+                k.exceptionOrNull()?.let { aiTest = AiTestState(error = "1단계(서버 연결·키 확인)에서 멈췄습니다. " + err(it)); return@launch }
+                note = "서버 연결·키 정상 (쓸 수 있는 모델 ${k.getOrDefault(0)}개). "
+                aiTest = AiTestState(loading = true, step = "2/2 짧은 질문을 보내 답을 기다리는 중… (길면 1분)")
+            }
+            val started = System.currentTimeMillis()
             val r = withContext(Dispatchers.IO) { runCatching { engine.generate(io.github.jgg113.stocknote.core.AiTest.PROMPT) } }
             if (aiProvider != p) return@launch
-            aiTest = r.fold({ AiTestState(ok = true, text = AiText.plain(it.text).take(240), model = it.model) }, { AiTestState(error = err(it)) })
+            val sec = (System.currentTimeMillis() - started) / 1000
+            aiTest = r.fold(
+                { AiTestState(ok = true, text = AiText.plain(it.text).take(240), model = "${it.model}, ${sec}초") },
+                { AiTestState(error = (if (note.isNotEmpty()) "$note 2단계(답 받기)에서 멈췄습니다 (${sec}초). " else "") + err(it)) },
+            )
         }
     }
 

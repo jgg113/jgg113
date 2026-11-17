@@ -18,6 +18,8 @@ kotlin {
 
 dependencies {
     api(libs.kotlinx.serialization.json)
+    implementation(libs.okhttp)
+    implementation(libs.okhttp.dnsoverhttps)
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test.junit)
 }
