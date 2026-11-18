@@ -53,7 +53,7 @@ import io.github.jgg113.stocknote.core.StrategyHorizon
 import io.github.jgg113.stocknote.core.Theme
 import io.github.jgg113.stocknote.ui.theme.PriceColors
 
-private enum class DiscoverTab(val label: String) { SIGNALS("매매신호"), AI("AI 순위"), FEATURED("특징종목"), THEMES("테마"), SCREENER("종목필터") }
+private enum class DiscoverTab(val label: String) { SIGNALS("매매신호"), LAB("AI 연구소"), AI("AI 순위"), FEATURED("특징종목"), THEMES("테마"), SCREENER("종목필터") }
 
 @Composable
 fun DiscoverScreen(vm: AppViewModel) {
@@ -65,6 +65,7 @@ fun DiscoverScreen(vm: AppViewModel) {
         }
         when (tab) {
             DiscoverTab.SIGNALS -> SignalsTab(vm)
+            DiscoverTab.LAB -> LabTab(vm)
             DiscoverTab.AI -> AiRankTab(vm)
             DiscoverTab.FEATURED -> FeaturedTab(vm)
             DiscoverTab.THEMES -> ThemesTab(vm)

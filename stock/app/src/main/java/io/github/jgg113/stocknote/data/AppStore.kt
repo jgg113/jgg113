@@ -92,6 +92,7 @@ data class Backup(
     val scanAlerts: List<ScanAlert> = emptyList(),
     val alertSettings: AlertSettings = AlertSettings(),
     val screener: ScreenerFilter = ScreenerFilter(),
+    val evolved: List<io.github.jgg113.stocknote.core.EvolvedStrategy> = emptyList(),
 )
 
 /** 설정·관심종목·계좌 등 기기에만 저장한다. */
@@ -174,6 +175,16 @@ class AppStore(context: Context) {
         get() = load("signal_strategies", ListSerializer(String.serializer()), emptyList())
         set(value) = save("signal_strategies", ListSerializer(String.serializer()), value)
 
+    /** AI 전략 연구소에서 저장한 조합 전략 */
+    var evolved: List<io.github.jgg113.stocknote.core.EvolvedStrategy>
+        get() = load("evolved", ListSerializer(io.github.jgg113.stocknote.core.EvolvedStrategy.serializer()), emptyList())
+        set(value) = save("evolved", ListSerializer(io.github.jgg113.stocknote.core.EvolvedStrategy.serializer()), value)
+
+    /** 연구소가 지금까지 시험한 조합 수·모의투자 횟수 */
+    var labTotals: Pair<Long, Long>
+        get() = (prefs.getLong("lab_evals", 0)) to (prefs.getLong("lab_sims", 0))
+        set(value) = prefs.edit().putLong("lab_evals", value.first).putLong("lab_sims", value.second).apply()
+
     var kronosValidations: List<KronosValidation>
         get() = load("kronos_validations", ListSerializer(KronosValidation.serializer()), emptyList())
         set(value) = save("kronos_validations", ListSerializer(KronosValidation.serializer()), value)
@@ -185,6 +196,7 @@ class AppStore(context: Context) {
             keys = keys, aiProvider = aiProvider.name, aiKeys = AiProvider.entries.filter { it.isApi }.associate { it.name to aiKey(it) }.filterValues { it.isNotBlank() },
             fees = fees, backtest = backtest, indicators = indicators, watchlists = watchlists, customThemes = customThemes, accounts = accounts,
             gameStats = gameStats, priceAlerts = priceAlerts, signalAlerts = signalAlerts, scanAlerts = scanAlerts, alertSettings = alertSettings, screener = screener,
+            evolved = evolved,
         ),
     )
 
@@ -200,6 +212,7 @@ class AppStore(context: Context) {
         if (b.accounts.isNotEmpty()) accounts = b.accounts
         gameStats = b.gameStats; priceAlerts = b.priceAlerts; signalAlerts = b.signalAlerts; scanAlerts = b.scanAlerts
         alertSettings = b.alertSettings; screener = b.screener
+        if (b.evolved.isNotEmpty()) evolved = b.evolved
     }
 
     var homeMarket: Market

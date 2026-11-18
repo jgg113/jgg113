@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -60,6 +61,20 @@ data class ChartLevel(val label: String, val price: Double, val color: Color)
  * 캔들 차트. 두 손가락으로 확대·축소, 한 손가락으로 옆으로 밀어 과거 보기, 눌러서 그 봉의 값 보기.
  * [indicators] 의 OVERLAY 는 가격 위에, PANEL 은 아래 칸에 그린다. 개수 제한은 없다.
  */
+/** 매수부터 매도까지 한 번 들고 있던 구간 (아직 들고 있으면 exitPrice 가 없다) */
+private data class HoldSpan(val entry: Int, val entryPrice: Double, val exit: Int, val exitPrice: Double?)
+
+private fun holdingSpans(markers: Map<Int, List<TradeMarker>>, size: Int): List<HoldSpan> {
+    val out = ArrayList<HoldSpan>()
+    var entry: TradeMarker? = null
+    for (i in markers.keys.sorted()) for (m in markers.getValue(i)) {
+        if (m.signal == Signal.BUY && entry == null) entry = m
+        else if (m.signal == Signal.SELL && entry != null) { out += HoldSpan(entry.index, entry.price, m.index, m.price); entry = null }
+    }
+    entry?.let { out += HoldSpan(it.index, it.price, size - 1, null) }
+    return out
+}
+
 @Composable
 fun CandleChart(
     candles: List<Candle>,
@@ -224,6 +239,24 @@ private fun DrawScope.drawChart(
         drawRect(c.future, Offset(sx, 0f), Size((x(cEnd - 1) + barW / 2 - sx).coerceAtLeast(0f), mainH))
     }
 
+    // 보유 구간: 산 날부터 판 날까지 배경을 칠한다 (수익 빨강, 손실 파랑). 산 값과 판 값을 점선으로 잇는다.
+    val held = holdingSpans(markers, candles.size)
+    held.forEach { h ->
+        val a = max(h.entry, start); val b = min(h.exit, cEnd - 1)
+        if (a > b) return@forEach
+        val exitPrice = h.exitPrice ?: candles[min(h.exit, candles.size - 1)].close
+        val win = exitPrice >= h.entryPrice
+        val tint = (if (win) c.up else c.down).copy(alpha = 0.09f)
+        val left = x(a) - barW / 2
+        drawRect(tint, Offset(left, 0f), Size(x(b) + barW / 2 - left, mainH))
+        if (h.entry >= start && h.exit < cEnd) {
+            drawLine(
+                (if (win) c.up else c.down).copy(alpha = 0.8f), Offset(x(h.entry), y(h.entryPrice)), Offset(x(h.exit), y(exitPrice)), 2.5f,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 8f)),
+            )
+        }
+    }
+
     // 캔들
     val bodyW = (barW * 0.7f).coerceAtLeast(1f)
     for (i in start until cEnd) {
@@ -254,19 +287,34 @@ private fun DrawScope.drawChart(
         drawPath(path, c.path, style = Stroke(3.5f))
     }
 
-    // 매매 시점
+    // 매매 시점: 큰 삼각형과 '매수'·'매도 ±수익률' 표 (화면에 표가 너무 많으면 삼각형만)
+    val visibleMarkers = (start until cEnd).sumOf { markers[it]?.size ?: 0 }
+    val labelled = visibleMarkers <= 24
+    val exitPct = held.filter { it.exitPrice != null }.associate { it.exit to (it.exitPrice!! / it.entryPrice - 1) * 100 }
     for (i in start until cEnd) {
         markers[i]?.forEach { m ->
             val cx = x(i)
             val buy = m.signal == Signal.BUY
-            val yy = if (buy) y(candles[i].low) + 10f else y(candles[i].high) - 10f
-            val s = (barW * 0.9f).coerceIn(9f, 22f)
+            val col = if (buy) c.up else c.down
+            val s = (barW * 1.1f).coerceIn(16f, 30f)
+            val yy = if (buy) y(candles[i].low) + 8f else y(candles[i].high) - 8f
             val path = Path().apply {
                 if (buy) { moveTo(cx, yy); lineTo(cx - s / 2, yy + s); lineTo(cx + s / 2, yy + s) }
                 else { moveTo(cx, yy); lineTo(cx - s / 2, yy - s); lineTo(cx + s / 2, yy - s) }
                 close()
             }
-            drawPath(path, if (buy) c.up else c.down)
+            drawPath(path, col)
+            drawPath(path, c.bg, style = Stroke(2f))
+            if (labelled) {
+                val text = if (buy) "매수" else "매도" + (exitPct[i]?.let { " " + Fmt.signedRate(it) } ?: "")
+                val layout = tm.measure(text, TextStyle(fontFamily = io.github.jgg113.stocknote.ui.theme.Pretendard, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White))
+                val w = layout.size.width + 14f
+                val h = layout.size.height + 6f
+                val lx = (cx - w / 2).coerceIn(0f, plotW - w)
+                val ly = (if (buy) yy + s + 4f else yy - s - 4f - h).coerceIn(0f, mainH - h)
+                drawRoundRect(col, Offset(lx, ly), Size(w, h), androidx.compose.ui.geometry.CornerRadius(h / 2))
+                drawText(layout, topLeft = Offset(lx + 7f, ly + 3f))
+            }
         }
     }
 

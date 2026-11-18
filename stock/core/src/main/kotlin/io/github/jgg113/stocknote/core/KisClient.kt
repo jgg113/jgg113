@@ -171,7 +171,7 @@ class KisClient(
             }
             throw DataException("한국투자증권 초당 호출 한도를 넘었습니다. 잠시 뒤 다시 시도하세요.", msgCd, retryable = true)
         }
-        if (rt.isNotEmpty() && rt != "0") throw DataException("한국투자증권: ${o.str("msg1").ifBlank { msgCd }}", msgCd)
+        if (rt.isNotEmpty() && rt != "0") throw DataException("한국투자증권: ${o.str("msg1").trim().ifBlank { msgCd }}${if (msgCd.isNotBlank()) " ($msgCd)" else ""}", msgCd.ifBlank { "KIS_ERR" }, retryable = true)
         if (r.status != 200) throw DataException("한국투자증권 응답 오류 (HTTP ${r.status})", "HTTP${r.status}", r.status >= 500)
         return o
     }
@@ -184,25 +184,42 @@ class KisClient(
     }
 
     /** 일봉 ([from]~[to], 100개씩 나눠 받는다) */
+    /**
+     * 일봉 ([from]~[to]). 한 번에 100개까지만 오므로, 한 번에 약 100거래일(140일) 범위만 물으며 과거로 거슬러 받는다.
+     * (몇 년 범위를 한 번에 물으면 일부 종목에서 서버가 '호출 후처리(MCI전송) 오류'를 내는 일이 있다.)
+     * 중간 쪽에서 실패하면 그때까지 받은 것을 돌려준다. 첫 쪽이 실패하면 잠깐 쉬었다가 한 번 더 해 본다.
+     */
     fun domesticDaily(code: String, from: LocalDate, to: LocalDate = LocalDate.now(KST)): List<Candle> {
         val out = ArrayList<Candle>()
         var end = to
         var guard = 0
-        while (!end.isBefore(from) && guard++ < 15) {
-            val o = get(
-                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", "FHKST03010100",
-                mapOf(
-                    "FID_COND_MRKT_DIV_CODE" to "J", "FID_INPUT_ISCD" to code,
-                    "FID_INPUT_DATE_1" to from.format(YMD), "FID_INPUT_DATE_2" to end.format(YMD),
-                    "FID_PERIOD_DIV_CODE" to "D", "FID_ORG_ADJ_PRC" to "0",
-                ),
+        var emptyRuns = 0
+        while (!end.isBefore(from) && guard++ < 30) {
+            val start = maxOf(from, end.minusDays(140))
+            val params = mapOf(
+                "FID_COND_MRKT_DIV_CODE" to "J", "FID_INPUT_ISCD" to code,
+                "FID_INPUT_DATE_1" to start.format(YMD), "FID_INPUT_DATE_2" to end.format(YMD),
+                "FID_PERIOD_DIV_CODE" to "D", "FID_ORG_ADJ_PRC" to "0",
             )
+            val o = try {
+                get("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", "FHKST03010100", params)
+            } catch (e: DataException) {
+                if (out.isNotEmpty()) break // 받은 데까지 쓴다
+                if (e.code == "NOKEY" || e.code.startsWith("KIS_KEY") || e.code == "NETWORK") throw e
+                Thread.sleep(700)
+                runCatching { get("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", "FHKST03010100", params) }.getOrElse { throw e }
+            }
             val page = o["output2"].asList().mapNotNull { parseDomesticDaily(it) }
-            if (page.isEmpty()) break
+            if (page.isEmpty()) {
+                // 상장 전이거나 긴 휴장 구간: 두 번 연속 비면 멈춘다.
+                if (++emptyRuns >= 2) break
+                end = start.minusDays(1)
+                continue
+            }
+            emptyRuns = 0
             out += page
-            val oldest = page.minOf { it.time }
-            end = java.time.Instant.ofEpochSecond(oldest).atZone(KST).toLocalDate().minusDays(1)
-            if (page.size < 100) break
+            val oldest = java.time.Instant.ofEpochSecond(page.minOf { it.time }).atZone(KST).toLocalDate()
+            end = minOf(oldest, start).minusDays(1)
         }
         return out.distinctBy { it.time }.sortedBy { it.time }
     }

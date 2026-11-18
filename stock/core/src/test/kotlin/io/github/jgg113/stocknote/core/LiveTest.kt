@@ -99,6 +99,27 @@ class LiveTest {
     }
 
     @Test
+    fun evoOnRealCoins() {
+        live()
+        val md = MarketData(DataKeys(), MemoryCache())
+        val pool = md.dailyMany(md.universe(Market.CRYPTO, 20), 1500).map { it.key to it.value }
+        val t0 = System.currentTimeMillis()
+        val lab = EvoLab(pool, Market.CRYPTO)
+        println("연구 종목 ${lab.poolSize}개, ${lab.periodText()}, 준비 ${(System.currentTimeMillis() - t0) / 1000.0}초")
+        val t1 = System.currentTimeMillis()
+        val res = lab.run(maxEvaluations = (System.getenv("EVO_N") ?: "60000").toLong()) { p -> if (p.generation % 20 == 0) println("  세대 ${p.generation}: 조합 ${p.evaluations}개, 모의투자 ${p.simulations}번, ${(System.currentTimeMillis() - t1) / 1000}초") }
+        val sec = (System.currentTimeMillis() - t1) / 1000.0
+        println("조합 ${res.evaluations}개 · 모의투자 ${res.simulations}번 · ${sec}초 (${(res.evaluations / sec).toInt()}개/초), 과최적화 확률 ${EvoLab.pboText(res.pbo)}")
+        fun st(p: PeriodStats) = "연 ${Fmt.signedRate(p.annReturnPct)} (보유 ${Fmt.signedRate(p.buyHoldAnnPct)}) 승률 ${"%.0f".format(p.winRatePct)}% 거래 ${p.trades} 낙폭 -${"%.0f".format(p.maxDrawdownPct)}% 보유일 ${"%.0f".format(p.exposurePct)}% 번종목 ${"%.0f".format(p.positiveSharePct)}%"
+        res.best.take(6).forEach { e ->
+            println("- ${e.genome.describe()} [평균 보유 ${"%.0f".format(e.avgHoldBars)}일]")
+            println("    학습 ${st(e.train)}")
+            println("    검증 ${st(e.valid)}")
+            println("    시험 ${st(e.test)} · ${EvoLab.luckText(e.luckPercentile)}")
+        }
+    }
+
+    @Test
     fun aiOnRealCoins() {
         live()
         val md = MarketData(DataKeys(), MemoryCache())

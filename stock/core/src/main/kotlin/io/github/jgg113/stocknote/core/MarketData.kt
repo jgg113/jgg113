@@ -437,9 +437,16 @@ class MarketData(
         val enough = cached.isNotEmpty() && (cached.size >= bars * 9 / 10 || depth >= bars)
         if (!upToDate || !enough) {
             val from = if (enough && lastDate != null) lastDate.minusDays(3) else today.minusDays((bars * 1.5).toLong() + 10)
-            val fresh = fetchDaily(asset, from, if (enough) 0 else bars)
-            candles = CandleMerge.merge(if (enough) cached else emptyList(), fresh).takeLast(maxOf(bars, depth) + 200)
-            if (candles.isNotEmpty()) {
+            // 받다가 실패해도 저장해 둔 시세가 있으면 그것을 보여 준다 (오류는 저장한 것이 없을 때만 낸다).
+            val fresh = try {
+                fetchDaily(asset, from, if (enough) 0 else bars)
+            } catch (e: DataException) {
+                if (cached.isEmpty()) throw e
+                null
+            }
+            if (fresh == null) candles = cached
+            else candles = CandleMerge.merge(if (enough) cached else emptyList(), fresh).takeLast(maxOf(bars, depth) + 200)
+            if (fresh != null && candles.isNotEmpty()) {
                 cache.write(candleFile(asset), CandleCodec.encode(candles))
                 cache.write("fetched_" + candleFile(asset), nowSec().toString())
                 if (!enough) cache.write(depthFile, bars.toString())
@@ -465,7 +472,12 @@ class MarketData(
             upbit.daily(asset.code, maxOf(days, if (count > 0) count else 0).coerceIn(2, 2000))
         }
         Market.KR -> when {
-            keys.hasKis -> kis.domesticDaily(asset.code, from, now().toLocalDate())
+            keys.hasKis -> try {
+                kis.domesticDaily(asset.code, from, now().toLocalDate())
+            } catch (e: DataException) {
+                // 한국투자증권이 이 종목 일봉을 못 주면 공공데이터포털(전날 종가까지)로 대신 받는다.
+                if (keys.hasPublic) runCatching { publicData.history(asset.code, from) }.getOrNull()?.takeIf { it.isNotEmpty() } ?: throw e else throw e
+            }
             keys.hasPublic -> publicData.history(asset.code, from)
             else -> throw DataException("국내 차트를 보려면 설정에서 공공데이터포털 인증키 또는 한국투자증권 앱키를 넣으세요.", "NOKEY")
         }

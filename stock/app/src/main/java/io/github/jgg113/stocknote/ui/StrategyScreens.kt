@@ -201,7 +201,7 @@ private fun ResultList(vm: AppViewModel, report: IndicatorReport, asset: Asset) 
 /** 전략 하나의 누적수익률·매매내역 */
 @Composable
 fun StrategyDetailScreen(vm: AppViewModel, asset: Asset, strategyId: String) {
-    val d = vm.detail
+    val d = vm.detail?.takeIf { it.asset.key == asset.key }
     val strategy = Strategies.find(strategyId) ?: return
     val candles = d?.daily.orEmpty()
     val r = remember(candles, strategyId, d?.report) { d?.report?.results?.firstOrNull { it.strategy.id == strategyId } ?: vm.singleBacktest(asset, candles, strategyId) }

@@ -85,6 +85,19 @@ data class AiUiState(
     val error: String? = null,
 )
 
+/** AI 전략 연구소 상태 */
+data class LabState(
+    val market: Market = Market.KR,
+    val poolSize: Int = 40,
+    /** 이번에 시험할 조합 수 */
+    val target: Long = 200_000,
+    val running: Boolean = false,
+    val status: String = "",
+    val progress: io.github.jgg113.stocknote.core.EvoProgress? = null,
+    val periods: String = "",
+    val error: String? = null,
+)
+
 /** 설정 화면의 AI [연결 테스트] 결과 */
 data class AiTestState(val loading: Boolean = false, val ok: Boolean = false, val text: String = "", val model: String = "", val error: String = "", val step: String = "")
 
@@ -315,6 +328,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun open(screen: Screen) {
         stack = stack + screen
         if (screen is Screen.Detail) loadDetail(screen.asset)
+        // 연구소 등에서 전략 화면을 바로 열면 그 종목 시세부터 받는다.
+        if (screen is Screen.StrategyDetail && detail?.asset?.key != screen.asset.key) loadDetail(screen.asset)
     }
 
     fun back(): Boolean {
@@ -466,6 +481,75 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun aiKey(p: AiProvider): String = aiKeys[p].orEmpty()
 
+    // ───────── AI 전략 연구소 ─────────
+
+    var lab by mutableStateOf(LabState()); private set
+    var evolved by mutableStateOf(store.evolved); private set
+    var labTotals by mutableStateOf(store.labTotals); private set
+    private var labJob: Job? = null
+
+    init {
+        // 저장해 둔 AI 조합 전략을 다른 화면(지표분석·매매신호·차트)에서도 쓸 수 있게 등록한다.
+        Strategies.register(evolved.map { it.toStrategy() })
+    }
+
+    fun updateLab(s: LabState) { if (!lab.running) lab = s.copy(running = false, progress = lab.progress, status = lab.status) }
+
+    /** 같은 시장 대표 종목들의 6년 일봉으로 조합 전략을 진화시키며 찾는다. 앱이 켜져 있는 동안 돈다. */
+    fun startLab() {
+        if (lab.running) return
+        val market = lab.market
+        lab = lab.copy(running = true, error = null, status = "종목 시세 받는 중…", progress = null)
+        labJob = viewModelScope.launch {
+            val before = labTotals
+            val r = withContext(Dispatchers.Default) {
+                runCatching {
+                    val assets = data.universe(market, lab.poolSize)
+                    val got = data.dailyMany(assets, 1500) { d, t -> lab = lab.copy(status = "종목 시세 받는 중 $d/$t") }
+                    val pool = got.map { it.key to it.value }
+                    lab = lab.copy(status = "전략 신호 계산 중 (${pool.size}종목)…")
+                    val engine = io.github.jgg113.stocknote.core.EvoLab(pool, market, store.fees.roundTripPct(market), seed = (System.currentTimeMillis() % 100_000).toInt())
+                    lab = lab.copy(periods = engine.periodText(), status = "탐색 중")
+                    engine.run(maxEvaluations = lab.target, stop = { !lab.running }) { p ->
+                        lab = lab.copy(progress = p, status = "세대 ${p.generation} · 조합 ${p.evaluations}개 시험")
+                        labTotals = (before.first + p.evaluations) to (before.second + p.simulations)
+                    }
+                }
+            }
+            store.labTotals = labTotals
+            lab = lab.copy(running = false, status = r.fold({ "끝났습니다 · 조합 ${it.evaluations}개, 모의투자 ${it.simulations}번" }, { "" }), error = r.exceptionOrNull()?.let(::err))
+        }
+    }
+
+    fun stopLab() { lab = lab.copy(running = false, status = "멈추는 중…") }
+
+    fun saveEvolved(e: io.github.jgg113.stocknote.core.EvolvedStrategy) {
+        evolved = (evolved.filter { it.id != e.id } + e).sortedByDescending { it.test.score }
+        store.evolved = evolved
+        Strategies.register(evolved.map { it.toStrategy() })
+        message("'${e.name}' 을(를) 저장했습니다. 지표분석·매매신호에서도 쓸 수 있습니다.")
+    }
+
+    fun deleteEvolved(id: String) {
+        evolved = evolved.filter { it.id != id }
+        store.evolved = evolved
+        Strategies.register(evolved.map { it.toStrategy() })
+    }
+
+    /** 매매신호 화면에서 이 전략으로 신호를 찾도록 넣는다. */
+    fun useEvolvedForSignals(e: io.github.jgg113.stocknote.core.EvolvedStrategy) {
+        if (Strategies.find(e.id) == null) saveEvolved(e)
+        updateSignals(signals.copy(useCustom = true, strategyIds = signals.strategyIds + e.id, market = e.market))
+        message("매매신호의 '고른 전략'에 넣었습니다.")
+    }
+
+    /** 이 조합 전략을 대표 종목 차트에서 본다. */
+    fun openEvolved(e: io.github.jgg113.stocknote.core.EvolvedStrategy, asset: Asset? = null) {
+        if (Strategies.find(e.id) == null) Strategies.register(evolved.map { it.toStrategy() } + e.toStrategy())
+        val a = asset ?: runCatching { data.universe(e.market, 1).first() }.getOrNull() ?: return
+        open(Screen.StrategyDetail(a, e.id))
+    }
+
     // ───────── 시장 요약 ─────────
 
     fun setHomeMarket(m: Market) {
@@ -594,7 +678,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun analyze(asset: Asset, daily: List<Candle>, quote: Quote?) {
         update(asset) { it.copy(analyzing = true) }
         val (report, forecast) = withContext(Dispatchers.Default) {
-            val r = IndicatorReport.build(PriceData(daily), backtestConfig(asset))
+            val r = IndicatorReport.build(PriceData(daily), backtestConfig(asset), Strategies.all + Strategies.custom.values.filter { s -> evolved.any { it.id == s.id && it.market == asset.market } })
             r to Forecaster.forecast(daily, report = r, quote = quote)
         }
         update(asset) { it.copy(report = report, forecast = forecast, analyzing = false, selected = it.selected ?: report.byScore.firstOrNull()) }
@@ -907,6 +991,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun importBackup(text: String): Boolean = try {
         store.importBackup(text)
         keys = store.keys; _data = null; checks = null
+        evolved = store.evolved; Strategies.register(evolved.map { it.toStrategy() })
         aiProvider = store.aiProvider; aiKeys = AiProvider.entries.filter { it.isApi }.associateWith { store.aiKey(it) }; aiTest = null
         watchlists = store.watchlists; customThemes = store.customThemes; accounts = store.accounts; gameStats = store.gameStats
         indicators = store.indicators; priceAlerts = store.priceAlerts; signalAlerts = store.signalAlerts; scanAlerts = store.scanAlerts

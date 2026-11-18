@@ -285,4 +285,36 @@ class ScreensTest {
         swipe(); shot("35_invest_diagnosis")
         swipe(); shot("36_invest_diagnosis_2")
     }
+
+    /** AI 전략 연구소를 실제 코인 시세로 돌려 보고, 찾은 전략의 매매 시점이 차트에 표시되는지 본다. */
+    @Test
+    fun labScreens() {
+        compose.mainClock.autoAdvance = false
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = AppViewModel(app)
+        vm.setHomeMarket(Market.CRYPTO)
+        vm.tab = Tab.DISCOVER
+        compose.setContent { StockTheme { AppRoot(vm) } }
+        repeat(5) { pump() }
+        click("AI 연구소")
+        vm.updateLab(vm.lab.copy(market = Market.CRYPTO, poolSize = 30, target = 30_000))
+        repeat(3) { pump() }
+        shot("40_lab_start")
+        vm.startLab()
+        waitFor(300, "lab") { !vm.lab.running && vm.lab.progress != null || vm.lab.error != null }
+        val p = vm.lab.progress
+        println("lab ${vm.lab.status} ${vm.lab.error ?: ""} ${vm.lab.periods} pbo=${p?.pbo} best=${p?.best?.size}")
+        p?.best?.take(3)?.forEach { println("  ${it.genome.describe()} test=${it.test.annReturnPct} luck=${it.luckPercentile} passed=${it.passedTest}") }
+        check(p != null && p.best.isNotEmpty()) { "연구 결과가 없다: ${vm.lab.error}" }
+        repeat(5) { pump() }
+        shot("41_lab_progress")
+        swipe(); shot("42_lab_results")
+        val e = p.best.first()
+        vm.saveEvolved(e)
+        vm.openEvolved(e, Asset(Market.CRYPTO, "KRW-BTC", "비트코인", "UPBIT"))
+        waitFor(120, "strategy detail") { false.also { repeat(2) { pump() } } || vm.stack.isNotEmpty() && run { Thread.sleep(200); true } }
+        repeat(40) { pump(); Thread.sleep(100) }
+        shot("43_lab_strategy_chart")
+        swipe(); shot("44_lab_strategy_trades")
+    }
 }

@@ -20,6 +20,7 @@ enum class StrategyGroup(val label: String) {
     BREAKOUT("돌파"),
     VOLUME("거래량"),
     CANDLE("캔들 패턴"),
+    AI("AI 조합"),
 }
 
 /**
@@ -564,5 +565,14 @@ object Strategies {
 
     fun of(horizon: StrategyHorizon?): List<Strategy> = if (horizon == null) all else all.filter { it.horizon == horizon }
 
-    fun find(id: String): Strategy? = byId[id]
+    /** AI 전략 연구소가 만든 조합 전략 (앱이 켜질 때와 연구가 끝날 때 등록한다) */
+    @Volatile
+    var custom: Map<String, Strategy> = emptyMap()
+        private set
+
+    fun register(list: List<Strategy>) {
+        custom = list.associateBy { it.id }
+    }
+
+    fun find(id: String): Strategy? = byId[id] ?: custom[id]
 }

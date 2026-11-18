@@ -391,4 +391,32 @@ class ConnectionTest {
         val list = ScriptedHttp { url, headers, _ -> if (url.endsWith("/models?pageSize=200") && headers["x-goog-api-key"] == "AQ.key") res(200, """{"models":[{"name":"models/gemini-3.8-flash","supportedGenerationMethods":["generateContent"]}]}""") else res(500, "") }
         assertEquals(1, GeminiClient("AQ.key", list).checkKey())
     }
+
+    @Test
+    fun kisDailyPagesInShortWindowsAndSurvivesServerErrors() {
+        // 하루 한 봉짜리 가짜 서버: 물은 범위의 평일을 최근 것부터 100개까지 준다. 첫 호출은 'MCI전송 오류'를 낸다.
+        var calls = 0
+        val ranges = mutableListOf<Pair<java.time.LocalDate, java.time.LocalDate>>()
+        val http = ScriptedHttp { url, _, _ ->
+            if (url.contains("tokenP")) return@ScriptedHttp res(200, """{"access_token":"t","expires_in":86400}""")
+            calls++
+            val q = url.substringAfter("?").split("&").associate { it.substringBefore("=") to it.substringAfter("=") }
+            val d1 = java.time.LocalDate.parse(q.getValue("FID_INPUT_DATE_1"), KisClient.YMD)
+            val d2 = java.time.LocalDate.parse(q.getValue("FID_INPUT_DATE_2"), KisClient.YMD)
+            ranges += d1 to d2
+            if (calls == 1) return@ScriptedHttp res(500, """{"rt_cd":"1","msg_cd":"OPSQ0002","msg1":"호출 후처리(MCI전송) 오류 입니다."}""")
+            if (calls == 8) return@ScriptedHttp res(500, """{"rt_cd":"1","msg_cd":"OPSQ0002","msg1":"호출 후처리(MCI전송) 오류 입니다."}""")
+            val days = generateSequence(d2) { it.minusDays(1) }.takeWhile { !it.isBefore(d1) }.filter { it.dayOfWeek.value <= 5 }.take(100).toList()
+            val rows = days.joinToString(",") { """{"stck_bsop_date":"${it.format(KisClient.YMD)}","stck_oprc":"100","stck_hgpr":"101","stck_lwpr":"99","stck_clpr":"100","acml_vol":"1"}""" }
+            res(200, """{"rt_cd":"0","output2":[$rows]}""")
+        }
+        val to = java.time.LocalDate.of(2026, 11, 18)
+        val list = KisClient("k", "s", false, MemoryTokenStore(), http).domesticDaily("196170", to.minusYears(6), to)
+        // 첫 쪽 오류는 한 번 더 해서 넘기고, 뒤쪽 오류에서는 받은 데까지 돌려준다.
+        assertTrue(list.size in 400..700, "${list.size}")
+        assertEquals(to.epochKst() - (to.dayOfWeek.value - 3).coerceAtLeast(0) * 0L, list.last().time.let { if (to.dayOfWeek.value <= 5) to.epochKst() else it })
+        // 한 번에 140일보다 넓게 묻지 않는다.
+        assertTrue(ranges.all { java.time.temporal.ChronoUnit.DAYS.between(it.first, it.second) <= 140 }, ranges.toString())
+        assertEquals(list.size, list.map { it.time }.distinct().size)
+    }
 }
