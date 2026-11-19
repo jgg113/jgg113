@@ -1,0 +1,643 @@
+[
+    {
+        "id": "ai_kr_ensemble",
+        "name": "AI 종합 모델 (국내)",
+        "genome": {
+            "members": [
+                "monthly_rsi",
+                "vr",
+                "rsi2",
+                "disparity"
+            ],
+            "need": 1,
+            "filter": "NONE"
+        },
+        "market": "KR",
+        "train": {
+            "annReturnPct": 9.270729532086142,
+            "buyHoldAnnPct": 9.695490176773891,
+            "winRatePct": 65.9161759612054,
+            "trades": 2887,
+            "maxDrawdownPct": 33.567783843762996,
+            "exposurePct": 39.62836157759841,
+            "positiveSharePct": 81.41592920353983,
+            "score": -0.03638932744610529,
+            "years": 3.7013805309734513
+        },
+        "valid": {
+            "annReturnPct": 14.875695996143312,
+            "buyHoldAnnPct": 16.164132370811156,
+            "winRatePct": 68.81937436932391,
+            "trades": 991,
+            "maxDrawdownPct": 23.58073050596596,
+            "exposurePct": 37.429971988795515,
+            "positiveSharePct": 69.02654867256636,
+            "score": 0.03617787606177826,
+            "years": 1.2131681415929203
+        },
+        "test": {
+            "annReturnPct": -2.208245229566763,
+            "buyHoldAnnPct": 2.7979166502816177,
+            "winRatePct": 63.69606003752345,
+            "trades": 1066,
+            "maxDrawdownPct": 37.505168127966904,
+            "exposurePct": 44.9292103548368,
+            "positiveSharePct": 46.902654867256636,
+            "score": -0.16133657530202009,
+            "years": 1.1951150442477876
+        },
+        "luckPercentile": 19.333333333333332,
+        "pbo": 0.2714285714285714,
+        "avgHoldBars": 14.113133940182054,
+        "poolSize": 113,
+        "evaluations": 120418,
+        "simulations": 19462228,
+        "periods": "학습 2020-08-05~2024-05-13 · 검증 ~2025-08-15 · 시험 ~2026-11-18",
+        "createdAt": 1795049916,
+        "parts": [
+            {
+                "members": [
+                    "monthly_rsi",
+                    "vr",
+                    "rsi2",
+                    "disparity"
+                ],
+                "need": 1,
+                "filter": "NONE"
+            },
+            {
+                "members": [
+                    "rsi2",
+                    "envelope",
+                    "disparity"
+                ],
+                "need": 1,
+                "filter": "NONE"
+            },
+            {
+                "members": [
+                    "hammer",
+                    "disparity",
+                    "rsi2"
+                ],
+                "need": 1,
+                "filter": "NONE"
+            },
+            {
+                "members": [
+                    "rsi30",
+                    "disparity",
+                    "rsi2",
+                    "ma60_120"
+                ],
+                "need": 2,
+                "filter": "NONE"
+            },
+            {
+                "members": [
+                    "rebound3",
+                    "disparity",
+                    "ma60_120",
+                    "ichimoku_tk"
+                ],
+                "need": 1,
+                "filter": "NONE"
+            },
+            {
+                "members": [
+                    "rebound3",
+                    "disparity",
+                    "rsi2"
+                ],
+                "need": 1,
+                "filter": "NONE"
+            },
+            {
+                "members": [
+                    "near52w",
+                    "ma60_120",
+                    "macd_hist",
+                    "disparity"
+                ],
+                "need": 1,
+                "filter": "NONE"
+            }
+        ],
+        "partsNeed": 4,
+        "holdout": {
+            "annReturnPct": -4.706689301541134,
+            "buyHoldAnnPct": -0.42439377487436536,
+            "winRatePct": 63.457330415754925,
+            "trades": 457,
+            "maxDrawdownPct": 38.01183749659751,
+            "exposurePct": 45.118464052287585,
+            "positiveSharePct": 39.58333333333333,
+            "score": -0.1805905136162838,
+            "years": 1.224
+        },
+        "holdoutSize": 48,
+        "builtIn": true,
+        "note": "국내 113종목으로 조합 120천 개를 시험해 고른 조합 7개의 투표 모델입니다."
+    },
+    {
+        "id": "ai_kr_1",
+        "name": "AI 모델 1 (국내)",
+        "genome": {
+            "members": [
+                "monthly_rsi",
+                "vr",
+                "rsi2",
+                "disparity"
+            ],
+            "need": 1,
+            "filter": "NONE"
+        },
+        "market": "KR",
+        "train": {
+            "annReturnPct": 10.237867757064878,
+            "buyHoldAnnPct": 9.695490176773891,
+            "winRatePct": 68.54377474703035,
+            "trades": 2273,
+            "maxDrawdownPct": 35.722432517338184,
+            "exposurePct": 48.70796832561876,
+            "positiveSharePct": 82.30088495575221,
+            "score": -0.03322573295906657,
+            "years": 3.7013805309734513
+        },
+        "valid": {
+            "annReturnPct": 15.342058800065228,
+            "buyHoldAnnPct": 16.164132370811156,
+            "winRatePct": 71.11111111111111,
+            "trades": 765,
+            "maxDrawdownPct": 25.868017369016094,
+            "exposurePct": 49.985410830999065,
+            "positiveSharePct": 69.91150442477876,
+            "score": 0.0332400354249506,
+            "years": 1.2131681415929203
+        },
+        "test": {
+            "annReturnPct": -2.4697026469020833,
+            "buyHoldAnnPct": 2.7979166502816177,
+            "winRatePct": 63.22263222632226,
+            "trades": 813,
+            "maxDrawdownPct": 40.33666116351598,
+            "exposurePct": 55.44695219477519,
+            "positiveSharePct": 45.13274336283185,
+            "score": -0.17384764497767047,
+            "years": 1.1951150442477876
+        },
+        "luckPercentile": 13.666666666666666,
+        "pbo": 0.2714285714285714,
+        "avgHoldBars": 22.755600133734536,
+        "poolSize": 113,
+        "evaluations": 120418,
+        "simulations": 19462228,
+        "periods": "학습 2020-08-05~2024-05-13 · 검증 ~2025-08-15 · 시험 ~2026-11-18",
+        "createdAt": 1795049916,
+        "parts": [],
+        "partsNeed": 0,
+        "holdout": {
+            "annReturnPct": -1.2273612551760515,
+            "buyHoldAnnPct": -0.42439377487436536,
+            "winRatePct": 63.1578947368421,
+            "trades": 323,
+            "maxDrawdownPct": 41.67400912267832,
+            "exposurePct": 61.19961873638344,
+            "positiveSharePct": 47.91666666666667,
+            "score": -0.15765990990234074,
+            "years": 1.224
+        },
+        "holdoutSize": 48,
+        "builtIn": true,
+        "note": "국내 113종목으로 조합 120천 개를 시험해 찾은 조합입니다."
+    },
+    {
+        "id": "ai_kr_2",
+        "name": "AI 모델 2 (국내)",
+        "genome": {
+            "members": [
+                "rsi2",
+                "envelope",
+                "disparity"
+            ],
+            "need": 1,
+            "filter": "NONE"
+        },
+        "market": "KR",
+        "train": {
+            "annReturnPct": 9.041457243476447,
+            "buyHoldAnnPct": 9.695490176773891,
+            "winRatePct": 68.30520909757887,
+            "trades": 2726,
+            "maxDrawdownPct": 32.95400115623924,
+            "exposurePct": 37.884931716460734,
+            "positiveSharePct": 82.30088495575221,
+            "score": -0.03640406208026542,
+            "years": 3.7013805309734513
+        },
+        "valid": {
+            "annReturnPct": 9.646407516160194,
+            "buyHoldAnnPct": 16.164132370811156,
+            "winRatePct": 70.79741379310344,
+            "trades": 928,
+            "maxDrawdownPct": 23.307586792450007,
+            "exposurePct": 36.055672268907564,
+            "positiveSharePct": 70.79646017699115,
+            "score": -0.014679359430161482,
+            "years": 1.2131681415929203
+        },
+        "test": {
+            "annReturnPct": -4.810944682046037,
+            "buyHoldAnnPct": 2.7979166502816177,
+            "winRatePct": 65.0251256281407,
+            "trades": 995,
+            "maxDrawdownPct": 37.81219859581022,
+            "exposurePct": 43.685208222261714,
+            "positiveSharePct": 43.36283185840708,
+            "score": -0.18970290899095776,
+            "years": 1.1951150442477876
+        },
+        "luckPercentile": 8.0,
+        "pbo": 0.2714285714285714,
+        "avgHoldBars": 14.348702374378796,
+        "poolSize": 113,
+        "evaluations": 120418,
+        "simulations": 19462228,
+        "periods": "학습 2020-08-05~2024-05-13 · 검증 ~2025-08-15 · 시험 ~2026-11-18",
+        "createdAt": 1795049916,
+        "parts": [],
+        "partsNeed": 0,
+        "holdout": {
+            "annReturnPct": -7.070195461621687,
+            "buyHoldAnnPct": -0.42439377487436536,
+            "winRatePct": 64.59770114942529,
+            "trades": 435,
+            "maxDrawdownPct": 37.961669815681496,
+            "exposurePct": 43.68191721132897,
+            "positiveSharePct": 35.41666666666667,
+            "score": -0.2045173218291546,
+            "years": 1.224
+        },
+        "holdoutSize": 48,
+        "builtIn": true,
+        "note": "국내 113종목으로 조합 120천 개를 시험해 찾은 조합입니다."
+    },
+    {
+        "id": "ai_kr_3",
+        "name": "AI 모델 3 (국내)",
+        "genome": {
+            "members": [
+                "hammer",
+                "disparity",
+                "rsi2"
+            ],
+            "need": 1,
+            "filter": "NONE"
+        },
+        "market": "KR",
+        "train": {
+            "annReturnPct": 8.933238893788387,
+            "buyHoldAnnPct": 9.695490176773891,
+            "winRatePct": 68.82012920775246,
+            "trades": 2941,
+            "maxDrawdownPct": 33.63759759953,
+            "exposurePct": 39.99846983665506,
+            "positiveSharePct": 84.070796460177,
+            "score": -0.03936176292162794,
+            "years": 3.7013805309734513
+        },
+        "valid": {
+            "annReturnPct": 13.167116816903835,
+            "buyHoldAnnPct": 16.164132370811156,
+            "winRatePct": 69.85074626865672,
+            "trades": 1005,
+            "maxDrawdownPct": 23.573843448855595,
+            "exposurePct": 38.121498599439775,
+            "positiveSharePct": 66.3716814159292,
+            "score": 0.018013695720184568,
+            "years": 1.2131681415929203
+        },
+        "test": {
+            "annReturnPct": -2.2422647335910484,
+            "buyHoldAnnPct": 2.7979166502816177,
+            "winRatePct": 66.16961789375583,
+            "trades": 1073,
+            "maxDrawdownPct": 37.832725926859126,
+            "exposurePct": 45.49789704401398,
+            "positiveSharePct": 44.24778761061947,
+            "score": -0.162603224484753,
+            "years": 1.1951150442477876
+        },
+        "luckPercentile": 18.0,
+        "pbo": 0.2714285714285714,
+        "avgHoldBars": 14.023760858456821,
+        "poolSize": 113,
+        "evaluations": 120418,
+        "simulations": 19462228,
+        "periods": "학습 2020-08-05~2024-05-13 · 검증 ~2025-08-15 · 시험 ~2026-11-18",
+        "createdAt": 1795049916,
+        "parts": [],
+        "partsNeed": 0,
+        "holdout": {
+            "annReturnPct": -5.1259398003288155,
+            "buyHoldAnnPct": -0.42439377487436536,
+            "winRatePct": 64.73118279569893,
+            "trades": 465,
+            "maxDrawdownPct": 38.15296761916844,
+            "exposurePct": 45.39079520697168,
+            "positiveSharePct": 37.5,
+            "score": -0.18509200045398205,
+            "years": 1.224
+        },
+        "holdoutSize": 48,
+        "builtIn": true,
+        "note": "국내 113종목으로 조합 120천 개를 시험해 찾은 조합입니다."
+    },
+    {
+        "id": "ai_kr_4",
+        "name": "AI 모델 4 (국내)",
+        "genome": {
+            "members": [
+                "rsi30",
+                "disparity",
+                "rsi2",
+                "ma60_120"
+            ],
+            "need": 2,
+            "filter": "NONE"
+        },
+        "market": "KR",
+        "train": {
+            "annReturnPct": 8.745689907897415,
+            "buyHoldAnnPct": 9.695490176773891,
+            "winRatePct": 67.72692009309543,
+            "trades": 2578,
+            "maxDrawdownPct": 33.17803973334254,
+            "exposurePct": 39.90761638804942,
+            "positiveSharePct": 81.41592920353983,
+            "score": -0.040687835361641014,
+            "years": 3.7013805309734513
+        },
+        "valid": {
+            "annReturnPct": 12.153215589277021,
+            "buyHoldAnnPct": 16.164132370811156,
+            "winRatePct": 69.15254237288136,
+            "trades": 885,
+            "maxDrawdownPct": 23.88891736960318,
+            "exposurePct": 37.49708216619981,
+            "positiveSharePct": 65.48672566371681,
+            "score": 0.00646588477372893,
+            "years": 1.2131681415929203
+        },
+        "test": {
+            "annReturnPct": -4.458725117032214,
+            "buyHoldAnnPct": 2.7979166502816177,
+            "winRatePct": 63.463569165786694,
+            "trades": 947,
+            "maxDrawdownPct": 35.52489427746395,
+            "exposurePct": 40.110183046028084,
+            "positiveSharePct": 42.47787610619469,
+            "score": -0.1777558895479886,
+            "years": 1.1951150442477876
+        },
+        "luckPercentile": 11.666666666666666,
+        "pbo": 0.2714285714285714,
+        "avgHoldBars": 15.940420560747663,
+        "poolSize": 113,
+        "evaluations": 120418,
+        "simulations": 19462228,
+        "periods": "학습 2020-08-05~2024-05-13 · 검증 ~2025-08-15 · 시험 ~2026-11-18",
+        "createdAt": 1795049916,
+        "parts": [],
+        "partsNeed": 0,
+        "holdout": {
+            "annReturnPct": -7.864846527422498,
+            "buyHoldAnnPct": -0.42439377487436536,
+            "winRatePct": 62.03473945409429,
+            "trades": 403,
+            "maxDrawdownPct": 35.41730744331702,
+            "exposurePct": 39.052287581699346,
+            "positiveSharePct": 41.66666666666667,
+            "score": -0.20617618843952476,
+            "years": 1.224
+        },
+        "holdoutSize": 48,
+        "builtIn": true,
+        "note": "국내 113종목으로 조합 120천 개를 시험해 찾은 조합입니다."
+    },
+    {
+        "id": "ai_kr_5",
+        "name": "AI 모델 5 (국내)",
+        "genome": {
+            "members": [
+                "rebound3",
+                "disparity",
+                "ma60_120",
+                "ichimoku_tk"
+            ],
+            "need": 1,
+            "filter": "NONE"
+        },
+        "market": "KR",
+        "train": {
+            "annReturnPct": 12.938925588687544,
+            "buyHoldAnnPct": 9.695490176773891,
+            "winRatePct": 47.996918335901384,
+            "trades": 1298,
+            "maxDrawdownPct": 45.34505955389075,
+            "exposurePct": 77.16039937263302,
+            "positiveSharePct": 74.33628318584071,
+            "score": -0.04223670635946415,
+            "years": 3.7013805309734513
+        },
+        "valid": {
+            "annReturnPct": 15.639515882779031,
+            "buyHoldAnnPct": 16.164132370811156,
+            "winRatePct": 54.0650406504065,
+            "trades": 492,
+            "maxDrawdownPct": 32.75786424740787,
+            "exposurePct": 77.25256769374417,
+            "positiveSharePct": 63.716814159292035,
+            "score": 0.00843453863541823,
+            "years": 1.2131681415929203
+        },
+        "test": {
+            "annReturnPct": 7.618198354238004,
+            "buyHoldAnnPct": 2.7979166502816177,
+            "winRatePct": 46.62162162162162,
+            "trades": 444,
+            "maxDrawdownPct": 48.17684074641274,
+            "exposurePct": 83.09045672649724,
+            "positiveSharePct": 56.63716814159292,
+            "score": -0.09647791951307698,
+            "years": 1.1951150442477876
+        },
+        "luckPercentile": 85.0,
+        "pbo": 0.2714285714285714,
+        "avgHoldBars": 63.145550972304065,
+        "poolSize": 113,
+        "evaluations": 120418,
+        "simulations": 19462228,
+        "periods": "학습 2020-08-05~2024-05-13 · 검증 ~2025-08-15 · 시험 ~2026-11-18",
+        "createdAt": 1795049916,
+        "parts": [],
+        "partsNeed": 0,
+        "holdout": {
+            "annReturnPct": 3.9739775089154605,
+            "buyHoldAnnPct": -0.42439377487436536,
+            "winRatePct": 47.878787878787875,
+            "trades": 165,
+            "maxDrawdownPct": 48.141727095999315,
+            "exposurePct": 84.32053376906318,
+            "positiveSharePct": 58.333333333333336,
+            "score": -0.12521479825054624,
+            "years": 1.224
+        },
+        "holdoutSize": 48,
+        "builtIn": true,
+        "note": "국내 113종목으로 조합 120천 개를 시험해 찾은 조합입니다."
+    },
+    {
+        "id": "ai_kr_6",
+        "name": "AI 모델 6 (국내)",
+        "genome": {
+            "members": [
+                "rebound3",
+                "disparity",
+                "rsi2"
+            ],
+            "need": 1,
+            "filter": "NONE"
+        },
+        "market": "KR",
+        "train": {
+            "annReturnPct": 9.074168261321702,
+            "buyHoldAnnPct": 9.695490176773891,
+            "winRatePct": 60.130718954248366,
+            "trades": 3366,
+            "maxDrawdownPct": 34.70411642196981,
+            "exposurePct": 41.23885849814467,
+            "positiveSharePct": 78.76106194690266,
+            "score": -0.04340561932573522,
+            "years": 3.7013805309734513
+        },
+        "valid": {
+            "annReturnPct": 11.758483750744242,
+            "buyHoldAnnPct": 16.164132370811156,
+            "winRatePct": 63.56521739130435,
+            "trades": 1150,
+            "maxDrawdownPct": 24.284320924648533,
+            "exposurePct": 39.46661998132586,
+            "positiveSharePct": 71.68141592920354,
+            "score": 0.0039161406222773115,
+            "years": 1.2131681415929203
+        },
+        "test": {
+            "annReturnPct": -3.0697043306464833,
+            "buyHoldAnnPct": 2.7979166502816177,
+            "winRatePct": 58.069883527454245,
+            "trades": 1202,
+            "maxDrawdownPct": 38.57779495987708,
+            "exposurePct": 46.93442331615426,
+            "positiveSharePct": 46.017699115044245,
+            "score": -0.17416133628366373,
+            "years": 1.1951150442477876
+        },
+        "luckPercentile": 13.333333333333334,
+        "pbo": 0.2714285714285714,
+        "avgHoldBars": 12.647242688100022,
+        "poolSize": 113,
+        "evaluations": 120418,
+        "simulations": 19462228,
+        "periods": "학습 2020-08-05~2024-05-13 · 검증 ~2025-08-15 · 시험 ~2026-11-18",
+        "createdAt": 1795049916,
+        "parts": [],
+        "partsNeed": 0,
+        "holdout": {
+            "annReturnPct": -4.853470782226377,
+            "buyHoldAnnPct": -0.42439377487436536,
+            "winRatePct": 59.04572564612326,
+            "trades": 503,
+            "maxDrawdownPct": 38.42802540566603,
+            "exposurePct": 46.22821350762527,
+            "positiveSharePct": 37.5,
+            "score": -0.18318691658234293,
+            "years": 1.224
+        },
+        "holdoutSize": 48,
+        "builtIn": true,
+        "note": "국내 113종목으로 조합 120천 개를 시험해 찾은 조합입니다."
+    },
+    {
+        "id": "ai_kr_7",
+        "name": "AI 모델 7 (국내)",
+        "genome": {
+            "members": [
+                "near52w",
+                "ma60_120",
+                "macd_hist",
+                "disparity"
+            ],
+            "need": 1,
+            "filter": "NONE"
+        },
+        "market": "KR",
+        "train": {
+            "annReturnPct": 13.448298559217697,
+            "buyHoldAnnPct": 9.695490176773891,
+            "winRatePct": 47.262005054759896,
+            "trades": 1187,
+            "maxDrawdownPct": 47.178515907886656,
+            "exposurePct": 86.56803488772427,
+            "positiveSharePct": 74.33628318584071,
+            "score": -0.043490724392739086,
+            "years": 3.7013805309734513
+        },
+        "valid": {
+            "annReturnPct": 15.429551867709556,
+            "buyHoldAnnPct": 16.164132370811156,
+            "winRatePct": 43.71134020618557,
+            "trades": 485,
+            "maxDrawdownPct": 33.96358470767547,
+            "exposurePct": 86.50210084033614,
+            "positiveSharePct": 64.60176991150442,
+            "score": 0.0027145414700226606,
+            "years": 1.2131681415929203
+        },
+        "test": {
+            "annReturnPct": 4.8203684557876825,
+            "buyHoldAnnPct": 2.7979166502816177,
+            "winRatePct": 42.606516290726816,
+            "trades": 399,
+            "maxDrawdownPct": 50.056097777222796,
+            "exposurePct": 90.83881286653634,
+            "positiveSharePct": 53.98230088495575,
+            "score": -0.13191333497150678,
+            "years": 1.1951150442477876
+        },
+        "luckPercentile": 40.666666666666664,
+        "pbo": 0.2714285714285714,
+        "avgHoldBars": 76.58699808795411,
+        "poolSize": 113,
+        "evaluations": 120418,
+        "simulations": 19462228,
+        "periods": "학습 2020-08-05~2024-05-13 · 검증 ~2025-08-15 · 시험 ~2026-11-18",
+        "createdAt": 1795049916,
+        "parts": [],
+        "partsNeed": 0,
+        "holdout": {
+            "annReturnPct": 4.265557247463114,
+            "buyHoldAnnPct": -0.42439377487436536,
+            "winRatePct": 41.139240506329116,
+            "trades": 158,
+            "maxDrawdownPct": 51.290254916720514,
+            "exposurePct": 91.12200435729847,
+            "positiveSharePct": 54.166666666666664,
+            "score": -0.13389703000673947,
+            "years": 1.224
+        },
+        "holdoutSize": 48,
+        "builtIn": true,
+        "note": "국내 113종목으로 조합 120천 개를 시험해 찾은 조합입니다."
+    }
+]

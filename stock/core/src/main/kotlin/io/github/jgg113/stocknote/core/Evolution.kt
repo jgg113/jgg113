@@ -85,9 +85,22 @@ data class EvolvedStrategy(
     val simulations: Long,
     val periods: String,
     val createdAt: Long,
+    /** 여러 조합을 다시 투표로 묶은 'AI 종합 모델'이면 그 조합들 ([partsNeed]개 이상이 보유라고 하면 보유) */
+    val parts: List<Genome> = emptyList(),
+    val partsNeed: Int = 0,
+    /** 찾을 때 한 번도 쓰지 않은 다른 종목들의 시험 기간 성적 */
+    val holdout: PeriodStats? = null,
+    val holdoutSize: Int = 0,
+    /** 앱에 기본으로 들어 있는 모델 (지울 수 없다) */
+    val builtIn: Boolean = false,
+    val note: String = "",
 ) {
+    val isEnsemble: Boolean get() = parts.isNotEmpty()
+
+    fun describe(): String = if (isEnsemble) "조합 전략 ${parts.size}개 가운데 ${partsNeed}개 이상이 매수 상태면 보유하는 종합 모델" else genome.describe()
+
     /** 시험 기간(찾을 때 쓰지 않은 최근 기간)에도 통했는지: 돈을 벌었고, 그냥 들고 있기보다 나았고, 무작위 조합의 90%보다 나았음 */
-    val passedTest: Boolean get() = test.annReturnPct > 0 && test.annReturnPct > test.buyHoldAnnPct && luckPercentile >= 90 && test.trades >= 3
+    val passedTest: Boolean get() = test.annReturnPct > 0 && test.annReturnPct > test.buyHoldAnnPct && luckPercentile >= 90 && test.trades >= 3 && test.exposurePct >= 10
 
     val horizon: StrategyHorizon get() = when {
         avgHoldBars < 21 -> StrategyHorizon.SHORT
@@ -97,11 +110,16 @@ data class EvolvedStrategy(
 
     /** 앱의 다른 화면(지표분석·매매신호·차트)에서 쓸 수 있는 전략으로 바꾼다. */
     fun toStrategy(): Strategy {
-        val members = genome.members.mapNotNull { Strategies.find(it) }
-        val minBars = max(members.maxOfOrNull { it.minBars } ?: 0, genome.filter.warmup)
-        fun pos(d: PriceData): BooleanArray = d.memo("evo_${id}") { Composite.position(d, members, genome.need, genome.filter) }
+        val gs = if (isEnsemble) parts else listOf(genome)
+        val minBars = gs.maxOf { g -> max(g.members.mapNotNull { Strategies.find(it) }.maxOfOrNull { it.minBars } ?: 0, g.filter.warmup) }
+        fun pos(d: PriceData): BooleanArray = d.memo("evo_${id}") {
+            if (!isEnsemble) Composite.position(d, genome) else {
+                val ps = parts.map { Composite.position(d, it) }
+                BooleanArray(d.size) { i -> ps.count { it[i] } >= partsNeed }
+            }
+        }
         return Strategy(
-            id, name, StrategyGroup.AI, genome.describe(), minBars, null,
+            id, name, StrategyGroup.AI, (if (note.isNotEmpty()) "$note " else "") + describe(), minBars, null,
             buy = { d, i -> val p = pos(d); i > 0 && p[i] && !p[i - 1] },
             sell = { d, i -> val p = pos(d); i > 0 && !p[i] && p[i - 1] },
         ).also { it.horizon = horizon }
@@ -132,6 +150,8 @@ object Composite {
         }
     }
 
+    fun position(d: PriceData, g: Genome): BooleanArray = position(d, g.members.mapNotNull { Strategies.find(it) }, g.need, g.filter)
+
     fun position(d: PriceData, members: List<Strategy>, need: Int, f: EvoFilter): BooleanArray {
         val states = members.map { state(it, d) }
         val fl = filter(f, d)
@@ -161,6 +181,8 @@ class EvoLab(
     private val roundTripCostPct: Double = BacktestConfig.defaultCost(market),
     private val seed: Int = 7,
     private val bases: List<Strategy> = Strategies.all,
+    /** 기간 경계를 다른 연구와 맞추고 싶을 때 (t0, t1, t2, tEnd) */
+    cuts: LongArray? = null,
 ) {
     private val perYear = if (market == Market.CRYPTO) 365.0 else 250.0
     private val cost = roundTripCostPct / 100
@@ -204,15 +226,22 @@ class EvoLab(
         }
         require(stocks.isNotEmpty()) { "연구에 쓸 종목 일봉이 부족합니다 (종목마다 400일 이상 필요)." }
         // 전략들이 자리 잡는 데 1년쯤 걸리므로, 종목들의 1년째 날짜의 가운데부터 쓴다.
-        val warm = stocks.map { it.dates[min(260, it.n - 1)] }.sorted()
-        t0 = warm[warm.size / 2]
-        tEnd = stocks.maxOf { it.dates.last() }
-        val span = tEnd - t0
-        t1 = t0 + (span * 0.6).toLong()
-        t2 = t0 + (span * 0.8).toLong()
+        if (cuts != null) {
+            t0 = cuts[0]; t1 = cuts[1]; t2 = cuts[2]; tEnd = cuts[3]
+        } else {
+            val warm = stocks.map { it.dates[min(260, it.n - 1)] }.sorted()
+            t0 = warm[warm.size / 2]
+            tEnd = stocks.maxOf { it.dates.last() }
+            val span = tEnd - t0
+            t1 = t0 + (span * 0.6).toLong()
+            t2 = t0 + (span * 0.8).toLong()
+        }
     }
 
     val poolSize: Int get() = stocks.size
+    val cutDates: LongArray get() = longArrayOf(t0, t1, t2, tEnd)
+    val evaluationsSoFar: Long get() = evalCount.get()
+    val simulationsSoFar: Long get() = simCount.get()
 
     fun periodText(): String {
         fun d(t: Long) = Fmt.date(t)
@@ -249,6 +278,11 @@ class EvoLab(
 
     private fun simulate(s: Stock, g: Genome, r: IntRange): Raw {
         if (r.isEmpty()) return Raw(0.0, 0.0, 0, 0, 0, 0, 0.0, 0)
+        return simulateBits(s, bits(s, g), r)
+    }
+
+    /** 조합 하나가 이 종목에서 들고 있는 날 (비트) */
+    private fun bits(s: Stock, g: Genome): LongArray {
         val idx = g.members.map { idIndex.getValue(it) }
         val subs = subsets(idx.size, g.need.coerceIn(1, idx.size))
         val f = s.filters[g.filter.ordinal]
@@ -263,6 +297,27 @@ class EvoLab(
             }
             p[w] = acc and f[w]
         }
+        return p
+    }
+
+    /** 여러 조합 중 [need]개 이상이 들고 있는 날 (비트) */
+    private fun ensembleBits(s: Stock, parts: List<Genome>, need: Int): LongArray {
+        val ps = parts.map { bits(s, it) }
+        val out = LongArray(ps[0].size)
+        for (w in out.indices) {
+            var word = 0L
+            for (b in 0 until 64) {
+                var c = 0
+                for (p in ps) if ((p[w] ushr b) and 1L != 0L) c++
+                if (c >= need) word = word or (1L shl b)
+            }
+            out[w] = word
+        }
+        return out
+    }
+
+    private fun simulateBits(s: Stock, p: LongArray, r: IntRange): Raw {
+        if (r.isEmpty()) return Raw(0.0, 0.0, 0, 0, 0, 0, 0.0, 0)
         // 기간 안의 보유한 날을 차례로 훑어 거래·수익·낙폭을 센다.
         var logRet = 0.0
         var trades = 0; var wins = 0; var held = 0; var holdBars = 0
@@ -311,16 +366,20 @@ class EvoLab(
         val trades = raws.sumOf { it.trades }
         val mdd = raws.map { it.mdd }.average()
         val positive = raws.count { it.logRet > 0 }.toDouble() / raws.size
-        // 점수: 가운데 종목의 연 수익(로그) − 낙폭 벌점, 여러 종목에서 고르게 벌수록 가산. 거래가 너무 적으면 판단할 수 없어 제외.
-        val enoughTrades = trades >= max(3.0, raws.size * years * 0.8)
-        val score = if (!enoughTrades) -9.0 else med * (0.6 + 0.4 * positive) - 0.35 * mdd
+        val exposure = raws.sumOf { it.held }.toDouble() / raws.sumOf { it.bars }.coerceAtLeast(1)
+        val bhMed = bh[bh.size / 2]
+        // 실제로 투자하는 전략만 인정한다: 들고 있는 날이 15% 이상, 종목마다 1년에 한 번 이상 거래.
+        // (이 조건이 없으면 '거의 아무것도 안 하는' 전략이 낙폭이 없어 1등이 된다)
+        val active = exposure >= MIN_EXPOSURE && trades >= max(3.0, raws.size * years * 1.0)
+        // 점수: 가운데 종목의 연 수익(로그) − 낙폭 벌점 + 그냥 들고 있기보다 나은 만큼 가산, 여러 종목에서 고르게 벌수록 가산.
+        val score = if (!active) -9.0 else med * (0.6 + 0.4 * positive) - 0.35 * mdd + 0.25 * (med - bhMed)
         return PeriodStats(
             annReturnPct = (exp(med) - 1) * 100,
-            buyHoldAnnPct = (exp(bh[bh.size / 2]) - 1) * 100,
+            buyHoldAnnPct = (exp(bhMed) - 1) * 100,
             winRatePct = if (trades == 0) 0.0 else raws.sumOf { it.wins } * 100.0 / trades,
             trades = trades,
             maxDrawdownPct = mdd * 100,
-            exposurePct = raws.sumOf { it.held } * 100.0 / raws.sumOf { it.bars }.coerceAtLeast(1),
+            exposurePct = exposure * 100,
             positiveSharePct = positive * 100,
             score = score,
             years = years,
@@ -339,6 +398,42 @@ class EvoLab(
         }
         return stats(stocks.map { simulate(it, g, range(it, from, to)) })
     }
+
+    private fun periodRange(period: Period): Pair<Long, Long> = when (period) {
+        Period.TRAIN -> t0 to t1
+        Period.VALID -> t1 to t2
+        Period.TEST -> t2 to tEnd + 1
+        Period.TRAIN_VALID -> t0 to t2
+    }
+
+    /** 'AI 종합 모델' (여러 조합의 투표) 성적 */
+    fun evaluateEnsemble(parts: List<Genome>, need: Int, period: Period): PeriodStats {
+        evalCount.incrementAndGet()
+        val (from, to) = periodRange(period)
+        return stats(stocks.map { s -> simulateBits(s, ensembleBits(s, parts, need), range(s, from, to)) })
+    }
+
+    fun ensembleAvgHold(parts: List<Genome>, need: Int): Double {
+        val raws = stocks.map { s -> simulateBits(s, ensembleBits(s, parts, need), range(s, t0, t2)) }
+        val t = raws.sumOf { it.trades }
+        return if (t == 0) 0.0 else raws.sumOf { it.holdBars }.toDouble() / t
+    }
+
+    /** 아무렇게나 만든 조합 [n]개의 시험 기간 점수 (운 테스트 기준) */
+    /** 아무렇게나 만든 조합 가운데 '실제로 투자하는' 것 [n]개의 시험 기간 점수 (운 테스트 기준) */
+    fun randomTestScores(n: Int = 300): List<Double> {
+        val out = ArrayList<Double>()
+        var k = 0
+        while (out.size < n && k < n * 20) {
+            val g = randomGenome(Random(seed * 31 + k++))
+            // 고르는 조건(학습 기간에 실제로 투자했는지)을 똑같이 걸어, 같은 조건을 통과한 것끼리 견준다.
+            if (evaluate(g, Period.TRAIN).score <= -9.0) continue
+            out += evaluate(g, Period.TEST).score
+        }
+        return out.sorted()
+    }
+
+    fun avgHoldOf(g: Genome): Double = avgHold(g)
 
     private fun avgHold(g: Genome): Double {
         val raws = stocks.map { simulate(it, g, range(it, t0, t2)) }
@@ -430,7 +525,7 @@ class EvoLab(
             fun scoreAll(gs: List<Genome>): List<Scored> = exec.invokeAll(gs.map { g -> Callable { Scored(g, evaluate(g, Period.TRAIN)) } }).map { it.get() }
 
             // 운 테스트 기준: 아무렇게나 만든 조합들의 시험 기간 점수
-            val randomTest = exec.invokeAll((0 until 300).map { Callable { evaluate(randomGenome(Random(seed * 31 + it)), Period.TEST).score } }).map { it.get() }.sorted()
+            val randomTest = randomTestScores()
 
             val seen = HashSet<String>()
             var pop = scoreAll(List(population) { randomGenome(rnd) }.filter { seen.add(it.key) })
@@ -496,6 +591,9 @@ class EvoLab(
     }
 
     companion object {
+        /** 이보다 적게 들고 있으면 '투자하는 전략'으로 치지 않는다 */
+        const val MIN_EXPOSURE = 0.15
+
         /** 화면에 보일 '운 테스트' 해석 */
         fun luckText(p: Double): String = when {
             p >= 90 -> "무작위 조합의 ${p.toInt()}%보다 나음 — 운만은 아닐 가능성"
@@ -514,3 +612,17 @@ class EvoLab(
         private fun keepImports() = abs(0.0)
     }
 }
+
+/**
+ * 앱에 기본으로 들어 있는 AI 모델. 개발 중에 국내 161종목(찾기 113 + 따로 남긴 48)의 6~7년 일봉으로
+ * 조합 12만 개(모의투자 약 1,950만 번)를 시험해 만든 것이다 (core/src/test/.../KrResearch.kt).
+ */
+object BuiltInModels {
+    val all: List<EvolvedStrategy> by lazy {
+        runCatching {
+            val text = BuiltInModels::class.java.getResourceAsStream("/models/kr_ai_models.json")?.use { it.readBytes().toString(Charsets.UTF_8) } ?: return@runCatching emptyList()
+            lenientJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(EvolvedStrategy.serializer()), text)
+        }.getOrDefault(emptyList())
+    }
+}
+

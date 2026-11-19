@@ -68,6 +68,22 @@ fun LabTab(vm: AppViewModel) {
                 SmallLabel("앱이 켜져 있는 동안 돕니다. 국내·미국은 시세 키가 있어야 합니다. 비용(수수료·세금)은 [설정]의 값을 씁니다.", Modifier.padding(top = 6.dp))
             }
         }
+        if (vm.builtInModels.isNotEmpty()) {
+            val m = vm.builtInModels.first()
+            item {
+                SectionCard("기본 AI 모델 (국내)") {
+                    Text(
+                        "개발 중에 국내 ${m.poolSize + m.holdoutSize}종목의 6~7년 일봉으로 조합 ${count(m.evaluations)}개 (모의투자 ${count(m.simulations)}번)를 시험해 만든 모델입니다. " +
+                            "${m.poolSize}종목으로만 찾고 고른 뒤, 최근 기간(시험)과 한 번도 보지 않은 ${m.holdoutSize}종목으로 다시 확인했습니다.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text("과최적화 확률 " + EvoLab.pboText(m.pbo), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
+                    SmallLabel("승률이 높다고 돈을 번 것은 아닙니다. 단기 반등형(승률 60~70%)은 시험 기간에 그냥 들고 있기보다 못했고, 추세·반등을 섞은 장기 보유형이 시험 기간과 처음 보는 종목 모두에서 들고 있기보다 나았습니다. 표의 '시험'(최근 기간)과 '새 종목'(찾을 때 안 본 종목의 최근 기간) 줄을 보고 고르세요.", Modifier.padding(top = 4.dp))
+                    SmallLabel("자료: ${m.periods}", Modifier.padding(top = 4.dp))
+                }
+            }
+            items(vm.builtInModels, key = { "builtin_" + it.id }) { e -> EvolvedCard(vm, e, saved = true) }
+        }
         item {
             SectionCard("진행") {
                 if (l.running) LinearProgressIndicator(progress = { ((p?.evaluations ?: 0) / l.target.toFloat()).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
@@ -114,7 +130,8 @@ private fun EvolvedCard(vm: AppViewModel, e: EvolvedStrategy, saved: Boolean) {
             Text(e.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
             Pill(if (e.passedTest) "시험 통과" else "시험 미통과", if (e.passedTest) Pass else MaterialTheme.colorScheme.outline)
         }
-        SmallLabel(e.genome.describe() + " · ${e.market.label} ${e.poolSize}종목 · 평균 ${e.avgHoldBars.toInt()}일 보유 (${e.horizon.label})", Modifier.padding(top = 2.dp))
+        SmallLabel(e.describe() + " · ${e.market.label} ${e.poolSize}종목 · 평균 ${e.avgHoldBars.toInt()}일 보유 (${e.horizon.label})", Modifier.padding(top = 2.dp))
+        if (e.isEnsemble) e.parts.forEachIndexed { i, g -> SmallLabel("${i + 1}. " + g.describe(), Modifier.padding(start = 6.dp)) }
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth()) {
             listOf("", "연 수익", "보유만", "승률", "낙폭", "거래").forEachIndexed { i, h ->
@@ -125,13 +142,14 @@ private fun EvolvedCard(vm: AppViewModel, e: EvolvedStrategy, saved: Boolean) {
         StatRow("검증", e.valid)
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 2.dp))
         StatRow("시험", e.test, bold = true)
+        e.holdout?.let { StatRow("새 종목", it, bold = true) }
         Text(EvoLab.luckText(e.luckPercentile), style = MaterialTheme.typography.bodySmall, color = if (e.luckPercentile >= 90) Pass else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
         SmallLabel(e.periods)
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 4.dp)) {
             TextButton(onClick = { vm.openEvolved(e) }) { Text("차트로 보기") }
-            if (!saved) TextButton(onClick = { vm.saveEvolved(e) }) { Text("저장") }
+            if (!saved && !e.builtIn) TextButton(onClick = { vm.saveEvolved(e) }) { Text("저장") }
             TextButton(onClick = { vm.useEvolvedForSignals(e) }) { Text("매매신호에 쓰기") }
-            if (saved && vm.evolved.any { it.id == e.id }) TextButton(onClick = { vm.deleteEvolved(e.id) }) { Text("삭제") }
+            if (!e.builtIn && saved && vm.evolved.any { it.id == e.id }) TextButton(onClick = { vm.deleteEvolved(e.id) }) { Text("삭제") }
         }
     }
 }

@@ -39,7 +39,7 @@ class AlertWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val store = AppStore(applicationContext)
         // 앱이 꺼져 있어도 AI 연구소에서 저장한 조합 전략의 신호를 볼 수 있게 등록한다.
-        if (Strategies.custom.isEmpty()) Strategies.register(store.evolved.map { it.toStrategy() })
+        if (Strategies.custom.isEmpty()) Strategies.register((io.github.jgg113.stocknote.core.BuiltInModels.all + store.evolved).map { it.toStrategy() })
         if (!store.alertSettings.enabled) return@withContext Result.success()
         val data = MarketData(store.keys, FileCache(applicationContext), store.tokenStore)
         val fees = store.fees

@@ -78,4 +78,17 @@ class EvolutionTest {
         val pbo = lab.pbo(gs)
         assertTrue(pbo >= 0.25, "noise PBO $pbo")
     }
+
+    @Test
+    fun builtInKoreanModelsLoadAndRun() {
+        // 앱에 넣은 국내 AI 모델: 불러와지고, 모든 구성 전략이 있고, 실제 백테스트로 돌아간다.
+        val models = BuiltInModels.all
+        assertTrue(models.size >= 2, "${models.size}")
+        assertTrue(models.all { it.builtIn && it.market == Market.KR && it.holdout != null })
+        assertTrue(models.first().isEnsemble && models.first().parts.size >= 3)
+        assertTrue(models.first().evaluations >= 100_000, "${models.first().evaluations}")
+        models.forEach { m -> (if (m.isEnsemble) m.parts else listOf(m.genome)).forEach { g -> g.members.forEach { id -> assertTrue(Strategies.find(id) != null, id) } } }
+        val data = PriceData(series(1500, 9))
+        models.forEach { m -> Backtester.run(m.toStrategy(), data) }
+    }
 }

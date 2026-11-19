@@ -488,9 +488,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var labTotals by mutableStateOf(store.labTotals); private set
     private var labJob: Job? = null
 
+    /** 앱에 기본으로 들어 있는 AI 모델 (개발자가 국내 종목으로 연구해 만든 것) */
+    val builtInModels: List<io.github.jgg113.stocknote.core.EvolvedStrategy> = io.github.jgg113.stocknote.core.BuiltInModels.all
+
+    private fun registerAi() = Strategies.register((builtInModels + evolved).map { it.toStrategy() })
+
     init {
-        // 저장해 둔 AI 조합 전략을 다른 화면(지표분석·매매신호·차트)에서도 쓸 수 있게 등록한다.
-        Strategies.register(evolved.map { it.toStrategy() })
+        // 기본 AI 모델과 저장해 둔 AI 조합 전략을 다른 화면(지표분석·매매신호·차트)에서도 쓸 수 있게 등록한다.
+        registerAi()
     }
 
     fun updateLab(s: LabState) { if (!lab.running) lab = s.copy(running = false, progress = lab.progress, status = lab.status) }
@@ -526,14 +531,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun saveEvolved(e: io.github.jgg113.stocknote.core.EvolvedStrategy) {
         evolved = (evolved.filter { it.id != e.id } + e).sortedByDescending { it.test.score }
         store.evolved = evolved
-        Strategies.register(evolved.map { it.toStrategy() })
+        registerAi()
         message("'${e.name}' 을(를) 저장했습니다. 지표분석·매매신호에서도 쓸 수 있습니다.")
     }
 
     fun deleteEvolved(id: String) {
         evolved = evolved.filter { it.id != id }
         store.evolved = evolved
-        Strategies.register(evolved.map { it.toStrategy() })
+        registerAi()
     }
 
     /** 매매신호 화면에서 이 전략으로 신호를 찾도록 넣는다. */
@@ -545,7 +550,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 이 조합 전략을 대표 종목 차트에서 본다. */
     fun openEvolved(e: io.github.jgg113.stocknote.core.EvolvedStrategy, asset: Asset? = null) {
-        if (Strategies.find(e.id) == null) Strategies.register(evolved.map { it.toStrategy() } + e.toStrategy())
+        if (Strategies.find(e.id) == null) Strategies.register((builtInModels + evolved).map { it.toStrategy() } + e.toStrategy())
         val a = asset ?: runCatching { data.universe(e.market, 1).first() }.getOrNull() ?: return
         open(Screen.StrategyDetail(a, e.id))
     }
@@ -678,7 +683,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun analyze(asset: Asset, daily: List<Candle>, quote: Quote?) {
         update(asset) { it.copy(analyzing = true) }
         val (report, forecast) = withContext(Dispatchers.Default) {
-            val r = IndicatorReport.build(PriceData(daily), backtestConfig(asset), Strategies.all + Strategies.custom.values.filter { s -> evolved.any { it.id == s.id && it.market == asset.market } })
+            val r = IndicatorReport.build(PriceData(daily), backtestConfig(asset), Strategies.all + Strategies.custom.values.filter { s -> (builtInModels + evolved).any { it.id == s.id && it.market == asset.market } })
             r to Forecaster.forecast(daily, report = r, quote = quote)
         }
         update(asset) { it.copy(report = report, forecast = forecast, analyzing = false, selected = it.selected ?: report.byScore.firstOrNull()) }
@@ -991,7 +996,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun importBackup(text: String): Boolean = try {
         store.importBackup(text)
         keys = store.keys; _data = null; checks = null
-        evolved = store.evolved; Strategies.register(evolved.map { it.toStrategy() })
+        evolved = store.evolved; registerAi()
         aiProvider = store.aiProvider; aiKeys = AiProvider.entries.filter { it.isApi }.associateWith { store.aiKey(it) }; aiTest = null
         watchlists = store.watchlists; customThemes = store.customThemes; accounts = store.accounts; gameStats = store.gameStats
         indicators = store.indicators; priceAlerts = store.priceAlerts; signalAlerts = store.signalAlerts; scanAlerts = store.scanAlerts

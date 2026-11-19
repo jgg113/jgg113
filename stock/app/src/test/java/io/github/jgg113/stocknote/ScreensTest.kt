@@ -317,4 +317,22 @@ class ScreensTest {
         shot("43_lab_strategy_chart")
         swipe(); shot("44_lab_strategy_trades")
     }
+
+    /** 앱에 넣은 국내 AI 모델이 연구소 화면에 보이는지 */
+    @Test
+    fun builtInModelsShown() {
+        compose.mainClock.autoAdvance = false
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = AppViewModel(app)
+        vm.setHomeMarket(Market.CRYPTO)
+        vm.tab = Tab.DISCOVER
+        compose.setContent { StockTheme { AppRoot(vm) } }
+        repeat(5) { pump() }
+        click("AI 연구소")
+        check(vm.builtInModels.isNotEmpty()) { "기본 모델이 없다" }
+        check(io.github.jgg113.stocknote.core.Strategies.find(vm.builtInModels.first().id) != null) { "기본 모델이 등록되지 않았다" }
+        shot("50_lab_builtin")
+        swipe(); shot("51_lab_builtin_ensemble")
+        swipe(); swipe(); shot("52_lab_builtin_models")
+    }
 }
